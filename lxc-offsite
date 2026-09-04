@@ -37,6 +37,8 @@ source "${SELF_DIR}/lib/testrestore.sh"
 source "${SELF_DIR}/lib/schedule.sh"
 # shellcheck source=lib/restic.sh  (restic-motorn, aktiveras med ENGINE=restic)
 source "${SELF_DIR}/lib/restic.sh"
+# shellcheck source=lib/tui.sh  (terminal-UI, `lxc-offsite tui`)
+source "${SELF_DIR}/lib/tui.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -62,6 +64,8 @@ Globala flaggor:
   -V, --version       versionsnummer
 
 Kommandon:
+  tui                         interaktiv terminal-meny (whiptail) — setup/backup/restore/export
+  init                        (restic) skapa/verifiera repo(s)
   backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
   preflight <vmid>            kör enbart förkontrollerna (finns/utrymme/cache/rclone)
   run-schedule                backup för varje vmid i BACKUP_ORDER, sekventiellt (köar)
@@ -173,6 +177,7 @@ cmd_restore() {
 }
 
 cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) init:ade/klara"; else log_warn "init: bara meningsfullt med ENGINE=restic"; fi; }
+cmd_tui()          { if [[ "${1:-}" == "--selftest" ]]; then _tui_selftest; else tui_main; fi; }
 cmd_list()         { do_list "${1:-}"; }
 cmd_verify()       { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_verify; else require_vmid "${1:-}"; not_implemented; fi; }
 cmd_prune()        { do_prune; }
@@ -194,6 +199,7 @@ main() {
 
     case "$LXCO_COMMAND" in
         init)          cmd_init "$@" ;;
+        tui)           cmd_tui "$@" ;;
         backup)        cmd_backup "$@" ;;
         preflight)     cmd_preflight "$@" ;;
         run-schedule)  cmd_run_schedule "$@" ;;
