@@ -8,5 +8,11 @@
   varning att strängen ÄR nyckeln (behandla som hemlighet; förvara offline).
   Kräver auth + audit-loggning (det är en secret-export).
 
+## Motor (restic)
+- **Beslut fattat:** restic ersätter tar.zst-motorn — se
+  [`docs/adr/0001-restic-as-backup-engine.md`](adr/0001-restic-as-backup-engine.md)
+  (Väg A: vzdump-tar lagras i restic, `pct restore` orört, CLI-envelope behålls).
+  Migrering i faser (`ENGINE=restic|tar`-flagga), coexistence tills bevisat skarpt.
+
 ## Övrigt
 - (fyll på)
