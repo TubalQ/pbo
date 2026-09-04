@@ -1,81 +1,81 @@
-# Förstudie — finns det något att bygga vidare på?
+# Prior study — is there anything to build on?
 
-**Kort svar: nej.** Genomgången nedan är ett negativt resultat. Den bekräftar att
-ett nytt verktyg är rätt beslut, och kartlägger vad de befintliga försöken
-misslyckas med så att vi inte upprepar det.
+**Short answer: no.** The review below is a negative result. It confirms that a new
+tool is the right decision, and maps out what the existing attempts fail at so we
+do not repeat it.
 
-Verifierat mot källor, inte minne.
+Verified against sources, not memory.
 
 ---
 
-## 1. Befintliga projekt
+## 1. Existing projects
 
 ### proxmox-vzbackup-rclone (TheRealAlexV)
 
-Hookscript som backar upp VM:ar, containrar och PVE-konfigurationer till
-fjärrlagring med native vzdump plus rclone. Arkiven organiseras i
-`ÅR/MÅNAD/DAG`-kataloger, och det finns ett medföljande script för att hämta
-gamla arkiv från fjärrlagringen så att de kan återställas som vanligt.
+A hook script that backs up VMs, containers, and PVE configurations to remote
+storage using native vzdump plus rclone. Archives are organized in
+`YEAR/MONTH/DAY` directories, and there is an accompanying script to fetch old
+archives back from the remote so they can be restored as usual.
 
-**Varför det inte duger:** Scriptet **prunar inte fjärrlagringen** — det säger
-uttryckligen att den hanteringen får du lösa separat. Ingen verifiering av att
-det uppladdade går att läsa tillbaka, ingen jobbhantering, inget gränssnitt,
-ingen statusrapportering. Det är ett fungerande hookscript, inte ett verktyg.
+**Why it is not good enough:** The script **does not prune the remote** — it
+explicitly says you have to handle that separately. No verification that what was
+uploaded can be read back, no job management, no interface, no status reporting.
+It is a working hook script, not a tool.
 
-Retention och verifiering är precis de två delar som är farligast att göra fel,
-och de saknas båda. Att bygga vidare på detta vore att ärva ett skelett utan de
-organ som gör skillnad.
+Retention and verification are exactly the two parts most dangerous to get wrong,
+and both are missing. Building on this would mean inheriting a skeleton without the
+organs that make the difference.
 
 ### proxmox-grapple (lingfish)
 
-Python-ersättare för `vzdump-hook-script.pl` med elva backupfaser (`job-init`,
-`job-start`, `job-end`, `job-abort`, `backup-start`, `backup-end`,
+A Python replacement for `vzdump-hook-script.pl` with eleven backup phases
+(`job-init`, `job-start`, `job-end`, `job-abort`, `backup-start`, `backup-end`,
 `backup-abort`, `log-end`, `pre-stop`, `pre-restart`, `post-restart`),
-YAML-konfiguration med stöd för flera miljöer, två körlägen, och realtidsloggning
-av subprocess-output med progressiva tidsstämplar — uttalat lämpligt för
-långkörande processer som just rclone.
+YAML configuration with support for multiple environments, two run modes, and
+real-time logging of subprocess output with progressive timestamps — stated to be
+suitable for long-running processes like rclone specifically.
 
-**Varför det inte duger:** Det är en generisk hook-runner, inte ett
-backupverktyg. Det kör kommandon åt dig vid rätt tidpunkt och slutar där — ingen
-kunskap om arkiv, offsite, verifiering eller återställning. Dess
-`extract`-funktion är dessutom enligt författaren otestad proof-of-concept.
+**Why it is not good enough:** It is a generic hook runner, not a backup tool. It
+runs commands for you at the right time and stops there — no knowledge of archives,
+offsite, verification, or restore. Its `extract` function is, moreover, according
+to the author an untested proof-of-concept.
 
-**Vad vi tar med oss som lärdom, inte som beroende:** realtidsloggning av
-subprocess-output med progressiva tidsstämplar. Utan det ser en 40-minuters
-rclone-uppladdning ut som en hängd process. Vi implementerar samma sak själva —
-det är trettio rader, inte ett beroende värt att ärva.
+**What we take from it as a lesson, not as a dependency:** real-time logging of
+subprocess output with progressive timestamps. Without it, a 40-minute rclone
+upload looks like a hung process. We implement the same thing ourselves — it is
+thirty lines, not a dependency worth inheriting.
 
-### Övrigt granskat
+### Others reviewed
 
-`DerDanilo/proxmox-stuff` säkrar host-konfiguration, inte gästbackuper. Diverse
-Borg-webbgränssnitt hanterar Borg-repon, inte vzdump-arkiv och `pct restore` —
-de vet ingenting om Proxmox.
+`DerDanilo/proxmox-stuff` secures host configuration, not guest backups. Various
+Borg web interfaces manage Borg repos, not vzdump archives and `pct restore` —
+they know nothing about Proxmox.
 
-**Inget projekt hittades som gör vzdump → offsite → hämta tillbaka med
-verifiering, retentionhantering och gränssnitt.** Slutsatsen är att verktyget
-byggs från grunden. Ingen av kandidaterna ovan blir ett beroende.
+**No project was found that does vzdump → offsite → fetch back with verification,
+retention management, and an interface.** The conclusion is that the tool is built
+from scratch. None of the candidates above becomes a dependency.
 
 ---
 
-## 2. Det stora fyndet: PVE:s egen GUI gör redan halva jobbet
+## 2. The big finding: PVE's own GUI already does half the job
 
-En directory storage med `content backup` ger native i PVE-gränssnittet:
-arkivlista, datum, storlek, restore-knapp, `prune-backups keep-last=N`,
-`max-protected-backups`, samt `content-dirs` för att peka backupkatalogen till
-en egen underväg.
+A directory storage with `content backup` gives natively in the PVE interface: an
+archive list, date, size, restore button, `prune-backups keep-last=N`,
+`max-protected-backups`, and `content-dirs` to point the backup directory to a
+custom subpath.
 
-Det betyder: **gör den lokala cachen till en riktig PVE directory storage**, så
-får du listning, datum, storlekar och restore-knapp gratis, i ett gränssnitt som
-inte bara liknar PBS utan *är* Proxmox.
+That means: **make the local cache a real PVE directory storage**, and you get
+listing, dates, sizes, and a restore button for free, in an interface that does not
+just resemble PBS but *is* Proxmox.
 
-Vårt egna GUI behöver då bara täcka det PVE inte kan: offsite-inventarium,
-push, fetch, verifieringsstatus och konfiguration.
+Our own GUI then only needs to cover what PVE cannot: offsite inventory, push,
+fetch, verification status, and configuration.
 
-### `is_mountpoint` är obligatoriskt
+### `is_mountpoint` is mandatory
 
-Sätt `is_mountpoint 1` på storage. Utan den skriver PVE backuper till
-rootfilsystemet om monteringen misslyckas — dokumenterat sätt att fylla
-systemdisken utan förvarning.
+Set `is_mountpoint 1` on the storage. Without it, PVE writes backups to the root
+filesystem if the mount fails — a documented way to fill the system disk without
+warning.
 
 ```bash
 pvesm add dir lxc-offsite-cache \
@@ -85,135 +85,140 @@ pvesm add dir lxc-offsite-cache \
   --shared 0
 ```
 
-### Varför vi ändå INTE rclone-monterar offsite som PVE-storage
+### Why we still do NOT rclone-mount offsite as PVE storage
 
-Det *fungerar* — det finns rapporter om att backup och restore går igenom
-PVE-GUI:t mot en rclone-monterad molnlagring, med `--vfs-cache-mode full`. Men
-invändningarna är befogade: om den fjärrmonterade lagringen blir otillgänglig får
-du problem både vid boot och vid schemalagda backuper, och att installera rclone
-och montera moln på hypervisorn räknas som en större ingrepp i host-miljön.
+It *works* — there are reports of backup and restore going through the PVE GUI
+against an rclone-mounted cloud storage, with `--vfs-cache-mode full`. But the
+objections are valid: if the remotely mounted storage becomes unavailable you get
+problems both at boot and during scheduled backups, and installing rclone and
+mounting cloud on the hypervisor counts as a larger intrusion into the host
+environment.
 
-Vår design undviker detta: **rclone rör aldrig ett PVE-monterat filsystem.**
-Offsite nås enbart via explicita `rclone copy`-anrop. PVE känner bara till den
-lokala cachen, som alltid finns.
+Our design avoids this: **rclone never touches a PVE-mounted filesystem.** Offsite
+is reached only via explicit `rclone copy` calls. PVE knows only about the local
+cache, which is always present.
 
 ---
 
-## 3. GUI-teknik: vad "efterlikna PBS" faktiskt kräver
+## 3. GUI technology: what "emulate PBS" actually requires
 
-PBS och PVE bygger båda på ExtJS plus `proxmox-widget-toolkit`, som beskriver sig
-som basramverket med widgets, modeller och verktyg för Proxmox ExtJS-baserade
-webbgränssnitt. Det ligger redan på disk under
-`/usr/share/javascript/proxmox-widget-toolkit/`, och ExtJS finns i paketet
+PBS and PVE both build on ExtJS plus `proxmox-widget-toolkit`, which describes
+itself as the base framework with widgets, models, and tools for Proxmox
+ExtJS-based web interfaces. It is already on disk under
+`/usr/share/javascript/proxmox-widget-toolkit/`, and ExtJS is in the package
 `libjs-extjs`.
 
-Vi kan alltså använda exakt samma widgets som PBS. Utseendet blir inte "likt" —
-det blir identiskt.
+So we can use exactly the same widgets PBS uses. The look will not be "similar" —
+it will be identical.
 
-### Licensfällan, som är verklig
+### The license trap, which is real
 
-`proxmox-widget-toolkit` är **AGPL-3.0+**. ExtJS är svårare: Sencha släppte
-version 7.0 som sista GPLv3-utgåva, och villkoren är explicita — du måste släppa
-källkoden fritt och licensiera din applikation under GPLv3, och du kan inte
-konvertera till kommersiell licens senare genom att köpa en.
+`proxmox-widget-toolkit` is **AGPL-3.0+**. ExtJS is harder: Sencha released
+version 7.0 as the last GPLv3 edition, and the terms are explicit — you must
+release the source freely and license your application under GPLv3, and you cannot
+convert to a commercial license later by buying one.
 
-Praktisk konsekvens:
+Practical consequence:
 
-| Scenario | Konsekvens |
+| Scenario | Consequence |
 |---|---|
-| Enbart internt bruk, ingen distribution | Inga skyldigheter utlöses |
-| Publiceras på ditt Gitea, publikt | Måste AGPL-3.0-licenseras, källkod fritt tillgänglig |
-| Kommersialiseras | Inte möjligt utan att byta ut hela frontend-stacken |
+| Internal use only, no distribution | No obligations triggered |
+| Published on your Gitea, public | Must be AGPL-3.0 licensed, source freely available |
+| Commercialized | Not possible without replacing the entire frontend stack |
 
-AGPL:s nätverksklausul är den skarpa: för ett **webbgränssnitt** räcker det att
-någon annan använder det över nätet för att källkodsskyldigheten ska aktiveras.
+AGPL's network clause is the sharp one: for a **web interface** it is enough that
+someone else uses it over the network for the source-code obligation to activate.
 
-Rekommendation: bygg med widget-toolkit, licensiera projektet AGPL-3.0 från dag
-ett. Det är ändå rätt licens för ett verktyg som detta, och det tar bort frågan.
+Recommendation: build with the widget toolkit, license the project AGPL-3.0 from
+day one. It is the right license for a tool like this anyway, and it removes the
+question.
 
-### Ingen plugin-API finns för PVE:s webbgränssnitt
+### There is no plugin API for PVE's web interface
 
-Man kan inte lägga till en flik i PVE-GUI:t på ett stödt sätt.
-Communityprojekt som ändrar Proxmox-gränssnittet patchar filerna och använder en
-apt-hook för att patcha om automatiskt efter uppdateringar av widget-toolkit,
-pve-manager eller proxmox-backup-server.
+You cannot add a tab to the PVE GUI in a supported way. Community projects that
+modify the Proxmox interface patch the files and use an apt hook to re-patch
+automatically after updates to the widget toolkit, pve-manager, or
+proxmox-backup-server.
 
-**Gör inte det.** En apt-hook som patchar hypervisorns GUI vid varje uppdatering
-är precis den sortens ingrepp som gör en produktionsmiljö oreparerbar. Vårt GUI
-körs som en **fristående applikation på egen port**, som återanvänder
-widget-toolkit men aldrig modifierar PVE:s egna filer.
-
----
-
-## 4. Hookscript-mekaniken, verifierad
-
-Faserna är `job-start`/`-end`/`-abort` för hela jobbet, `backup-start`/`-end`/
-`-abort` per gäst, `pre-stop`/`pre-restart`/`post-restart` för gästen, samt
-`log-end`. Fasen skickas som **argument** till scriptet, och miljövariabler som
-`DUMPDIR`, `STOREID`, `TARGET` och `VMID` sätts av vzdump.
-
-Tre fällor:
-
-**Scriptet anropas av alla backupjobb.** Det går inte att sätta ett hookscript
-för ett enskilt jobb — du måste villkora inne i scriptet på VMID, gästtyp,
-målstorage eller nod.
-
-**Bara root@pam får sätta det.** Parametern går inte att sätta för
-oprivilegierade användare eftersom den tillåter körning av godtycklig kod. Vårt
-GUI kan alltså aldrig låta en icke-root-användare ändra hookscript-sökvägen.
-
-**`backup-end` betyder inte "lyckades".** Det finns ingen statusvariabel; du
-måste behandla `backup-abort` som felsignal och inte anta framgång.
+**Do not do that.** An apt hook that patches the hypervisor's GUI on every update
+is exactly the kind of intrusion that makes a production environment unrepairable.
+Our GUI runs as a **standalone application on its own port**, which reuses the
+widget toolkit but never modifies PVE's own files.
 
 ---
 
-## 5. Bind-mounts — bekräftad och allvarligare än väntat
+## 4. The hook-script mechanics, verified
 
-`backup`-flaggan gäller **endast reguljära volym-mountpoints**. Bind-mountpoints
-innehåller godtyckliga host-sökvägar och är därför begränsade till root, och kan
-inte läggas till på annat sätt än manuellt. Efter en restore måste de återskapas
-för hand med `pct set` eller i en editor — **det går inte via GUI:t**.
+The phases are `job-start`/`-end`/`-abort` for the whole job, `backup-start`/`-end`/
+`-abort` per guest, `pre-stop`/`pre-restart`/`post-restart` for the guest, and
+`log-end`. The phase is passed as an **argument** to the script, and environment
+variables like `DUMPDIR`, `STOREID`, `TARGET`, and `VMID` are set by vzdump.
 
-Dessutom: sätter du `backup`-flaggan på en vanlig mountpoint återställs allt till
-en enda katalog vid restore, vilket kan behöva rättas manuellt efteråt.
+Three traps:
 
-Konsekvens för vårt verktyg: vid backup ska bind-mounts flaggas som varning, och
-den ursprungliga container-konfigurationen ska sparas som separat sidecar-fil
-offsite, så att den som återställer kan se exakt vilka mountpoints som saknas.
+**The script is called by every backup job.** You cannot set a hook script for a
+single job — you must condition inside the script on VMID, guest type, target
+storage, or node.
+
+**Only root@pam may set it.** The parameter cannot be set for unprivileged users
+because it allows execution of arbitrary code. Our GUI can therefore never let a
+non-root user change the hook-script path.
+
+**`backup-end` does not mean "succeeded".** There is no status variable; you must
+treat `backup-abort` as the failure signal and not assume success.
 
 ---
 
-## 6. Sammanfattad rekommendation
+## 5. Bind mounts — confirmed and more serious than expected
 
-| Lager | Beslut |
+The `backup` flag applies **only to regular volume mountpoints**. Bind mountpoints
+contain arbitrary host paths and are therefore restricted to root, and cannot be
+added any other way than manually. After a restore they must be recreated by hand
+with `pct set` or in an editor — **it cannot be done via the GUI**.
+
+Moreover: if you set the `backup` flag on a regular mountpoint, everything is
+restored into a single directory at restore time, which may need manual correction
+afterward.
+
+Consequence for our tool: at backup time, bind mounts should be flagged as a
+warning, and the original container configuration should be saved as a separate
+sidecar file offsite, so that whoever restores can see exactly which mountpoints
+are missing.
+
+---
+
+## 6. Summarized recommendation
+
+| Layer | Decision |
 |---|---|
-| Kodbas | Nytt verktyg från grunden, inga arvda beroenden |
-| Backupartefakt | Native `vzdump`, `--mode snapshot` |
-| Lokal cache | PVE directory storage, `is_mountpoint 1` → gratis native GUI |
-| Transport | `rclone copy` mot Hetzner SFTP, aldrig som monterat filsystem |
-| Eget GUI | Fristående, ExtJS + `proxmox-widget-toolkit`, egen port |
-| Ransomware-skydd | Storage Box snapshots — **inte** borg append-only |
-| Licens | AGPL-3.0 från start |
-| PVE-GUI-patchning | Nej |
+| Codebase | New tool from scratch, no inherited dependencies |
+| Backup artifact | Native `vzdump`, `--mode snapshot` |
+| Local cache | PVE directory storage, `is_mountpoint 1` → free native GUI |
+| Transport | `rclone copy` against Hetzner SFTP, never as a mounted filesystem |
+| Own GUI | Standalone, ExtJS + `proxmox-widget-toolkit`, own port |
+| Ransomware protection | Storage Box snapshots — **not** Borg append-only |
+| License | AGPL-3.0 from the start |
+| PVE GUI patching | No |
 
 ---
 
-## 7. Append-only på Hetzner håller inte
+## 7. Append-only on Hetzner does not hold up
 
-Detta undersöktes som alternativ till full-kopia-modellen och underkändes.
+This was investigated as an alternative to the full-copy model and rejected.
 
-Hetzners dokumentation säger att Borg kan köras i append-only-läge som bara
-tillåter nya arkiv och nekar radering av gamla — men noterar i samma andetag att
-en begränsad klient ändå kan utföra arkivraderingar.
+Hetzner's documentation says Borg can be run in append-only mode that only permits
+new archives and denies deletion of old ones — but notes in the same breath that a
+restricted client can still perform archive deletions.
 
-Borgs manual bekräftar varför: `--append-only` påverkar bara repots lågnivåstruktur,
-och `delete` och `prune` tillåts fortfarande köras.
+Borg's manual confirms why: `--append-only` affects only the repo's low-level
+structure, and `delete` and `prune` are still allowed to run.
 
-Det riktiga skyddet är serversidigt, via `command="borg serve --append-only"` i
-`authorized_keys`. Men Storage Box erbjuder inget riktigt skal — miljön beskrivs
-som starkt begränsad, och de restriktiva SSH-kommandona fungerar inte där.
+The real protection is server-side, via `command="borg serve --append-only"` in
+`authorized_keys`. But Storage Box offers no real shell — the environment is
+described as heavily restricted, and the restrictive SSH commands do not work
+there.
 
-**Därför:** Storage Box egna schemalagda snapshots är det enda som faktiskt
-skyddar mot en komprometterad Proxmox-host. Det är ett krav i denna design, inte
-en rekommendation. Utan dem kan en angripare med host-access radera hela
-offsite-kopian, och då har vi byggt en kopia med extra steg.
+**Therefore:** Storage Box's own scheduled snapshots are the only thing that
+actually protects against a compromised Proxmox host. It is a requirement in this
+design, not a recommendation. Without them, an attacker with host access can delete
+the entire offsite copy, and then we have built a copy with extra steps.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mock: vzdump <vmid> --mode M --compress C --dumpdir DIR
-# Skapar ett RIKTIGT litet tar.zst så sha256/zstd -t/tar -tf körs på riktigt.
+# Creates a REAL tiny tar.zst so sha256/zstd -t/tar -tf run for real.
 vmid=""; dumpdir=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -13,7 +13,7 @@ done
 : "${dumpdir:=.}"; mkdir -p "$dumpdir"
 ts="$(date +%Y_%m_%d-%H_%M_%S)"
 arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar.zst"
-tmp="$(mktemp -d)"; echo "innehåll för $vmid" > "$tmp/data.txt"; mkdir -p "$tmp/etc"; echo "k=v" > "$tmp/etc/conf"
+tmp="$(mktemp -d)"; echo "content for $vmid" > "$tmp/data.txt"; mkdir -p "$tmp/etc"; echo "k=v" > "$tmp/etc/conf"
 tar --zstd -cf "$arch" -C "$tmp" . && rm -rf "$tmp"
 echo "INFO: starting new backup job"
 echo "INFO: creating vzdump archive '$arch'"

@@ -1,252 +1,264 @@
-# ADR 0001 — restic som backup-motor (Väg A: vzdump-tar i restic)
+# ADR 0001 — restic as backup engine (Path A: vzdump tar in restic)
 
-- **Status:** Accepterad — 2026-09-04
-- **Beslut:** Adoptera **restic** som lxc-offsites lagrings-/transport-/kryptering-/
-  verifiering-/retention-motor, i **Väg A** (vzdump-arkiv lagras *i* restic).
-  Behåll CLI:ts JSON-envelope och `pct restore`-integrationen — byt motorn, inte kontraktet.
-- **Kontext-taggar:** SFTP-only · local-only · web-UI · ingen fjärr-compute
+- **Status:** Accepted — 2026-09-04
+- **Decision:** Adopt **restic** as lxc-offsite's storage/transport/encryption/
+  verification/retention engine, in **Path A** (the vzdump archive is stored *in* restic).
+  Keep the CLI's JSON envelope and the `pct restore` integration — change the engine, not the contract.
+- **Context tags:** SFTP-only · local-only · web-UI · no remote compute
 
-> Denna ADR är SSOT för motorvalet. Recept/config/kod ska referera hit, inte
-> duplicera resonemanget. Bevisen nedan kördes mot **restic 0.18.0** (Debian
-> trixie/main) i en engångsmiljö den 2026-09-04.
+> This ADR is the SSOT for the engine choice. Recipe/config/code should reference it,
+> not duplicate the reasoning. The proofs below were run against **restic 0.18.0**
+> (Debian trixie/main) in a throwaway environment on 2026-09-04.
 
 ---
 
-## 1. Kontext och problem
+## 1. Context and problem
 
-lxc-offsite är avsiktligt byggt för folk som **inte** har en maskin att köra PBS
-på, men som har en dum **SFTP-box** (Hetzner Storage Box, rsync.net, egen ssh).
-Ramarna är fasta: **transport = SFTP**, **drift = local-only på en Proxmox-host,
-self-contained, med web-UI**, **ingen fjärr-compute**.
+lxc-offsite is deliberately built for people who do **not** have a machine to run
+PBS on, but who do have a dumb **SFTP box** (Hetzner Storage Box, rsync.net, own
+ssh). The constraints are fixed: **transport = SFTP**, **operation = local-only on
+a Proxmox host, self-contained, with a web UI**, **no remote compute**.
 
-Nuvarande motor: `vzdump → full tar.zst per körning → rclone crypt över sftp`.
-Den har ett hårt tak:
+Current engine: `vzdump → full tar.zst per run → rclone crypt over sftp`. It has a
+hard ceiling:
 
-- **Alltid full.** Ingen dedup, ingen incremental → bandbredd + lagring växer
-  linjärt och sätter ett golv för RPO (hur ofta man kan köra).
-- **Ingen bläddring** av innehåll (till skillnad från PBS).
-- Mycket **egen kod** för det som är lösta problem: sha256-sidecars, `zstd -t`,
-  `tar -tf`, rclone `cryptcheck`, fetch+verify-dansen, egen GFS-prune.
+- **Always full.** No dedup, no incremental → bandwidth + storage grow linearly and
+  set a floor on RPO (how often you can run).
+- **No browsing** of contents (unlike PBS).
+- A lot of **custom code** for what are solved problems: sha256 sidecars, `zstd -t`,
+  `tar -tf`, rclone `cryptcheck`, the fetch+verify dance, a custom GFS prune.
 
-De fyra garantierna som skiljer "near-enterprise" från "cron+rclone" —
-**oföränderlighet, bevisad återställbarhet, least-privilege/spårbarhet,
-observerbarhet** — kräver dedup/incremental + klient-kryptering + integritet.
-På dum SFTP kan chunk-storen bara ligga **klient-sidan**. Det är exakt vad restic
-är: content-addressed dedup som skriver **vanliga filer** till valfri SFTP-box.
+The four guarantees that separate "near-enterprise" from "cron+rclone" —
+**immutability, proven restorability, least-privilege/traceability,
+observability** — require dedup/incremental + client-side encryption + integrity.
+On dumb SFTP the chunk store can only live on the **client side**. That is exactly
+what restic is: content-addressed dedup that writes **ordinary files** to any SFTP
+box.
 
-## 2. Beslut
+## 2. Decision
 
-Adoptera **restic**. Använd **Väg A**: låt `vzdump` fortsätta producera CT-arkivet,
-men lagra det (okomprimerat) *i* ett restic-repo i stället för att pusha tar.zst
-via rclone. Restore går via `restic restore → pct restore` — **hela
-Proxmox-integrationen och sidecar-logiken (unprivileged/storage/bind-mounts)
-lämnas orörd.**
+Adopt **restic**. Use **Path A**: let `vzdump` keep producing the CT archive, but
+store it (uncompressed) *in* a restic repo instead of pushing tar.zst via rclone.
+Restore goes via `restic restore → pct restore` — **the entire Proxmox integration
+and sidecar logic (unprivileged/storage/bind-mounts) is left untouched.**
 
-### Pipeline (Väg A)
+### Pipeline (Path A)
 
 ```
-preflight (oförändrad)
-  → vzdump <id> --mode <m> --compress 0 --dumpdir $CACHE/<id>   # OKOMPRIMERAD tar + .conf/.meta
-  → restic -r $CACHE_REPO   backup $CACHE/<id> --tag vmid=<id> --host <nod>   # lokalt (cache-tier)
+preflight (unchanged)
+  → vzdump <id> --mode <m> --compress 0 --dumpdir $CACHE/<id>   # UNCOMPRESSED tar + .conf/.meta
+  → restic -r $CACHE_REPO   backup $CACHE/<id> --tag vmid=<id> --host <node>   # local (cache tier)
   → restic -r $OFFSITE_REPO copy   --from-repo $CACHE_REPO                    # → SFTP (offsite)
-  → restic -r $OFFSITE_REPO check   [--read-data]                            # verifiering (bakgrund)
+  → restic -r $OFFSITE_REPO check   [--read-data]                            # verification (background)
 retention:
-  host:    restic -r $CACHE_REPO forget --keep-daily/weekly/monthly [--prune]   # KEEP_* mappar 1:1
-  janitor: restic -r $OFFSITE_REPO forget --prune                               # aldrig från hosten
+  host:    restic -r $CACHE_REPO forget --keep-daily/weekly/monthly [--prune]   # KEEP_* map 1:1
+  janitor: restic -r $OFFSITE_REPO forget --prune                               # never from the host
 restore / test-restore:
   → restic -r $OFFSITE_REPO restore <snapshot-id> --target $CACHE/restore
-  → pct restore <nytt-vmid> <utläst tar> --storage <pool> --unprivileged <n>   # OFÖRÄNDRAD
+  → pct restore <new-vmid> <extracted tar> --storage <pool> --unprivileged <n>   # UNCHANGED
 ```
 
-Offsite-repot initieras med delad chunker för dedup-paritet:
+The offsite repo is initialized with a shared chunker for dedup parity:
 `restic -r $OFFSITE_REPO init --copy-chunker-params --from-repo $CACHE_REPO`.
 
-### Backend: restics inbyggda sftp (native), inte rclone
+### Backend: restic's built-in sftp (native), not rclone
 
-`$OFFSITE_REPO` är restics **inbyggda sftp-backend**, direkt över ssh — ingen
-rclone i datavägen:
+`$OFFSITE_REPO` is restic's **built-in sftp backend**, directly over ssh — no
+rclone in the data path:
 
 ```
-OFFSITE_REPO=sftp:u546749-sub5@u546749.your-storagebox.de:23/lxc-restic
-# ssh-nyckel via ~/.ssh/config eller -o sftp.args; parallella anslutningar: -o sftp.connections=N
+OFFSITE_REPO=sftp:uXXXXX-subN@uXXXXX.your-storagebox.de:23/lxc-restic
+# ssh key via ~/.ssh/config or -o sftp.args; parallel connections: -o sftp.connections=N
 ```
 
-Skäl:
-- **Ett lager mindre.** Produkten är "för SFTP" → den direkta backenden är den
-  ärligaste passformen; SSH-nyckeln finns redan (`/root/.ssh/id_rsa`).
-- **Append-only-enforcement bor i SSH-lagret.** `restic backup` bara *lägger till*
-  pack-filer; det är `prune` som raderar. En SSH-endpoint (forced-command /
-  no-delete-nyckel / `chattr +a`) som tillåter skriv men förbjuder delete släpper
-  igenom hostens backuper men blockerar radering = append-only. Med native sftp
-  äger *ni* den punkten. (restics dokumenterade `--append-only` gäller bara
-  rest-server-backenden, inte sftp — på SFTP är SSH-sidan enforcement-punkten.)
+Reasons:
+- **One layer fewer.** The product is "for SFTP" → the direct backend is the most
+  honest fit; the SSH key already exists (`/root/.ssh/id_rsa`).
+- **Append-only enforcement lives in the SSH layer.** `restic backup` only *adds*
+  pack files; it is `prune` that deletes. An SSH endpoint (forced-command /
+  no-delete key / `chattr +a`) that permits write but forbids delete lets the host's
+  backups through but blocks deletion = append-only. With native sftp, *you* own
+  that point. (restic's documented `--append-only` applies only to the rest-server
+  backend, not sftp — on SFTP the SSH side is the enforcement point.)
 
-**crypt-remoten (`hetzner-crypt`) utgår** oavsett backend — restic krypterar själv.
-**Alternativ (dokumenterat, ej valt):** `rclone:hetzner:lxc-restic` återanvänder den
-*rena* rclone-sftp-remoten som transport (ger rclones pool/retry/`--bwlimit` i
-datavägen) — välj bara om en enda transport-config för allt är önskvärt.
+**The crypt remote (`hetzner-crypt`) goes away** regardless of backend — restic
+encrypts itself.
+**Alternative (documented, not chosen):** `rclone:hetzner:lxc-restic` reuses the
+*plain* rclone-sftp remote as transport (giving rclone's pool/retry/`--bwlimit` in
+the data path) — choose it only if a single transport config for everything is
+desirable.
 
-### Lägen: local cache eller bara offsite (valbart)
+### Modes: local cache or offsite-only (selectable)
 
-Användaren ska kunna välja **var backuperna bor** — alla har inte en extra disk
-för ett lokalt repo. Två ortogonala config-nycklar (läggs till i Fas 1):
+The user should be able to choose **where the backups live** — not everyone has a
+spare disk for a local repo. Two orthogonal config keys (added in Phase 1):
 
-| Läge | `LOCAL_REPO` | `OFFSITE_ENABLED` | Flöde |
+| Mode | `LOCAL_REPO` | `OFFSITE_ENABLED` | Flow |
 |---|---|---|---|
-| **cached** (default) | `true` | `true` | `restic backup` → lokalt repo → `restic copy` → offsite. Lokalt repo = snabb restore-tier + staging. `KEEP_LOCAL` gäller. |
-| **offsite-only** | `false` | `true` | `vzdump --stdout \| restic backup --stdin` **direkt** till offsite-sftp-repot. Ingen persistent lokal datalagring — bara transient scratch för aktuell gäst. `KEEP_LOCAL` N/A. |
-| local-only | `true` | `false` | backup till lokalt repo, ingen push (airgap/test). |
+| **cached** (default) | `true` | `true` | `restic backup` → local repo → `restic copy` → offsite. Local repo = fast restore tier + staging. `KEEP_LOCAL` applies. |
+| **offsite-only** | `false` | `true` | `vzdump --stdout \| restic backup --stdin` **directly** to the offsite sftp repo. No persistent local data storage — only transient scratch for the current guest. `KEEP_LOCAL` N/A. |
+| local-only | `true` | `false` | backup to local repo, no push (airgap/test). |
 
-- **offsite-only** minimerar diskfotavtryck (viktigt för små hostar): inget lokalt
-  repo att underhålla; restic har ändå sin metadata-cache (`RESTIC_CACHE_DIR`) för
-  fart. Priset: varje restore/test-restore hämtar från offsite (redan sant idag),
-  och `--stdin`-snapshoten bär taren men **inte** `.conf`-sidecaren i samma
-  snapshot — configen läggs som en andra sökväg i scratch-katalogen som backas med
-  (dvs. `restic backup $SCRATCH/<id>/` i stället för ren stdin när sidecars behövs).
-- **cached** ger snabbast restore (lokal kopia) och billig `copy` till offsite.
-- UI:t (onboarding) exponerar valet som en enkel växel: **"Var ska backuperna
-  bo? · Lokal cache + offsite · Bara offsite"** (se §6).
+- **offsite-only** minimizes disk footprint (important for small hosts): no local
+  repo to maintain; restic still has its metadata cache (`RESTIC_CACHE_DIR`) for
+  speed. The price: every restore/test-restore fetches from offsite (already true
+  today), and the `--stdin` snapshot carries the tar but **not** the `.conf` sidecar
+  in the same snapshot — the config is added as a second path in the scratch
+  directory that gets backed up (i.e. `restic backup $SCRATCH/<id>/` instead of pure
+  stdin when sidecars are needed).
+- **cached** gives the fastest restore (local copy) and a cheap `copy` to offsite.
+- The UI (onboarding) exposes the choice as a simple toggle: **"Where should the
+  backups live? · Local cache + offsite · Offsite only"** (see §6).
 
-## 3. Alternativ som övervägdes (och varför inte)
+## 3. Alternatives considered (and why not)
 
-- **Behåll bespoke tar.zst.** Enkelt och revisionsbart, men taket är permanent
-  "alltid full, ingen dedup, ingen bläddring". Inte PBS-likt. Avvisat som mål,
-  behålls som *coexistence*-spår under migreringen (se §8).
-- **Väg B — restic backup av CT:ns utpackade filsystem.** Bäst dedup (fil-nivå,
-  PBS-klass) + fil-bläddring. Men restore blir **inte** `pct restore` — man måste
-  återuppbygga CT:n själv (idmap/unprivileged-skiftning, xattrs, special-filer).
-  Mycket mer invasivt. **Skjuts upp** som framtida optimering, inte v1.
-- **S3 Object Lock (B2/Wasabi/MinIO).** Ger äkta WORM, men **bryter SFTP-only-
-  intentionen** — det är en annan produkt. Avvisat.
-- **PBS som backend.** "Riktig" PBS-dedup, men kräver en maskin/tjänst att köra
-  PBS på → **bryter local-only / ingen-extra-maskin**, hela existensberättigandet.
-  Avvisat.
+- **Keep the bespoke tar.zst.** Simple and auditable, but the ceiling is permanent
+  "always full, no dedup, no browsing". Not PBS-like. Rejected as a goal, kept as a
+  *coexistence* track during migration (see §8).
+- **Path B — restic backup of the CT's extracted filesystem.** Best dedup
+  (file-level, PBS-class) + file browsing. But restore is **not** `pct restore` —
+  you have to rebuild the CT yourself (idmap/unprivileged shifting, xattrs, special
+  files). Much more invasive. **Deferred** as a future optimization, not v1.
+- **S3 Object Lock (B2/Wasabi/MinIO).** Provides true WORM, but **breaks the
+  SFTP-only intent** — it is a different product. Rejected.
+- **PBS as backend.** "Real" PBS dedup, but requires a machine/service to run PBS on
+  → **breaks local-only / no-extra-machine**, the entire reason for existing.
+  Rejected.
 
-## 4. Bevis (restic 0.18.0, mot vår egen flöde)
+## 4. Proof (restic 0.18.0, against our own flow)
 
-| Vad | Resultat |
+| What | Result |
 |---|---|
-| Dedup/incremental | Radändring i 9.5 MiB → **9.8 KiB lagrat**; repo växer inte per körning |
-| Cache→offsite | `restic copy` (chunker-delad) → dedup bevarad mellan tiers |
-| Offsite = dumt lager | repo = vanliga filer (`config data index keys snapshots`) → funkar på vilken SFTP som helst |
-| Verifiering | `check --read-data` = läser om + hashar all data → **starkare** än rclone cryptcheck |
-| Restore | bit-identisk (sha256 på alla 202 filer matchade) |
-| stdin | `vzdump --stdout | restic backup --stdin` fungerar (dedupar t.o.m. mot fil-backupen) |
+| Dedup/incremental | Line change in 9.5 MiB → **9.8 KiB stored**; repo does not grow per run |
+| Cache→offsite | `restic copy` (chunker-shared) → dedup preserved between tiers |
+| Offsite = dumb tier | repo = ordinary files (`config data index keys snapshots`) → works on any SFTP |
+| Verification | `check --read-data` = re-reads + hashes all data → **stronger** than rclone cryptcheck |
+| Restore | bit-identical (sha256 on all 202 files matched) |
+| stdin | `vzdump --stdout | restic backup --stdin` works (even dedups against the file backup) |
 
-## 5. Vad restic ERSÄTTER / vad som STANNAR
+## 5. What restic REPLACES / what STAYS
 
-**Ersätts (egen kod som kan tas bort):**
+**Replaced (custom code that can be removed):**
 
-| Idag | Med restic |
+| Today | With restic |
 |---|---|
-| `upload.sh`: rclone copy + **crypt** | `restic copy` (restic krypterar själv → crypt-lagret försvinner) |
-| sha256-sidecar + `zstd -t` + `tar -tf` | restic content-addressed integritet + `check` |
-| `list.sh`: rclone lsjson + jq per vmid | `restic snapshots --json` (filtrera på `--tag vmid=<id>`) |
-| `prune.sh`: egen GFS-motor | `restic forget --keep-daily/weekly/monthly` — **`KEEP_*` mappar 1:1** |
-| `_fetch_core`: fetch + sha256-verify | `restic restore` (verifierar vid utläsning) |
-| rclone `cryptcheck` | `restic check` (`--read-data` för djup) |
+| `upload.sh`: rclone copy + **crypt** | `restic copy` (restic encrypts itself → the crypt layer disappears) |
+| sha256 sidecar + `zstd -t` + `tar -tf` | restic content-addressed integrity + `check` |
+| `list.sh`: rclone lsjson + jq per vmid | `restic snapshots --json` (filter on `--tag vmid=<id>`) |
+| `prune.sh`: custom GFS engine | `restic forget --keep-daily/weekly/monthly` — **`KEEP_*` map 1:1** |
+| `_fetch_core`: fetch + sha256-verify | `restic restore` (verifies on extraction) |
+| rclone `cryptcheck` | `restic check` (`--read-data` for depth) |
 
-**Stannar (produktens värde):** preflight.sh, vzdump-orkestreringen, `pct restore`
-+ unprivileged/storage/bind-mount-sidecars, fuse→stop-läget, web-UI/API, schema,
-ntfy, audit, samt den tvådelade append-only-designen.
+**Stays (the product's value):** preflight.sh, the vzdump orchestration, `pct restore`
++ unprivileged/storage/bind-mount sidecars, the fuse→stop mode, the web UI/API, the
+schedule, ntfy, audit, and the two-part append-only design.
 
-**Bonus:** ett repo för alla gäster → restic dedupar **mellan** gäster (delade
-OS-lager), inte bara inom en gäst.
+**Bonus:** one repo for all guests → restic dedups **between** guests (shared OS
+layers), not just within a guest.
 
-## 6. UI-påverkan (web-konsolen)
+## 6. UI impact (the web console)
 
-Läspanelerna blir **billigare/bättre**; skrivpanelerna är **avgränsat** arbete.
+The read panels become **cheaper/better**; the write panels are **scoped** work.
 
-| Panel | Källa med restic | Dom |
+| Panel | Source with restic | Verdict |
 |---|---|---|
-| Content (grupperade snapshots) | `restic snapshots --json` → `id`, `time`, `tags:["vmid=…"]`, **`summary.total_bytes_processed`** (storlek i samma anrop) | Bättre, ett anrop |
-| Offsite used / Datastore Usage | `restic stats --mode raw-data` → `total_size` (fysisk, dedup:ad) | Renare |
-| Verify — last result | `restic check` exit-kod → OK/FAIL | Robustare (rc, ej strängmatch) |
+| Content (grouped snapshots) | `restic snapshots --json` → `id`, `time`, `tags:["vmid=…"]`, **`summary.total_bytes_processed`** (size in the same call) | Better, one call |
+| Offsite used / Datastore Usage | `restic stats --mode raw-data` → `total_size` (physical, deduped) | Cleaner |
+| Verify — last result | `restic check` exit code → OK/FAIL | More robust (rc, not string match) |
 | Guests retention / Options | `KEEP_*` → `--keep-*` (1:1), text | Trivial |
-| Tasks + logg-färg | oförändrad mekanism; tuna `_job_status`-token ("Fatal:", "no errors were found") | Nästan oförändrad |
+| Tasks + log color | mechanism unchanged; tune the `_job_status` tokens ("Fatal:", "no errors were found") | Almost unchanged |
 
-**Tre paneler kräver riktig omskrivning:**
-1. **Remotes/onboarding** (störst): repo-URL (`sftp:`) + repo-lösen + engångs-`restic init`; crypt-lösen/salt-fälten **försvinner**. Plus en **läges-växel** "Lokal cache + offsite / Bara offsite" (§2) som sätter `LOCAL_REPO`/`OFFSITE_ENABLED`, och en rad om immutability-läget (lokal janitor → förlita på provider-snapshots; §7).
-2. **Prune-panelen**: `forget --dry-run --json` ger `{keep:[ids], remove:[ids]}` + återvunna bytes — inte filnamns-arrayer; `renderPrune()` skrivs om.
-3. **Restore-modal + export-key**: `ts` → snapshot-`id`; export-key ger repo-lösen + repo-URL i stället för `rclone.conf`.
+**Three panels require a real rewrite:**
+1. **Remotes/onboarding** (biggest): repo URL (`sftp:`) + repo password +
+   one-time `restic init`; the crypt-password/salt fields **disappear**. Plus a
+   **mode toggle** "Local cache + offsite / Offsite only" (§2) that sets
+   `LOCAL_REPO`/`OFFSITE_ENABLED`, and a line about the immutability mode (local
+   janitor → rely on provider snapshots; §7).
+2. **Prune panel**: `forget --dry-run --json` gives `{keep:[ids], remove:[ids]}` +
+   reclaimed bytes — not filename arrays; `renderPrune()` is rewritten.
+3. **Restore modal + export-key**: `ts` → snapshot `id`; export-key gives the repo
+   password + repo URL instead of `rclone.conf`.
 
-**Migreringsvägen för UI:t:** API:t är ett tunt skal (`cli(... --json)` + `_cached`).
-Behåller CLI:t sin **JSON-envelope** ändras web-UI:t **inte** för läspanelerna — bara
-de tre semantiskt ändrade panelerna rörs. `check --read-data` är dyrt → körs som
-**bakgrundstask** (som test-restore), aldrig i en poll.
+**The migration path for the UI:** the API is a thin shell (`cli(... --json)` +
+`_cached`). If the CLI keeps its **JSON envelope**, the web UI **does not change**
+for the read panels — only the three semantically changed panels are touched.
+`check --read-data` is expensive → run it as a **background task** (like
+test-restore), never in a poll.
 
-**Uppsida senare:** per-körning dedup-delta (`summary.data_added_packed`),
-repo-wide "space saved" (stats), `restic ls`/`mount` för fil-bläddring (kräver Väg B).
+**Upside later:** per-run dedup delta (`summary.data_added_packed`), repo-wide
+"space saved" (stats), `restic ls`/`mount` for file browsing (requires Path B).
 
-## 7. Oföränderlighet på SFTP (fortsatt kärna)
+## 7. Immutability on SFTP (still core)
 
-restic ändrar inte immutability-strategin — den **förstärker** den:
-- **Två credentials.** Hosten får en nyckel som bara får **skriva/lägga till**;
-  `forget --prune` (som raderar/repackar offsite) körs från en **janitor** utanför
-  hosten. En ransomware-drabbad host kan inte utplåna historik.
-- **Provider-snapshots** som baslinje där append-only inte kan tvingas (Hetzner
-  BTRFS / rsync.net ZFS) — verifieras, inte bara bockas i.
-- **Spänning att hantera:** `restic prune` kräver delete offsite → hör janitorn
-  till. `forget` (släpper snapshot-referenser) är billigt och kan köras från hosten;
-  det tunga `prune` (repack + radera) körs separat.
+restic does not change the immutability strategy — it **reinforces** it:
+- **Two credentials.** The host gets a key that may only **write/append**;
+  `forget --prune` (which deletes/repacks offsite) is run from a **janitor** outside
+  the host. A ransomware-hit host cannot wipe out history.
+- **Provider snapshots** as a baseline where append-only cannot be enforced (Hetzner
+  BTRFS / rsync.net ZFS) — verified, not just checked off.
+- **Tension to manage:** `restic prune` requires delete offsite → belongs to the
+  janitor. `forget` (releasing snapshot references) is cheap and can be run from the
+  host; the heavy `prune` (repack + delete) is run separately.
 
-### Janitor: lokal systemd-timer / cron-script (default)
+### Janitor: local systemd timer / cron script (default)
 
-`prune` körs som en **egen systemd-tjänst+timer** (eller cron som anropar ett
-script), **skild från backup-timern**. Enkelt och self-contained — passar
+`prune` runs as its **own systemd service+timer** (or a cron that calls a script),
+**separate from the backup timer**. Simple and self-contained — a fit for
 local-only.
 
-> **Ärlig konsekvens:** kör janitorn på **samma host** måste hosten ha en
-> **delete-kapabel** credential lokalt → en komprometterad host *kan* då köra prune
-> och radera offsite. I det läget är append-only-nyckeln **inte** det verkliga
-> ransomware-skyddet; **provider-snapshots** (Hetzner BTRFS / rsync.net ZFS) blir
-> det. Det är ett acceptabelt homelab-default, men måste stå tydligt i UI:t.
+> **Honest consequence:** run the janitor on the **same host** and the host must
+> have a **delete-capable** credential locally → a compromised host *can* then run
+> prune and delete offsite. In that case the append-only key is **not** the real
+> ransomware protection; **provider snapshots** (Hetzner BTRFS / rsync.net ZFS)
+> become it. It is an acceptable homelab default, but it must be stated clearly in
+> the UI.
 >
-> **Härdat läge (valbart):** hosten får *bara* append-nyckeln; janitorn triggas
-> från en annan förtroendedomän (separat maskin, cron på SFTP-boxen, eller
-> offline-nyckel). Då är append-only det reella skyddet. Byggs som ett läge, inte
-> som tvång.
+> **Hardened mode (optional):** the host gets *only* the append key; the janitor is
+> triggered from another trust domain (a separate machine, cron on the SFTP box, or
+> an offline key). Then append-only is the real protection. Built as a mode, not as
+> a mandate.
 
-## 8. Migrering / coexistence
+## 8. Migration / coexistence
 
-Riva inte tar-spåret innan restic-spåret är bevisat i skarp drift.
+Do not tear down the tar track before the restic track is proven in production.
 
-1. **Fas 0 (infra):** installera restic (host, `apt install restic`), lägg
-   `restic`-config-nycklar (repo-URL, cache-repo-path, `RESTIC_PASSWORD`-källa i
-   Vaultwarden + fil 0600). `restic init` på både cache- och offsite-repo.
-2. **Fas 1 (parallellt spår):** ny `lib/restic.sh` bakom en config-flagga
-   `ENGINE=restic|tar`. Kör restic-spåret **vid sidan av** tar-spåret för en
-   delmängd gäster; jämför storlek/tid/restore.
-3. **Fas 2 (verifiera):** test-restore från restic-offsite bootar → grönt. Kör
-   `check --read-data` schemalagt.
-4. **Fas 3 (byt):** flippa default `ENGINE=restic`; behåll tar-spåret läsbart för
-   gamla arkiv tills retention betat av dem. Skriv om de tre UI-panelerna (§6).
-5. **Fas 4 (städa):** ta bort `upload.sh`/sha256/zstd-verify/`prune.sh`-GFS när
-   inga tar-arkiv återstår offsite.
+1. **Phase 0 (infra):** install restic (host, `apt install restic`), add the
+   `restic` config keys (repo URL, cache-repo path, `RESTIC_PASSWORD` source in
+   your password manager + a 0600 file). `restic init` on both the cache and offsite repos.
+2. **Phase 1 (parallel track):** a new `lib/restic.sh` behind a config flag
+   `ENGINE=restic|tar`. Run the restic track **alongside** the tar track for a
+   subset of guests; compare size/time/restore.
+3. **Phase 2 (verify):** test-restore from restic-offsite boots → green. Run
+   `check --read-data` on a schedule.
+4. **Phase 3 (switch):** flip the default to `ENGINE=restic`; keep the tar track
+   readable for old archives until retention works through them. Rewrite the three
+   UI panels (§6).
+5. **Phase 4 (clean up):** remove `upload.sh`/sha256/zstd-verify/`prune.sh`-GFS once
+   no tar archives remain offsite.
 
-## 9. Konsekvenser
+## 9. Consequences
 
-**Positiva:** dedup/incremental (lägre RPO-golv, mindre offsite), klient-kryptering
-+ integritet inbyggt, färre egna felkällor (mer kod raderas än skrivs),
-cross-guest-dedup, append-only-passform, `pct restore` orört, UI-läspaneler
-förbättras.
+**Positive:** dedup/incremental (lower RPO floor, less offsite), client-side
+encryption + integrity built in, fewer custom failure sources (more code deleted
+than written), cross-guest dedup, append-only fit, `pct restore` untouched, the UI
+read panels improve.
 
-**Negativa / pris:** nytt beroende (restic på hosten); `VZDUMP_COMPRESS=zstd` →
-`--compress 0` (restic komprimerar) = mer cache-churn transient; `copy` behöver
-**två** lösenord-env (`RESTIC_PASSWORD` + `RESTIC_FROM_PASSWORD`); repo-lösenordet
-blir den nya DR-nyckeln (Vaultwarden + `export-key` pekas om); ingen fil-nivå-
-bläddring i Väg A (snapshoten är en tar-blob).
+**Negative / price:** a new dependency (restic on the host); `VZDUMP_COMPRESS=zstd`
+→ `--compress 0` (restic compresses) = more cache churn transiently; `copy` needs
+**two** password envs (`RESTIC_PASSWORD` + `RESTIC_FROM_PASSWORD`); the repo
+password becomes the new DR key (your password manager + `export-key` repointed); no
+file-level browsing in Path A (the snapshot is a tar blob).
 
-**Risker:** stort/långsamt repo → `restic stats`/`check` kostar (mitigeras: cacha
-stats via befintlig `_cached`; `check --read-data` som bakgrundstask). Om
-janitor-sidan inte byggs blir append-only bara delvis (samma risk som idag med
-oförberedda Storage Box-snapshots).
+**Risks:** a large/slow repo → `restic stats`/`check` cost (mitigated: cache stats
+via the existing `_cached`; `check --read-data` as a background task). If the
+janitor side is not built, append-only is only partial (the same risk as today with
+unprepared Storage Box snapshots).
 
-## 10. Öppna frågor / uppföljning
+## 10. Open questions / follow-up
 
-- ~~Janitor-domänen~~ **Beslutat: lokal systemd-timer/cron-script (default)**, härdat externt läge valbart (se §7). Öppet: exakt form på det härdade lägets trigger.
-- ~~native `sftp:` vs `rclone:`-backend~~ **Beslutat: native sftp** (se §2, Backend).
-- ~~local cache vs offsite-only~~ **Beslutat: båda, valbart** via `LOCAL_REPO`/`OFFSITE_ENABLED` (se §2, Lägen).
-- VM-stöd (`qm`) i samma motor — Väg A funkar för `vzdump-qemu` också (annan restore).
-- Nyckelrotation för repo-lösen (split knowledge?).
-- Väg B som senare fil-nivå-optimering — separat ADR om/när det blir aktuellt.
+- ~~The janitor domain~~ **Decided: local systemd timer/cron script (default)**, hardened external mode optional (see §7). Open: the exact form of the hardened mode's trigger.
+- ~~native `sftp:` vs `rclone:` backend~~ **Decided: native sftp** (see §2, Backend).
+- ~~local cache vs offsite-only~~ **Decided: both, selectable** via `LOCAL_REPO`/`OFFSITE_ENABLED` (see §2, Modes).
+- VM support (`qm`) in the same engine — Path A works for `vzdump-qemu` too (different restore).
+- Key rotation for the repo password (split knowledge?).
+- Path B as a later file-level optimization — a separate ADR if/when it becomes relevant.

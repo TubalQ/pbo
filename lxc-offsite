@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# lxc-offsite — offsite-backup av Proxmox-LXC:er till Hetzner Storage Box.
+# lxc-offsite — offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
+# Storage Box), using restic as the backup engine.
 # Copyright (C) 2026  ai-pvet440
-# Licens: AGPL-3.0-or-later (se LICENSE).
+# License: AGPL-3.0-or-later (see LICENSE).
 #
-# Steg 1: skelett — subkommandon, config, logging, tvånivålås, --dry-run/--json.
-# Inga riktiga operationer ännu; allt svarar "not_implemented".
+# Dispatcher: sources lib/*.sh, parses global flags, dispatches subcommands.
+# Two-level locking (global + per-vmid), --dry-run/--json global flags.
 #
-# Kör på Proxmox-HOSTEN (kräver pct/vzdump). Se PLAN.md för helheten.
+# Run on the Proxmox HOST (requires pct/vzdump). See README.md for the big picture.
 
 set -Eeuo pipefail
 
-# Hitta den egna katalogen så lib/ funkar både i repo och installerat (följ
-# symlänken /usr/local/sbin/lxc-offsite → /usr/local/lib/lxc-offsite/lxc-offsite).
+# Resolve our own directory so lib/ works both from the repo and when installed
+# (follow the symlink /usr/local/sbin/lxc-offsite → /usr/local/lib/lxc-offsite/lxc-offsite).
 SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
-# shellcheck source=lib/notify.sh  (ersätter notify-stubbarna i common.sh)
+# shellcheck source=lib/notify.sh  (replaces the notify stubs in common.sh)
 source "${SELF_DIR}/lib/notify.sh"
 # shellcheck source=lib/lock.sh
 source "${SELF_DIR}/lib/lock.sh"
@@ -35,18 +36,18 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/schedule.sh
 source "${SELF_DIR}/lib/schedule.sh"
-# shellcheck source=lib/restic.sh  (restic-motorn, aktiveras med ENGINE=restic)
+# shellcheck source=lib/restic.sh  (the restic engine, enabled with ENGINE=restic)
 source "${SELF_DIR}/lib/restic.sh"
-# shellcheck source=lib/tui.sh  (terminal-UI, `lxc-offsite tui`)
+# shellcheck source=lib/tui.sh  (legacy Textual TUI, `lxc-offsite tui` — frozen)
 source "${SELF_DIR}/lib/tui.sh"
-# shellcheck source=lib/menu.sh  (interaktivt prompt-CLI, `lxc-offsite menu`)
+# shellcheck source=lib/menu.sh  (interactive prompt-CLI, `lxc-offsite menu`)
 source "${SELF_DIR}/lib/menu.sh"
 
 readonly VERSION="0.1.0-dev"
 
 # ---------------------------------------------------------------------------
-# Globala flaggor (före subkommandot). --json och --dry-run är globala och
-# måste finnas från början — GUI:t konsumerar ENBART --json-output.
+# Global flags (before the subcommand). --json and --dry-run are global and
+# must be available from the start — machine-readable output uses --json only.
 # ---------------------------------------------------------------------------
 JSON_OUTPUT=0
 DRY_RUN=0
@@ -54,41 +55,41 @@ LXCO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-lxc-offsite — offsite-backup av Proxmox-LXC:er till Hetzner Storage Box.
+lxc-offsite — offsite backup of Proxmox LXCs to any SFTP target, via restic.
 
-Användning:
-  lxc-offsite [globala flaggor] <kommando> [argument]
+Usage:
+  lxc-offsite [global flags] <command> [arguments]
 
-Globala flaggor:
-  --json              maskinläsbar utdata på stdout (GUI:t använder denna)
-  --dry-run           visa vad som skulle göras, ändra ingenting
-  -h, --help          denna hjälp
-  -V, --version       versionsnummer
+Global flags:
+  --json              machine-readable output on stdout
+  --dry-run           show what would be done, change nothing
+  -h, --help          this help
+  -V, --version       version number
 
-Kommandon:
-  setup                       interaktiv setup-wizard (engine/cache/sftp/lösen/mode/ntfy → init)
-  menu                        interaktivt prompt-CLI (rclone-stil) — gäster/backup/restore/status
-  tui                         (äldre) Textual-TUI — fryst till förmån för `menu`
-  init                        (restic) skapa/verifiera repo(s)
-  backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
-  preflight <vmid>            kör enbart förkontrollerna (finns/utrymme/cache/rclone)
-  run-schedule [--stream|--batch]  backa upp alla i BACKUP_ORDER → SAMMA repo
-                              --stream: dumpa→ladda upp en i taget (låg disk, default)
-                              --batch:  dumpa alla till cache→ladda upp (om plats finns)
-  status                      pågående jobb, kölängd, vem som håller globala låset
-  list [vmid]                 lista offsite-arkiv (storlek, datum)
-  fetch <vmid> <ts>           hämta ett arkiv till cache, verifiera (inget globalt lås)
-  restore <vmid> <ts> --to N  fetch + pct restore till nytt vmid (inget globalt lås)
-  verify <vmid>               jämför lokala och offsite-hashar
-  prune                       städa cache och offsite enligt policy
-  test-restore <vmid>         full restore till engångs-vmid, boot, destroy
+Commands:
+  setup                       interactive setup wizard (engine/cache/sftp/password/mode/ntfy → init)
+  menu                        interactive prompt-CLI (rclone style) — guests/backup/restore/status
+  tui                         (legacy) whiptail TUI — frozen in favor of `menu`
+  init                        (restic) create/verify repo(s)
+  backup <vmid>               dump→verify→upload→verify→prune (global lock)
+  preflight <vmid>            run the preflight checks only (exists/space/cache/repo)
+  run-schedule [--stream|--batch]  back up everything in BACKUP_ORDER → the SAME repo
+                              --stream: dump→upload one at a time (low disk, default)
+                              --batch:  dump all to cache→upload (if there is room)
+  status                      running jobs, queue length, who holds the global lock
+  list [vmid]                 list offsite archives (size, date)
+  fetch <vmid> <ts>           fetch one archive into cache, verify (no global lock)
+  restore <vmid> <ts> --to N  fetch + pct restore to a new vmid (no global lock)
+  verify <vmid>               verify repo integrity (restic check)
+  prune                       clean cache and offsite per policy
+  test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
 
-Exit-koder: 0 ok · 64 användningsfel · 75 lås upptaget/kö · 78 configfel.
+Exit codes: 0 ok · 64 usage error · 75 lock busy/queue · 78 config error.
 EOF
 }
 
 # ---------------------------------------------------------------------------
-# Parsa globala flaggor fram till första icke-flagg-argumentet (kommandot).
+# Parse global flags up to the first non-flag argument (the command).
 # ---------------------------------------------------------------------------
 parse_global_flags() {
     while [[ $# -gt 0 ]]; do
@@ -98,7 +99,7 @@ parse_global_flags() {
             -h|--help)  usage; exit "$EX_OK" ;;
             -V|--version) printf 'lxc-offsite %s\n' "$VERSION"; exit "$EX_OK" ;;
             --) shift; break ;;
-            -*) printf 'okänd global flagga: %s\n' "$1" >&2; usage >&2; exit "$EX_USAGE" ;;
+            -*) printf 'unknown global flag: %s\n' "$1" >&2; usage >&2; exit "$EX_USAGE" ;;
             *)  break ;;
         esac
     done
@@ -106,20 +107,20 @@ parse_global_flags() {
 }
 
 # ---------------------------------------------------------------------------
-# Subkommando-hanterare. Steg 1: låsen wire:as korrekt så att de bevisligen
-# sitter rätt, men själva operationen svarar not_implemented.
+# Subcommand handlers. Each acquires the locks it needs, then calls the
+# operation in the relevant lib file.
 # ---------------------------------------------------------------------------
 
 # backup [--queue] <vmid>
-# Manuellt (default): "now"-läge — avslutar direkt om globala låset är upptaget.
-# --queue: schemaläget — köar på globala låset (används internt av run-schedule).
+# Manual (default): "now" mode — exits immediately if the global lock is busy.
+# --queue: scheduled mode — queues on the global lock (used internally by run-schedule).
 cmd_backup() {
     local mode="now"
     while [[ "${1:-}" == -* ]]; do
         case "$1" in
             --queue) mode="queue"; shift ;;
             --now)   mode="now"; shift ;;
-            *) die "$EX_USAGE" "okänd backup-flagga: $1" ;;
+            *) die "$EX_USAGE" "unknown backup flag: $1" ;;
         esac
     done
     require_vmid "${1:-}"
@@ -127,19 +128,19 @@ cmd_backup() {
     acquire_vmid_lock "$vmid"
     acquire_global_lock "$mode" "backup" "$vmid"
 
-    # Steg 2: preflight. FAIL → avbryt innan någon dump.
+    # Preflight. FAIL → abort before any dump.
     local rc=0
     run_preflight "$vmid" || rc=$?
     if (( rc != 0 )); then
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
-        die "$EX_UNAVAILABLE" "preflight underkänd för vmid $vmid — backup avbruten."
+        die "$EX_UNAVAILABLE" "preflight failed for vmid $vmid — backup aborted."
     fi
 
-    # Steg 3: dump + lokal verifiering + meta. Steg 4 lägger till uppladdning.
+    # dump + local verify + meta + upload.
     do_backup "$vmid"
 }
 
-# preflight <vmid> — kör enbart förkontrollerna (även intern del av backup).
+# preflight <vmid> — run the preflight checks only (also an internal part of backup).
 cmd_preflight() {
     require_vmid "${1:-}"
     local vmid="$1" rc=0
@@ -148,34 +149,34 @@ cmd_preflight() {
     return "$rc"
 }
 
-# run-schedule — schemalagd backup av alla i BACKUP_ORDER. --stream (1-och-1, default)
-# eller --batch (dumpa alla→ladda upp), alltid till SAMMA repo.
+# run-schedule — scheduled backup of everything in BACKUP_ORDER. --stream (one-by-one,
+# default) or --batch (dump all→upload), always to the SAME repo.
 cmd_run_schedule() {
     case "${1:-}" in
         --batch)  BACKUP_MODE=batch ;;
         --stream) BACKUP_MODE=stream ;;
         "" ) : ;;
-        *) die "$EX_USAGE" "okänd run-schedule-flagga: $1 (använd --stream|--batch)" ;;
+        *) die "$EX_USAGE" "unknown run-schedule flag: $1 (use --stream|--batch)" ;;
     esac
     do_run_schedule
 }
 
-# status — läsoperation, inget lås.
+# status — read operation, no lock.
 cmd_status() { do_status; }
 
-# fetch/restore — tar ALDRIG globalt lås (skriver inte från poolen).
+# fetch/restore — NEVER take the global lock (they do not write from the pool).
 cmd_fetch() {
     require_vmid "${1:-}"
-    [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch kräver <vmid> <timestamp>"
+    [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch requires <vmid> <timestamp>"
     acquire_vmid_lock "$1"
     do_fetch "$1" "$2"
 }
 
-# restore <vmid> <ts> --to <nytt-vmid> [--storage <pool>] [--yes]
+# restore <vmid> <ts> --to <new-vmid> [--storage <pool>] [--yes]
 cmd_restore() {
     require_vmid "${1:-}"
     local src="$1" ts="${2:-}"
-    [[ -n "$ts" ]] || die "$EX_USAGE" "restore kräver <vmid> <ts> --to <nytt-vmid>"
+    [[ -n "$ts" ]] || die "$EX_USAGE" "restore requires <vmid> <ts> --to <new-vmid>"
     shift 2 || true
     local newid="" storage="" yes=0
     while [[ $# -gt 0 ]]; do
@@ -183,34 +184,22 @@ cmd_restore() {
             --to)      newid="$2"; shift 2 ;;
             --storage) storage="$2"; shift 2 ;;
             --yes)     yes=1; shift ;;
-            *) die "$EX_USAGE" "okänd restore-flagga: $1" ;;
+            *) die "$EX_USAGE" "unknown restore flag: $1" ;;
         esac
     done
-    is_vmid "$newid" || die "$EX_USAGE" "restore kräver --to <nytt-vmid> (giltigt vmid)"
+    is_vmid "$newid" || die "$EX_USAGE" "restore requires --to <new-vmid> (a valid vmid)"
     acquire_vmid_lock "$newid"
     do_restore "$src" "$ts" "$newid" "$storage" "$yes"
 }
 
-cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) init:ade/klara"; else log_warn "init: bara meningsfullt med ENGINE=restic"; fi; }
+cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; else log_warn "init: only meaningful with ENGINE=restic"; fi; }
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
 cmd_tui() {
+    # Legacy whiptail TUI, frozen in favor of `menu`. --selftest checks wiring (no TTY).
     case "${1:-}" in
         --selftest) _tui_selftest; return ;;
-        --simple)   tui_main; return ;;   # whiptail-fallback (noll-beroende)
     esac
-    # Primärt: Textual-appen (snygg). Faller tillbaka på whiptail om venv saknas.
-    # Scriptet ligger bredvid venven (dev: SELF_DIR/tui, installerat: /opt/lxc-offsite/tui).
-    local py tuidir
-    for py in "${SELF_DIR}/tui/.venv/bin/python" /opt/lxc-offsite/tui/venv/bin/python; do
-        [[ -x "$py" ]] || continue
-        tuidir="$(cd "$(dirname "$py")/../.." && pwd)"      # …/tui
-        [[ -f "$tuidir/lxco_tui.py" ]] || continue
-        LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}" \
-        LXCO_CONFIG="${LXCO_CONFIG:-/etc/lxc-offsite/config}" \
-            exec "$py" "$tuidir/lxco_tui.py"
-    done
-    log_warn "Textual-TUI saknas (venv ej byggd) → whiptail-fallback (kör 'install.sh' eller 'tui --simple')"
     tui_main
 }
 cmd_list()         { do_list "${1:-}"; }
@@ -250,7 +239,7 @@ main() {
         prune)         cmd_prune "$@" ;;
         test-restore)  cmd_test_restore "$@" ;;
         help)          usage ;;
-        *) printf 'okänt kommando: %s\n' "$LXCO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
+        *) printf 'unknown command: %s\n' "$LXCO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
     esac
 }
 

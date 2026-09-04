@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kör alla testsviter. Använd före commit.
+# Run all test suites. Use before commit.
 cd "$(dirname "$0")/.." || exit 1
 fail=0
 for t in run preflight backup upload list restore prune testrestore schedule; do

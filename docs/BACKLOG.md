@@ -1,33 +1,34 @@
-# Backlog — önskemål att bygga in
+# Backlog — wishes to build in
 
-## GUI (steg 11–13)
-- **Export key** — knapp som ger en färdig, kopieringsbar rclone-konfigsträng
-  (`[hetzner]` + `[hetzner-crypt]`-sektionerna, crypt-lösen inkluderade) att
-  importera på en ny host för disaster recovery. Motsvarar att kunna göra
-  `install på ny host → klistra in strängen → list → restore`. Visa tydlig
-  varning att strängen ÄR nyckeln (behandla som hemlighet; förvara offline).
-  Kräver auth + audit-loggning (det är en secret-export).
+## GUI (steps 11–13)
+- **Export key** — a button that produces a ready, copy-pasteable rclone config
+  string (the `[hetzner]` + `[hetzner-crypt]` sections, crypt passwords included) to
+  import on a new host for disaster recovery. Equivalent to being able to do
+  `install on new host → paste the string → list → restore`. Show a clear warning
+  that the string IS the key (treat as a secret; store offline). Requires auth +
+  audit logging (it is a secret export).
 
-## Motor (restic)
-- **Beslut fattat:** restic ersätter tar.zst-motorn — se
+## Engine (restic)
+- **Decision made:** restic replaces the tar.zst engine — see
   [`docs/adr/0001-restic-as-backup-engine.md`](adr/0001-restic-as-backup-engine.md)
-  (Väg A: vzdump-tar lagras i restic, `pct restore` orört, CLI-envelope behålls).
-  Migrering i faser (`ENGINE=restic|tar`-flagga), coexistence tills bevisat skarpt.
+  (Path A: vzdump tar stored in restic, `pct restore` untouched, CLI envelope kept).
+  Migration in phases (`ENGINE=restic|tar` flag), coexistence until proven in
+  production.
 
-## VM + kluster
-- **Riktning satt:** qemu-VM-stöd + kluster-medvetenhet — se
-  [`docs/adr/0002-vm-och-kluster-stod.md`](adr/0002-vm-och-kluster-stod.md)
-  (typ-gren `pct`/`qm`; kluster = agent-per-nod + delat offsite-repo +
-  pmxcfs-config). Fas 1 = VM lokalt, Fas 2 = kluster.
+## VM + cluster
+- **Direction set:** qemu VM support + cluster awareness — see
+  [`docs/adr/0002-vm-and-cluster-support.md`](adr/0002-vm-and-cluster-support.md)
+  (type branch `pct`/`qm`; cluster = agent-per-node + shared offsite repo +
+  pmxcfs config). Phase 1 = VM locally, Phase 2 = cluster.
 
-## Gränssnitt — omtanke (2026-09-04)
-- **TUI i stället för/utöver web-GUI:t?** Användaren funderar på en terminal-UI
-  (TUI) i stället för web-konsolen. INTE beslutat, ingen energi lagd än — bara
-  antecknat. Konsekvens: den tunga **web-onboarding-omskrivningen (restic-läge:
-  repo-URL/sftp-command/repo-lösen + cache/offsite-läges-växel) är PAUSAD** tills
-  GUI-vs-TUI är avgjort. Motor-agnostiska bitar gjordes ändå: `_job_status`
-  känner nu igen restics `Fatal:`/success-markörer (gäller även en TUI).
-  Restic-list/prune/restore-envelopen är redan UI-oberoende (CLI --json).
+## Interface — reconsideration (2026-09-04)
+- **TUI instead of/in addition to the web GUI?** The user is considering a terminal
+  UI (TUI) instead of the web console. NOT decided, no effort spent yet — just
+  noted. Consequence: the heavy **web onboarding rewrite (restic mode:
+  repo-URL/sftp-command/repo-password + cache/offsite mode toggle) is PAUSED** until
+  GUI-vs-TUI is settled. Engine-agnostic bits were done anyway: `_job_status` now
+  recognizes restic's `Fatal:`/success markers (applies to a TUI as well). The
+  restic list/prune/restore envelope is already UI-independent (CLI --json).
 
-## Övrigt
-- (fyll på)
+## Other
+- (fill in)

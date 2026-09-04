@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# mock rclone: styrs av MOCK_*-env. Loggar anrop till $MOCK_LOG om satt.
+# mock rclone: controlled by MOCK_* env. Logs calls to $MOCK_LOG if set.
 #   MOCK_RCLONE_OK   (lsd/about/mkdir)   default 1
-#   MOCK_UPLOAD_OK   (copy, om ej fixtur) default 1
+#   MOCK_UPLOAD_OK   (copy, if no fixture) default 1
 #   MOCK_VERIFY_OK   (check/cryptcheck)  default 1
 #   MOCK_REMOTE_TYPE (config show)       default sftp
-#   MOCK_LSJSON_FILE (lsjson)            fil med JSON-array
-#   MOCK_LSF_DIRS / MOCK_LSF_FILES       filer med rader för lsf
-#   MOCK_OFFSITE_DIR (copy-fetch)        <dir>/<vmid>/ = simulerat offsite
+#   MOCK_LSJSON_FILE (lsjson)            file with JSON array
+#   MOCK_LSF_DIRS / MOCK_LSF_FILES       files with lines for lsf
+#   MOCK_OFFSITE_DIR (copy-fetch)        <dir>/<vmid>/ = simulated offsite
 cmd="${1:-}"; shift || true
 [ -n "${MOCK_LOG:-}" ] && echo "$cmd $*" >> "$MOCK_LOG"
 case "$cmd" in

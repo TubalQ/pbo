@@ -1,139 +1,138 @@
 # lxc-offsite — plan
 
-Nytt verktyg, byggt från grunden. Tar en lokal, verifierad `vzdump`-arkivfil av
-en LXC, skeppar den till offsite via SFTP, och kan hämta tillbaka den till lokal
-cache för återställning. Med gränssnitt i PBS-stil.
+A new tool, built from scratch. It takes a local, verified `vzdump` archive file of
+an LXC, ships it offsite via SFTP, and can fetch it back to a local cache for
+restore. With a PBS-style interface.
 
-`RESEARCH.md` visar varför inget befintligt projekt duger som grund: de som
-finns saknar verifiering, offsite-retention eller båda. Vi ärver ingen kodbas.
+`RESEARCH.md` shows why no existing project is good enough as a foundation: those
+that exist lack verification, offsite retention, or both. We inherit no codebase.
 
-**Designprincip:** verktyget ska gå att felsöka klockan tre på natten av någon
-som inte skrev det. Varje beslut nedan där enkelhet vinner över effektivitet är
-medvetet.
+**Design principle:** it must be possible to troubleshoot the tool at three in the
+morning by someone who did not write it. Every decision below where simplicity
+wins over efficiency is deliberate.
 
-Målmiljö: Proxmox VE, kluster `midvault`, ZFS-pooler `nvmepool` / `newbulk`.
+Target environment: Proxmox VE, cluster `mycluster`, ZFS pools `nvmepool` / `newbulk`.
 Offsite: Hetzner Storage Box (SFTP, port 23) via rclone.
 
 ---
 
-## 1. Varför vzdump och inte PBS
+## 1. Why vzdump and not PBS
 
-| | PBS-datastore | vzdump-arkiv |
+| | PBS datastore | vzdump archive |
 |---|---|---|
-| Artefakt | chunk-store, tusentals objekt | **en fil** per snapshot |
-| Kräver hardlinks | ja | nej |
-| Kräver random access | ja | nej |
-| Fungerar över SFTP | **nej** | **ja** |
-| Dedup mellan körningar | ja | nej |
+| Artifact | chunk store, thousands of objects | **one file** per snapshot |
+| Requires hardlinks | yes | no |
+| Requires random access | yes | no |
+| Works over SFTP | **no** | **yes** |
+| Dedup between runs | yes | no |
 
-PBS på 10.10.2.133 blir kvar orörd som primärt lokalt lager (snabb restore, dedup).
-Detta verktyg är den **offsite-armen** — tredje kopian i 3-2-1. De konkurrerar inte.
+PBS on 192.0.2.10 stays untouched as the primary local tier (fast restore, dedup).
+This tool is the **offsite arm** — the third copy in 3-2-1. They do not compete.
 
-Priset för SFTP-vägen: ingen dedup mellan körningar. Varje offsite-arkiv är fullt.
+The price of the SFTP path: no dedup between runs. Every offsite archive is full.
 
-Detta är den enda avvägningen i hela designen som är värd att ifrågasätta, så den
-förtjänar att skrivas ut. Alternativet vore ett Borg-repo över port 23, som ger
-dedup och komprimering. Det underkändes av tre skäl:
+This is the only trade-off in the entire design worth questioning, so it deserves
+to be spelled out. The alternative would be a Borg repo over port 23, which gives
+dedup and compression. It was rejected for three reasons:
 
-1. Dedup mot ett redan zstd-komprimerat arkiv är i praktiken noll — komprimering
-   förstör chunk-likheten mellan versioner. För att få nytta av Borg måste man
-   dumpa okomprimerat, vilket kräver betydligt mer lokalt utrymme och en extra
-   komprimering efteråt för cachen.
-2. Återställningsvägen blir ett steg längre och ett steg mer att felsöka.
-3. Append-only, det enda Borg skulle ge oss som rclone inte gör, fungerar inte
-   pålitligt på Storage Box. Se `RESEARCH.md` avsnitt 7.
+1. Dedup against an already zstd-compressed archive is effectively zero —
+   compression destroys the chunk similarity between versions. To get any benefit
+   from Borg you have to dump uncompressed, which requires considerably more local
+   space and an extra compression step afterward for the cache.
+2. The restore path becomes one step longer and one step more to troubleshoot.
+3. Append-only, the one thing Borg would give us that rclone does not, does not
+   work reliably on Storage Box. See `RESEARCH.md` section 7.
 
-En full kopia som alltid går att återställa slår ett deduplicerat repo som kräver
-att man förstår chunk-format under press. Kostnaden är diskutrymme, och
-diskutrymme på Storage Box är billigt.
+A full copy that can always be restored beats a deduplicated repo that requires
+you to understand chunk formats under pressure. The cost is disk space, and disk
+space on Storage Box is cheap.
 
 ---
 
-## 2. Dataflöde
+## 2. Data flow
 
-### Backup (lokalt → offsite)
+### Backup (local → offsite)
 
 ```
-LXC (körande)
-  │  vzdump --mode snapshot            ZFS-snapshot, ~sekunder frozen
+LXC (running)
+  │  vzdump --mode snapshot            ZFS snapshot, ~seconds frozen
   ▼
 /var/cache/lxc-offsite/<vmid>/
-  vzdump-lxc-<vmid>-<ts>.tar.zst       artefakten
+  vzdump-lxc-<vmid>-<ts>.tar.zst       the artifact
   vzdump-lxc-<vmid>-<ts>.tar.zst.sha256
   vzdump-lxc-<vmid>-<ts>.meta.json     vmid, hostname, storage, size, pve-version
   │
-  │  1. sha256 beräknas lokalt
-  │  2. tar-integritet testas (zstd -t + tar -tf)
-  │  3. rclone copy → offsite (crypt över sftp)
-  │  4. rclone check --checksum mot offsite
+  │  1. sha256 computed locally
+  │  2. tar integrity tested (zstd -t + tar -tf)
+  │  3. rclone copy → offsite (crypt over sftp)
+  │  4. rclone check --checksum against offsite
   ▼
 offsite:lxc/<vmid>/...
 ```
 
-Ordningen är inte förhandlingsbar: **verifiera lokalt innan uppladdning**, och
-**verifiera på offsite innan lokal prune**. Ett arkiv som aldrig verifierats
-är inte en backup.
+The order is not negotiable: **verify locally before upload**, and **verify offsite
+before local prune**. An archive that has never been verified is not a backup.
 
 ### Restore (offsite → cache → LXC)
 
 ```
 offsite:lxc/<vmid>/
-  │  rclone lsjson              lista tillgängliga arkiv
-  │  rclone copy → cache        endast det valda arkivet
+  │  rclone lsjson              list available archives
+  │  rclone copy → cache        only the selected archive
   ▼
 /var/cache/lxc-offsite/restore/
-  │  sha256 -c                  mot sidecar-filen
-  │  zstd -t                    strukturkontroll
+  │  sha256 -c                  against the sidecar file
+  │  zstd -t                    structure check
   ▼
-pct restore <nytt-vmid> <arkiv> --storage <pool> --unprivileged <0|1>
+pct restore <new-vmid> <archive> --storage <pool> --unprivileged <0|1>
 ```
 
-Återställ **alltid till ett nytt vmid** som standard. Att skriva över en körande
-container från ett script är hur man förlorar produktionsdata.
+**Always restore to a new vmid** by default. Overwriting a running container from
+a script is how you lose production data.
 
 ---
 
-## 3. Komponenter
+## 3. Components
 
 ```
 /usr/local/lib/lxc-offsite/
-  lxc-offsite            huvudscript (bash, set -Eeuo pipefail)
+  lxc-offsite            main script (bash, set -Eeuo pipefail)
   lib/backup.sh
   lib/restore.sh
   lib/verify.sh
   lib/notify.sh          ntfy
-  api/                   FastAPI-app, tunt skal runt CLI:t
-  web/                   statisk frontend, inget byggsteg
+  api/                   FastAPI app, thin shell around the CLI
+  web/                   static frontend, no build step
 /etc/lxc-offsite/
   config                 KEY=VALUE, chmod 600
   rclone.conf            chmod 600, root:root
-  api.env                bind-adress, OIDC-inställningar, chmod 600
-/var/cache/lxc-offsite/  ZFS-dataset, egen quota
+  api.env                bind address, OIDC settings, chmod 600
+/var/cache/lxc-offsite/  ZFS dataset, own quota
 /var/log/lxc-offsite/
   lxc-offsite.log
-  audit.log              vem gjorde vad via GUI:t
+  audit.log              who did what via the GUI
 /var/lib/lxc-offsite/
   state.json
-  jobs/                  en fil per asynkront jobb
+  jobs/                  one file per asynchronous job
 ```
 
-Subkommandon:
+Subcommands:
 
-| Kommando | Gör |
+| Command | Does |
 |---|---|
-| `backup <vmid>` | dump → verifiera → ladda upp → verifiera → prune, en container |
-| `run-schedule` | kör `backup` för varje vmid i `BACKUP_ORDER`, sekventiellt |
-| `status` | visar pågående jobb, kölängd och vad som håller globala låset |
-| `list [vmid]` | listar offsite-arkiv med storlek och datum |
-| `fetch <vmid> <ts>` | hämtar ett arkiv till cache, verifierar |
-| `restore <vmid> <ts> --to <nytt-vmid>` | fetch + `pct restore` |
-| `verify <vmid>` | jämför lokala och offsite-hashar |
-| `prune` | städar cache och offsite enligt policy |
-| `test-restore <vmid>` | full restore till engångs-vmid, boot, sedan destroy |
+| `backup <vmid>` | dump → verify → upload → verify → prune, one container |
+| `run-schedule` | runs `backup` for each vmid in `BACKUP_ORDER`, sequentially |
+| `status` | shows running jobs, queue length, and what holds the global lock |
+| `list [vmid]` | lists offsite archives with size and date |
+| `fetch <vmid> <ts>` | fetches an archive to cache, verifies |
+| `restore <vmid> <ts> --to <new-vmid>` | fetch + `pct restore` |
+| `verify <vmid>` | compares local and offsite hashes |
+| `prune` | cleans up cache and offsite according to policy |
+| `test-restore <vmid>` | full restore to a throwaway vmid, boot, then destroy |
 
 ---
 
-## 4. Konfiguration
+## 4. Configuration
 
 ```ini
 # /etc/lxc-offsite/config
@@ -144,19 +143,19 @@ VZDUMP_MODE=snapshot
 VZDUMP_COMPRESS=zstd
 VZDUMP_ZSTD_THREADS=4
 RCLONE_TRANSFERS=4
-RCLONE_CHECKERS=4          # < 8, Hetzner-gräns är 10 anslutningar
-RCLONE_BWLIMIT=            # t.ex. "40M" nattetid
-BACKUP_ORDER=104,105,103        # ordning för run-schedule, en i taget
-GLOBAL_LOCK_TIMEOUT=7200        # sekunder en schemalagd körning väntar i kön
+RCLONE_CHECKERS=4          # < 8, Hetzner limit is 10 connections
+RCLONE_BWLIMIT=            # e.g. "40M" at night
+BACKUP_ORDER=101,102,103        # order for run-schedule, one at a time
+GLOBAL_LOCK_TIMEOUT=7200        # seconds a scheduled run waits in the queue
 KEEP_LOCAL=2
 KEEP_OFFSITE_DAILY=7
 KEEP_OFFSITE_WEEKLY=4
 KEEP_OFFSITE_MONTHLY=6
 NTFY_URL=https://ntfy.example/lxc-offsite
-NTFY_ON_SUCCESS=false      # larma på fel, inte på framgång
+NTFY_ON_SUCCESS=false      # alert on failure, not on success
 ```
 
-rclone-remote, best practice för Hetzner Storage Box:
+rclone remote, best practice for Hetzner Storage Box:
 
 ```ini
 # /etc/lxc-offsite/rclone.conf
@@ -179,119 +178,121 @@ password = <rclone obscure>
 password2 = <rclone obscure>
 ```
 
-`md5sum_command` / `sha1sum_command` sätts explicit — Storage Box har dem i sin
-begränsade SSH-miljö, men rclone hittar dem inte alltid via autodetektering.
-Utan dem faller `rclone check --checksum` tillbaka på storleksjämförelse, vilket
-inte är verifiering.
+`md5sum_command` / `sha1sum_command` are set explicitly — Storage Box has them in
+its restricted SSH environment, but rclone does not always find them via
+autodetection. Without them, `rclone check --checksum` falls back to a size
+comparison, which is not verification.
 
 ---
 
 ## 5. Retention
 
-Lokal cache är just en cache — kort och liten:
+The local cache is just that — a cache: short and small.
 
-- **Lokalt:** 2 senaste arkiven per vmid. Räcker för snabb rollback, håller
-  datasetet litet.
-- **Offsite:** 7 dagliga, 4 veckovisa, 6 månatliga.
+- **Local:** the 2 most recent archives per vmid. Enough for fast rollback, keeps
+  the dataset small.
+- **Offsite:** 7 daily, 4 weekly, 6 monthly.
 
-**Storage Box-snapshots ska vara aktiverade och schemalagda i Hetzner-konsolen.**
-Detta är inte valfritt. SFTP ger ingen append-only, och borgs append-only är inte
-pålitlig på Storage Box, så snapshots är det enda som hindrar en komprometterad
-Proxmox-host från att radera hela offsite-kopian. Verktyget ska varna i
-dashboarden om det inte kan bekräfta att snapshots är påslagna.
+**Storage Box snapshots must be enabled and scheduled in the Hetzner console.**
+This is not optional. SFTP provides no append-only, and Borg's append-only is not
+reliable on Storage Box, so snapshots are the only thing that stops a compromised
+Proxmox host from deleting the entire offsite copy. The tool must warn in the
+dashboard if it cannot confirm that snapshots are enabled.
 
-Eftersom vzdump-arkiv inte dedupliceras mot varandra är offsite-storleken
-`antal_behållna × arkivstorlek`. Räkna på det innan du sätter policyn.
+Because vzdump archives are not deduplicated against each other, the offsite size
+is `number_retained × archive_size`. Do the math before you set the policy.
 
 ---
 
-## 6. Fallgropar som måste hanteras i koden
+## 6. Pitfalls that must be handled in the code
 
-**Bind-mounts backas inte upp.** `vzdump` tar med mountpoints som har `backup=1`.
-Bind-mounts (`mp0: /host/path,mp=/data`) kan över huvud taget inte backas upp och
-hoppas över **tyst**. Verktyget måste läsa `/etc/pve/lxc/<vmid>.conf`, upptäcka
-bind-mounts och `backup=0`-volymer, och skriva ut en explicit varning i loggen och
-i meta-filen. En backup som tyst saknar din data är värre än ingen backup.
+**Bind mounts are not backed up.** `vzdump` includes mountpoints that have
+`backup=1`. Bind mounts (`mp0: /host/path,mp=/data`) cannot be backed up at all
+and are skipped **silently**. The tool must read `/etc/pve/lxc/<vmid>.conf`,
+detect bind mounts and `backup=0` volumes, and print an explicit warning in the
+log and in the meta file. A backup that silently omits your data is worse than no
+backup.
 
-**Partiella uppladdningar.** rclone laddar upp till temporärt namn och byter namn
-vid slutförande — men bara om `--inplace` *inte* används. Sätt aldrig `--inplace`.
+**Partial uploads.** rclone uploads to a temporary name and renames on completion
+— but only if `--inplace` is *not* used. Never set `--inplace`.
 
-**Anslutningsgränsen.** Max 10 samtidiga anslutningar mot Storage Box. `--checkers`
-och `--transfers` måste summera under det med marginal, annars får du md5-fel som
-ser ut som datakorruption men är rate limiting.
+**The connection limit.** At most 10 concurrent connections to Storage Box.
+`--checkers` and `--transfers` must sum to well under that, otherwise you get md5
+errors that look like data corruption but are rate limiting.
 
-**Crypt-nyckeln är single point of failure.** Med `filename_encryption = standard`
-kan du inte ens lista arkiven utan rclone-konfigurationen. Förlorad nyckel = alla
-offsite-backuper förlorade. `password` och `password2` ska finnas i Vaultwarden
-**och** på papper eller USB utanför huset. Testa återställning från en ren maskin
-med enbart nyckeln, minst en gång.
+**The crypt key is a single point of failure.** With `filename_encryption = standard`
+you cannot even list the archives without the rclone configuration. Lost key = all
+offsite backups lost. `password` and `password2` must exist in your password manager **and**
+on paper or USB outside the house. Test a restore from a clean machine with the key
+alone, at least once.
 
-**Offsite är raderbart.** SFTP ger ingen append-only, och borgs append-only-läge
-är inget alternativ här — det tillåter fortfarande `delete` och `prune`, och den
-serversidiga varianten går inte att sätta upp på Storage Box begränsade skal. En
-komprometterad Proxmox-host med rclone-credentials kan alltså radera hela
-offsite-katalogen. Enda motmedlet är Storage Box egna schemalagda snapshots.
-Utan dem är detta en kopia med extra steg, inte ett ransomware-skydd.
+**Offsite is deletable.** SFTP provides no append-only, and Borg's append-only mode
+is not an option here — it still permits `delete` and `prune`, and the server-side
+variant cannot be set up on Storage Box's restricted shell. A compromised Proxmox
+host with the rclone credentials can therefore delete the entire offsite directory.
+The only countermeasure is Storage Box's own scheduled snapshots. Without them this
+is a copy with extra steps, not ransomware protection.
 
-**ZFS-utrymme.** `--mode snapshot` kräver utrymme i poolen. En full pool avbryter
-dumpen. Preflight-kontroll: kräv fritt utrymme ≥ 1,5 × containerns använda storlek.
+**ZFS space.** `--mode snapshot` requires space in the pool. A full pool aborts the
+dump. Preflight check: require free space ≥ 1.5 × the container's used size.
 
-**Överlappande körningar — global serialisering.** Verktyget kör **en LXC i
-taget**, aldrig två parallellt. Skälet är I/O: `vzdump --mode snapshot` läser
-tungt från poolen samtidigt som ZFS håller en snapshot öppen, och två samtidiga
-dumpar mot `newbulk` (raidz2) ger både långsammare backup och märkbart sämre
-svarstider för de containrar som körs.
+**Overlapping runs — global serialization.** The tool runs **one LXC at a time**,
+never two in parallel. The reason is I/O: `vzdump --mode snapshot` reads heavily
+from the pool while ZFS holds a snapshot open, and two concurrent dumps against
+`newbulk` (raidz2) give both slower backups and noticeably worse response times for
+the containers that are running.
 
-Två lås, inte ett:
+Two locks, not one:
 
-- **Globalt lås** (`/var/lock/lxc-offsite.global`) — släpper igenom exakt en
-  backup- eller push-operation åt gången, oavsett vmid.
-- **Per-vmid-lås** — hindrar att samma container köas två gånger.
+- **Global lock** (`/var/lock/lxc-offsite.global`) — lets through exactly one
+  backup or push operation at a time, regardless of vmid.
+- **Per-vmid lock** — prevents the same container from being queued twice.
 
-Schemalagda körningar **köar** på det globala låset med timeout, de avslutar
-inte. Manuella körningar från CLI eller GUI avslutar direkt med tydligt besked om
-vad som blockerar och hur länge det pågått. Skillnaden spelar roll: en schemalagd
-körning som tyst avslutar blir en backup som aldrig togs.
+Scheduled runs **queue** on the global lock with a timeout; they do not exit.
+Manual runs from the CLI or GUI exit immediately with a clear message about what
+is blocking and how long it has been running. The distinction matters: a scheduled
+run that silently exits becomes a backup that was never taken.
 
-Fetch och restore tar **inte** det globala låset — de skriver inte från poolen
-och ska gå att köra under en pågående backup.
+Fetch and restore do **not** take the global lock — they do not write from the
+pool and must be runnable during an in-progress backup.
 
-**Klockskillnader.** Synka aldrig på modtime. Alla jämförelser med `--checksum`.
+**Clock skew.** Never sync on modtime. All comparisons use `--checksum`.
 
-**Unprivileged-flaggan.** `pct restore` måste matcha originalets
-`unprivileged`-inställning. Läs den från arkivets config och sätt den explicit
-istället för att förlita dig på default.
+**The unprivileged flag.** `pct restore` must match the original's `unprivileged`
+setting. Read it from the archive's config and set it explicitly instead of relying
+on the default.
 
-**Återställning utan verktyget.** Dokumentera i runbooken hur man hämtar och
-packar upp ett arkiv med enbart `rclone` och `pct` — om scriptet är trasigt
-eller borta ska en människa kunna göra det för hand.
+**Restore without the tool.** Document in the runbook how to fetch and unpack an
+archive with only `rclone` and `pct` — if the script is broken or gone, a human
+must be able to do it by hand.
 
-**Bind-mounts går inte att återskapa via GUI.** De innehåller godtyckliga
-host-sökvägar och är root-begränsade, så efter restore måste de sättas manuellt
-med `pct set`. Spara därför originalets `.conf` som separat sidecar-fil offsite
-och visa den i GUI:t vid restore.
+**Bind mounts cannot be recreated via the GUI.** They contain arbitrary host paths
+and are root-restricted, so after a restore they must be set manually with
+`pct set`. Therefore save the original's `.conf` as a separate sidecar file offsite
+and show it in the GUI at restore time.
 
-**Hookscriptet anropas av alla backupjobb.** Det går inte att koppla till ett
-enskilt jobb — villkora på VMID inne i scriptet, annars skickar du oavsiktligt
-allt offsite.
+**The hook script is called by every backup job.** It cannot be attached to a
+single job — condition on VMID inside the script, otherwise you unintentionally
+send everything offsite.
 
-**`backup-end` betyder inte framgång.** Ingen statusvariabel finns. Behandla
-`backup-abort` som felsignal; anta aldrig att `backup-end` innebär att det gick bra.
+**`backup-end` does not mean success.** There is no status variable. Treat
+`backup-abort` as the failure signal; never assume that `backup-end` means it went
+well.
 
-**Ingen plugin-API finns för PVE:s webbgränssnitt.** Patcha inte pve-manager
-för att lägga in en flik. Fristående app på egen port.
+**There is no plugin API for PVE's web interface.** Do not patch pve-manager to
+add a tab. A standalone app on its own port.
 
 ---
 
 ## 7. GUI
 
-Se `RESEARCH.md` för underlaget bakom besluten nedan.
+See `RESEARCH.md` for the basis behind the decisions below.
 
-### Två gränssnitt, inte ett
+### Two interfaces, not one
 
-Den lokala cachen registreras som en PVE directory storage. Därmed får du
-**PVE:s eget backupgränssnitt gratis** för allt som redan finns lokalt: lista,
-datum, storlek, restore-knapp, prune-inställningar, skyddade backuper.
+The local cache is registered as a PVE directory storage. That gives you **PVE's
+own backup interface for free** for everything already present locally: list, date,
+size, restore button, prune settings, protected backups.
 
 ```bash
 pvesm add dir lxc-offsite-cache \
@@ -301,86 +302,85 @@ pvesm add dir lxc-offsite-cache \
   --shared 0
 ```
 
-Vårt egna GUI bygger vi bara för det PVE **inte** kan: offsite-inventariet,
-push, fetch, verifieringsstatus och konfiguration. Att duplicera restore-vyn
-vore slöseri och skulle dessutom ge två sanningar om vad som finns.
+Our own GUI we build only for what PVE **cannot** do: the offsite inventory, push,
+fetch, verification status, and configuration. Duplicating the restore view would
+be waste and would also produce two truths about what exists.
 
-### Teknikval
+### Technology choice
 
-Fristående webbapplikation på egen port, byggd med ExtJS och
-`proxmox-widget-toolkit` från `/usr/share/javascript/`. Samma widgets som PBS
-använder, alltså identiskt utseende — inte en efterlikning.
+A standalone web application on its own port, built with ExtJS and
+`proxmox-widget-toolkit` from `/usr/share/javascript/`. The same widgets PBS uses,
+so an identical look — not an imitation.
 
-PVE:s egna GUI-filer patchas **aldrig**. Projektet licensieras AGPL-3.0.
+PVE's own GUI files are **never** patched. The project is licensed AGPL-3.0.
 
-### Vyer
+### Views
 
-**Dashboard.** Per LXC: senaste lyckade offsite-push, antal arkiv offsite,
-total storlek, ålder på äldsta och nyaste, verifieringsstatus. Röd rad om
-senaste push är äldre än `MAX_AGE_WARN`. Detta är den vy som ska svara på
-"är mina backuper i ordning" på tre sekunder.
+**Dashboard.** Per LXC: last successful offsite push, number of archives offsite,
+total size, age of the oldest and newest, verification status. Red row if the last
+push is older than `MAX_AGE_WARN`. This is the view that should answer "are my
+backups OK" in three seconds.
 
-**Offsite-arkiv.** Grid med vmid, hostname, tidsstämpel, storlek, ålder,
-verifierad ja/nej. Kolumnsortering och filter per vmid. Radåtgärder:
-*Hämta till cache*, *Verifiera*, *Radera*.
+**Offsite archives.** Grid with vmid, hostname, timestamp, size, age, verified
+yes/no. Column sorting and per-vmid filter. Row actions: *Fetch to cache*,
+*Verify*, *Delete*.
 
-**Lokal cache.** Samma grid för cachen, plus *Pusha till offsite* och
-*Radera lokalt*. Länk till PVE:s backupvy för själva återställningen.
+**Local cache.** The same grid for the cache, plus *Push to offsite* and *Delete
+locally*. A link to PVE's backup view for the actual restore.
 
-**Jobb.** Löpande och historiska jobb med realtidslogg, i samma stil som PBS
-tasklog. Varje jobb har status, starttid, varaktighet och full output.
+**Jobs.** Running and historical jobs with a real-time log, in the same style as
+the PBS task log. Each job has status, start time, duration, and full output.
 
-Eftersom verktyget kör en container i taget måste vyn visa **kön**: vad som körs
-nu, vad som väntar, och hur länge. Utan det ser en köad backup ut som en backup
-som inte händer. Manuell start av en container som redan står i kö ska ge tydligt
-besked, inte tyst läggas till igen.
+Because the tool runs one container at a time, the view must show the **queue**:
+what is running now, what is waiting, and for how long. Without it, a queued backup
+looks like a backup that is not happening. Manually starting a container that is
+already queued must give a clear message, not silently add it again.
 
-**Konfiguration.** Formulär mot `/etc/lxc-offsite/config`: retentionpolicy per
-nivå, bandbreddsgräns, schema, ntfy-URL, cache-quota. Validering innan skrivning,
-och konfigurationen versioneras — varje ändring sparas med tidsstämpel och
-användare så att en felaktig retentionändring går att spåra och rulla tillbaka.
+**Configuration.** A form against `/etc/lxc-offsite/config`: retention policy per
+tier, bandwidth limit, schedule, ntfy URL, cache quota. Validation before writing,
+and the configuration is versioned — every change is saved with a timestamp and
+user so that a faulty retention change can be traced and rolled back.
 
-**Hookscript-sökvägen är inte redigerbar i GUI:t.** Den kräver root@pam eftersom
-den tillåter körning av godtycklig kod. Visa den som skrivskyddad text.
+**The hook-script path is not editable in the GUI.** It requires root@pam because
+it allows execution of arbitrary code. Show it as read-only text.
 
 ### Backend
 
-FastAPI-app som **enbart** anropar samma CLI som allting annat använder, med
-`--json`. Ingen affärslogik i API-lagret. Om GUI:t och CLI:t kan ge olika svar
-har vi byggt fel.
+A FastAPI app that **only** calls the same CLI everything else uses, with `--json`.
+No business logic in the API layer. If the GUI and the CLI can give different
+answers, we have built it wrong.
 
-Långkörande operationer (backup, push, fetch, restore, verify) startas som
-transienta systemd-units via `systemd-run --unit=lxc-offsite-job-<id>` och
-returnerar direkt ett jobb-ID. GUI:t pollar status. **Ingen HTTP-request får
-vänta på en rclone-uppladdning** — det ger timeouts som ser ut som fel men är
-det inte.
+Long-running operations (backup, push, fetch, restore, verify) are started as
+transient systemd units via `systemd-run --unit=lxc-offsite-job-<id>` and return a
+job ID immediately. The GUI polls status. **No HTTP request may wait on an rclone
+upload** — that produces timeouts that look like failures but are not.
 
-### Säkerhet
+### Security
 
-API:t körs som en dedikerad användare, inte root. Exakt de kommandon som behöver
-förhöjd behörighet listas i en `sudoers`-fil med fullständiga sökvägar och utan
+The API runs as a dedicated user, not root. Exactly the commands that need
+elevated privileges are listed in a `sudoers` file with full paths and no
 wildcards.
 
-Autentisering via Pocket-ID (OIDC) genom Traefik forward-auth. API:t binder till
-nodens LAN-adress och brandväggen släpper bara igenom Traefik-VM:ens IP.
-Lyssna inte på 0.0.0.0.
+Authentication via an OIDC provider through a reverse proxy forward-auth. The API binds to
+the node's LAN address and the firewall lets through only the reverse proxy VM's IP. Do
+not listen on 0.0.0.0.
 
-Destruktiva åtgärder (radera, restore, prune) kräver att användaren skriver in
-vmid för hand som bekräftelse, och loggas i `audit.log` med OIDC-subjekt,
-tidsstämpel och parametrar.
+Destructive actions (delete, restore, prune) require the user to type the vmid by
+hand as confirmation, and are logged in `audit.log` with the OIDC subject,
+timestamp, and parameters.
 
-Om GUI:t inte kan nås ska allt gå att göra från CLI:t. GUI:t är bekvämlighet,
-aldrig en förutsättning.
+If the GUI cannot be reached, everything must be doable from the CLI. The GUI is
+convenience, never a prerequisite.
 
-## 8. Schemaläggning
+## 8. Scheduling
 
-systemd timer, inte cron — ger journal-integration och `OnFailure=` för
-notifiering.
+systemd timer, not cron — it gives journal integration and `OnFailure=` for
+notification.
 
-**En timer, inte en per container.** En mall-timer per vmid skulle starta flera
-jobb samtidigt och göra det globala låset till en kö man inte ser. Istället en
-enda timer som startar ett jobb som betar av containrarna i konfigurerad ordning,
-sekventiellt.
+**One timer, not one per container.** A template timer per vmid would start
+multiple jobs at once and turn the global lock into a queue you cannot see.
+Instead, a single timer that starts one job which works through the containers in
+the configured order, sequentially.
 
 ```ini
 # /etc/systemd/system/lxc-offsite.timer
@@ -397,35 +397,36 @@ ExecStart=/usr/local/lib/lxc-offsite/lxc-offsite run-schedule
 TimeoutStartSec=infinity
 ```
 
-`BACKUP_ORDER` i config anger ordningen. Ingen `RandomizedDelaySec` — vi vill ha
-förutsägbar starttid när körningen ändå är sekventiell.
+`BACKUP_ORDER` in the config specifies the order. No `RandomizedDelaySec` — we want
+a predictable start time when the run is sequential anyway.
 
-03:30 lägger den efter PBS 02:00 så de inte konkurrerar om I/O. Tar hela kön
-längre tid än till nästa fönster ska jobbet logga varning, inte hoppa över
-resten.
+03:30 places it after PBS at 02:00 so they do not compete for I/O. If the whole
+queue takes longer than the next window, the job should log a warning, not skip the
+rest.
 
 ---
 
-## 9. Acceptanskriterier
+## 9. Acceptance criteria
 
-Verktyget är inte klart förrän:
+The tool is not done until:
 
-1. `backup` av en körande LXC ger ett arkiv som verifierar mot sin sha256 både
-   lokalt och offsite.
-2. Avbruten uppladdning (döda processen mitt i) lämnar inget halvt arkiv synligt
-   offsite, och nästa körning lyckas.
-3. `test-restore` bootar containern och den svarar, från ett arkiv som hämtats
-   från offsite — inte från cachen.
-4. Full restore lyckas på en maskin med enbart rclone.conf och crypt-nyckeln.
-5. Bind-mounts genererar varning.
-6. Fel skickar ntfy-notis; framgång är tyst.
-7. `prune` kört med `--dry-run` visar korrekt vad som skulle raderas, och
-   `prune` vägrar radera det senaste arkivet oavsett policy.
-8. Cachen syns som storage i PVE:s eget backupgränssnitt och restore går att
-   köra därifrån.
-9. GUI:t visar samma siffror som `lxc-offsite list --json`. Avviker de är det
-   ett blockerande fel.
-10. En push som tar 40 minuter ger ingen HTTP-timeout och visar löpande logg.
-11. API:t körs som icke-root och kan inte köra något utanför sudoers-listan.
-12. Varje destruktiv åtgärd via GUI finns i `audit.log` med OIDC-subjekt.
-13. Allt i GUI:t går att göra från CLI:t med stoppad API-tjänst.
+1. `backup` of a running LXC produces an archive that verifies against its sha256
+   both locally and offsite.
+2. An interrupted upload (kill the process midway) leaves no half archive visible
+   offsite, and the next run succeeds.
+3. `test-restore` boots the container and it responds, from an archive fetched from
+   offsite — not from the cache.
+4. A full restore succeeds on a machine with only rclone.conf and the crypt key.
+5. Bind mounts generate a warning.
+6. Failure sends an ntfy notification; success is silent.
+7. `prune` run with `--dry-run` correctly shows what would be deleted, and `prune`
+   refuses to delete the latest archive regardless of policy.
+8. The cache shows up as storage in PVE's own backup interface and restore can be
+   run from there.
+9. The GUI shows the same numbers as `lxc-offsite list --json`. If they differ, it
+   is a blocking bug.
+10. A push that takes 40 minutes produces no HTTP timeout and shows a live log.
+11. The API runs as non-root and cannot run anything outside the sudoers list.
+12. Every destructive action via the GUI appears in `audit.log` with the OIDC
+    subject.
+13. Everything in the GUI can be done from the CLI with the API service stopped.

@@ -1,26 +1,26 @@
 # shellcheck shell=bash
-# lib/common.sh — delade hjälpfunktioner: config, logging, JSON, notify-stub.
-# Källas av huvudscriptet. Ska aldrig köras fristående.
+# lib/common.sh — shared helper functions: config, logging, JSON, notify stub.
+# Sourced by the main script. Must never be run standalone.
 #
-# Konventioner:
-#   - Kommentarer på svenska, kod och variabelnamn på engelska.
-#   - Alla värden som kan misslyckas returnerar meningsfull exit-kod (sysexits).
-#   - Inga hemligheter i loggar eller felmeddelanden.
+# Conventions:
+#   - Comments in English, code and variable names in English.
+#   - Every value that can fail returns a meaningful exit code (sysexits).
+#   - No secrets in logs or error messages.
 
 # ---------------------------------------------------------------------------
-# Exit-koder (delmängd av sysexits.h) — enhetliga i hela verktyget.
+# Exit codes (subset of sysexits.h) — consistent across the whole tool.
 # ---------------------------------------------------------------------------
 readonly EX_OK=0
-readonly EX_USAGE=64        # felaktig argumentanvändning
-readonly EX_DATAERR=65      # felaktig indata (korrupt arkiv, config)
-readonly EX_UNAVAILABLE=69  # en tjänst/resurs saknas (rclone-remote nere)
-readonly EX_SOFTWARE=70     # internt fel
-readonly EX_TEMPFAIL=75     # tillfälligt fel — lås upptaget, kön full
-readonly EX_CANTCREAT=73    # kan inte skapa/öppna fil (låsfil, holder)
-readonly EX_CONFIG=78       # konfigurationsfel
+readonly EX_USAGE=64        # incorrect argument usage
+readonly EX_DATAERR=65      # bad input data (corrupt archive, config)
+readonly EX_UNAVAILABLE=69  # a service/resource is missing (rclone remote down)
+readonly EX_SOFTWARE=70     # internal error
+readonly EX_TEMPFAIL=75     # temporary failure — lock busy, queue full
+readonly EX_CANTCREAT=73    # cannot create/open file (lock file, holder)
+readonly EX_CONFIG=78       # configuration error
 
 # ---------------------------------------------------------------------------
-# Standardvärden. Overridas av config-filen (KEY=VALUE) som källas efteråt.
+# Default values. Overridden by the config file (KEY=VALUE) sourced afterwards.
 # ---------------------------------------------------------------------------
 set_defaults() {
     : "${CACHE_DIR:=/var/cache/lxc-offsite}"
@@ -30,7 +30,7 @@ set_defaults() {
     : "${RCLONE_REMOTE:=hetzner-crypt}"
     : "${REMOTE_PATH:=lxc}"
     : "${VZDUMP_MODE:=snapshot}"
-    : "${VZDUMP_STOP_VMIDS:=}"         # dessa (+ auto-upptäckta fuse-CT) → --mode stop
+    : "${VZDUMP_STOP_VMIDS:=}"         # these (+ auto-detected fuse CTs) → --mode stop
     : "${VZDUMP_COMPRESS:=zstd}"
     : "${VZDUMP_ZSTD_THREADS:=4}"
     : "${RCLONE_TRANSFERS:=4}"
@@ -42,32 +42,32 @@ set_defaults() {
     : "${KEEP_OFFSITE_DAILY:=7}"
     : "${KEEP_OFFSITE_WEEKLY:=4}"
     : "${KEEP_OFFSITE_MONTHLY:=6}"
-    : "${NTFY_URL:=}"                  # ntfy-server (bas-URL); tom = inga notiser
-    : "${NTFY_TOKEN:=}"                # annars läses från NTFY_CREDS_FILE
-    : "${NTFY_TOPIC:=}"                # annars NTFY_TOPIC_WARN från creds-filen
+    : "${NTFY_URL:=}"                  # ntfy server (base URL); empty = no notifications
+    : "${NTFY_TOKEN:=}"                # otherwise read from NTFY_CREDS_FILE
+    : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file
     : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
     : "${NTFY_ON_SUCCESS:=false}"
-    : "${OFFSITE_ENABLED:=true}"       # false = dumpa+verifiera lokalt, hoppa upload
-    : "${RCLONE_CONFIG_FILE:=}"        # egen rclone.conf (annars rclones default)
-    : "${TR_WAIT_TRIES:=30}"           # test-restore: antal försök att nå CT
-    : "${TR_WAIT_SLEEP:=2}"            # test-restore: sekunder mellan försök
-    : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # bekräfta att Hetzner-snapshots är på
-    : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard varnar om senaste push är äldre
+    : "${OFFSITE_ENABLED:=true}"       # false = dump+verify locally, skip upload
+    : "${RCLONE_CONFIG_FILE:=}"        # own rclone.conf (otherwise rclone's default)
+    : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach CT
+    : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
+    : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
+    : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard warns if the latest push is older
 
-    # --- motor (ADR 0001): tar (nuvarande) | restic (nytt spår) ---
+    # --- engine (ADR 0001): tar (current) | restic (new track) ---
     : "${ENGINE:=tar}"                                    # tar | restic
-    : "${BACKUP_MODE:=stream}"                            # stream (1-och-1) | batch (dumpa alla→ladda upp), SAMMA repo
-    : "${RESTIC_BIN:=restic}"                             # override i test (scratch-binär)
-    : "${LOCAL_REPO:=true}"                               # true=cached (lokalt repo+copy), false=offsite-only
-    : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # lokalt restic-repo (cache-tier)
-    : "${RESTIC_OFFSITE_REPO:=}"                          # sftp:user@host:port/path (native) el. lokal dir (test)
-    : "${RESTIC_PASSWORD_FILE:=/etc/lxc-offsite/restic-pass}"  # repo-lösen (DR-nyckel), 0600
-    : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restics egen metadata-cache
-    : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # lokalt repo: behåll N senaste per gäst
-    : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh-kommando för native sftp (port/nyckel); tom=restic default
-    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallella sftp-anslutningar (Storage Box ~10 max) — snabbar upp restore rejält
+    : "${BACKUP_MODE:=stream}"                            # stream (one-by-one) | batch (dump all→upload), SAME repo
+    : "${RESTIC_BIN:=restic}"                             # override in tests (scratch binary)
+    : "${LOCAL_REPO:=true}"                               # true=cached (local repo+copy), false=offsite-only
+    : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # local restic repo (cache tier)
+    : "${RESTIC_OFFSITE_REPO:=}"                          # sftp:user@host:port/path (native) or local dir (test)
+    : "${RESTIC_PASSWORD_FILE:=/etc/lxc-offsite/restic-pass}"  # repo password (DR key), 0600
+    : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restic's own metadata cache
+    : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # local repo: keep N latest per guest
+    : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
+    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max) — speeds up restore considerably
 
-    # Härledda sökvägar.
+    # Derived paths.
     LOG_FILE="${LOG_DIR}/lxc-offsite.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"
     GLOBAL_LOCK_FILE="${LOCK_DIR}/lxc-offsite.global"
@@ -76,18 +76,18 @@ set_defaults() {
 }
 
 # ---------------------------------------------------------------------------
-# Config-laddning. Filen ska vara root-ägd och 0600; vi vägrar källa den om
-# den är grupp-/världsskrivbar (den kan innehålla sökvägar men aldrig secrets).
+# Config loading. The file must be root-owned and 0600; we refuse to source it
+# if it is group-/world-writable (it may contain paths but never secrets).
 # ---------------------------------------------------------------------------
 load_config() {
     local cfg="${LXCO_CONFIG:-/etc/lxc-offsite/config}"
     if [[ -f "$cfg" ]]; then
-        # Vägra en config som är grupp-/världsSKRIVBAR — den styr vad root kör.
-        # (Läsbar för andra är ok; filen innehåller inga secrets.)
+        # Refuse a config that is group-/world-WRITABLE — it controls what root runs.
+        # (Readable by others is fine; the file contains no secrets.)
         local perms; perms="$(stat -c '%a' "$cfg")"
         local grp="${perms: -2:1}" oth="${perms: -1:1}"
         if (( (grp & 2) || (oth & 2) )); then
-            printf 'lxc-offsite: VÄGRAR källa grupp-/världsskrivbar config (%s): %s\n' \
+            printf 'lxc-offsite: REFUSING to source group-/world-writable config (%s): %s\n' \
                 "$perms" "$cfg" >&2
             exit "$EX_CONFIG"
         fi
@@ -98,30 +98,30 @@ load_config() {
         LXCO_CONFIG_LOADED=""
     fi
     set_defaults
-    # Peka rclone på vår egen config om angiven (rclone läser RCLONE_CONFIG-env).
+    # Point rclone at our own config if given (rclone reads the RCLONE_CONFIG env).
     [[ -n "${RCLONE_CONFIG_FILE:-}" ]] && export RCLONE_CONFIG="$RCLONE_CONFIG_FILE"
     ensure_dirs
 }
 
-# Skapa de kataloger vi äger. Loggkatalogen faller tillbaka till stderr-only
-# om den inte går att skapa (t.ex. isolerad dev utan root-install).
+# Create the directories we own. The log directory falls back to stderr-only
+# if it cannot be created (e.g. isolated dev without a root install).
 ensure_dirs() {
     mkdir -p "$STATE_DIR" "$JOBS_DIR" "$LOCK_DIR" "$CACHE_DIR" 2>/dev/null || true
     if ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; then
-        LOG_FILE=""   # signal: logga bara till stderr/stdout
+        LOG_FILE=""   # signal: log only to stderr/stdout
     fi
 }
 
 # ---------------------------------------------------------------------------
-# Logging. Format: "2026-09-04T11:00:00+02:00 [INFO] meddelande".
-# I --json-läge går människologgen till stderr så stdout förblir ren JSON.
+# Logging. Format: "2026-09-04T11:00:00+02:00 [INFO] message".
+# In --json mode the human log goes to stderr so stdout stays pure JSON.
 # ---------------------------------------------------------------------------
 _log() {
     local level="$1"; shift
     local line; line="$(date --iso-8601=seconds) [$level] $*"
-    # Fil: alltid om vi har en skrivbar loggfil.
+    # File: always if we have a writable log file.
     [[ -n "${LOG_FILE:-}" ]] && printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
-    # Terminal: stderr i json-läge, annars stderr för WARN/ERROR och stdout för INFO.
+    # Terminal: stderr in json mode, otherwise stderr for WARN/ERROR and stdout for INFO.
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         printf '%s\n' "$line" >&2
     elif [[ "$level" == "INFO" ]]; then
@@ -132,11 +132,11 @@ _log() {
 }
 log_info()  { _log INFO  "$@"; }
 log_warn()  { _log WARN  "$@"; }
-# Fel loggas OCH triggar notis (stub i steg 1, riktig i steg 8/notify.sh).
+# Errors are logged AND trigger a notification (stub in step 1, real in step 8/notify.sh).
 log_error() { _log ERROR "$@"; notify_failure "$*" 2>/dev/null || true; }
 
-# Audit-logg för destruktiva/utåtriktade åtgärder (vem gjorde vad).
-# Rad: "2026-09-04T.. user=<sudo/uid> restore src=110 target=9010 …".
+# Audit log for destructive/outbound actions (who did what).
+# Line: "2026-09-04T.. user=<sudo/uid> restore src=110 target=9010 …".
 audit_log() {
     local who="${SUDO_USER:-$(id -un 2>/dev/null || echo root)}"
     local line; line="$(date --iso-8601=seconds) user=${who} $*"
@@ -144,7 +144,7 @@ audit_log() {
     _log INFO "audit: $*"
 }
 
-# die <exit-kod> <meddelande...>
+# die <exit-code> <message...>
 die() {
     local code="$1"; shift
     log_error "$*"
@@ -152,31 +152,31 @@ die() {
 }
 
 # ---------------------------------------------------------------------------
-# Notify-stub. Ersätts av lib/notify.sh (ntfy) i steg 8. Här bara en no-op
-# som respekterar NTFY_ON_SUCCESS-kontraktet så anropsställena redan stämmer.
+# Notify stub. Replaced by lib/notify.sh (ntfy) in step 8. Here just a no-op
+# that honors the NTFY_ON_SUCCESS contract so the call sites already line up.
 # ---------------------------------------------------------------------------
-notify_failure() { :; }   # skickar ntfy vid fel — implementeras i steg 8
-notify_success() {        # tyst om inte NTFY_ON_SUCCESS=true
+notify_failure() { :; }   # sends ntfy on failure — implemented in step 8
+notify_success() {        # silent unless NTFY_ON_SUCCESS=true
     [[ "${NTFY_ON_SUCCESS:-false}" == "true" ]] || return 0
     :
 }
 
 # ---------------------------------------------------------------------------
-# JSON-utmatning UTAN jq-beroende (jq krävs bara för att PARSA rclone lsjson
-# senare, aldrig för att skapa vår egen output). Manuell strängescaping.
+# JSON output WITHOUT a jq dependency (jq is only needed to PARSE rclone lsjson
+# later, never to build our own output). Manual string escaping.
 # ---------------------------------------------------------------------------
 json_escape() {
     local s="$1"
-    s="${s//\\/\\\\}"   # backslash först
-    s="${s//\"/\\\"}"   # citattecken
-    s="${s//$'\n'/\\n}" # radbrytning
+    s="${s//\\/\\\\}"   # backslash first
+    s="${s//\"/\\\"}"   # quote character
+    s="${s//$'\n'/\\n}" # newline
     s="${s//$'\t'/\\t}" # tab
     s="${s//$'\r'/\\r}"
     printf '%s' "$s"
 }
 
 # json_result <status> <ok:true|false> [k v k v ...]
-# Skriver ett platt JSON-objekt till stdout. Värden behandlas som strängar.
+# Writes a flat JSON object to stdout. Values are treated as strings.
 json_result() {
     local status="$1" ok="$2"; shift 2
     local out; out="$(printf '{"command":"%s","status":"%s","ok":%s' \
@@ -190,19 +190,19 @@ json_result() {
     printf '%s\n' "$out"
 }
 
-# Enhetlig "ännu ej implementerat"-svar (steg 1: alla operationer).
+# Uniform "not yet implemented" response (step 1: all operations).
 not_implemented() {
     local cmd="${LXCO_COMMAND:-?}"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "not_implemented" "false"
     else
-        log_warn "'$cmd' är ännu inte implementerat (steg 1: endast skelett)."
+        log_warn "'$cmd' is not yet implemented (step 1: skeleton only)."
     fi
     return "$EX_OK"
 }
 
-# Validera att ett argument ser ut som ett vmid (heltal 100–999999999).
+# Validate that an argument looks like a vmid (integer 100–999999999).
 is_vmid() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 100 )); }
 require_vmid() {
-    is_vmid "${1:-}" || die "$EX_USAGE" "ogiltigt vmid: '${1:-<saknas>}'"
+    is_vmid "${1:-}" || die "$EX_USAGE" "invalid vmid: '${1:-<missing>}'"
 }

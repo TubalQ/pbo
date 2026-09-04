@@ -1,28 +1,24 @@
 # /etc/lxc-offsite/config — KEY=VALUE. chmod 600, root:root.
-# Detta är exempel/mall. Kopieras av install.sh; innehåller inga hemligheter
-# (rclone-credentials bor i rclone.conf, se PLAN.md §4).
+# This is the example/template, copied by install.sh. It contains no secrets
+# (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
+#
+# The easiest way to fill this in is the interactive wizard:
+#   lxc-offsite setup
 
-# --- sökvägar ---
+# --- paths ---
 CACHE_DIR=/var/cache/lxc-offsite
 LOG_DIR=/var/log/lxc-offsite
 STATE_DIR=/var/lib/lxc-offsite
 LOCK_DIR=/var/lock
-
-# --- rclone / offsite ---
-RCLONE_REMOTE=hetzner-crypt
-REMOTE_PATH=lxc
-RCLONE_TRANSFERS=4
-RCLONE_CHECKERS=4          # transfers+checkers < 10 (Hetzner-anslutningsgräns)
-RCLONE_BWLIMIT=            # t.ex. 40M nattetid
 
 # --- vzdump ---
 VZDUMP_MODE=snapshot
 VZDUMP_COMPRESS=zstd
 VZDUMP_ZSTD_THREADS=4
 
-# --- schema ---
-BACKUP_ORDER=              # kommaseparerad vmid-ordning för run-schedule
-GLOBAL_LOCK_TIMEOUT=7200   # sekunder en schemalagd körning väntar i kön
+# --- schedule ---
+BACKUP_ORDER=              # comma-separated vmid order for run-schedule
+GLOBAL_LOCK_TIMEOUT=7200   # seconds a scheduled run waits in the queue
 
 # --- retention ---
 KEEP_LOCAL=2
@@ -30,26 +26,27 @@ KEEP_OFFSITE_DAILY=7
 KEEP_OFFSITE_WEEKLY=4
 KEEP_OFFSITE_MONTHLY=6
 
-# --- notiser ---
+# --- notifications ---
 NTFY_URL=
-NTFY_ON_SUCCESS=false      # larma på fel, tyst vid framgång
+NTFY_TOPIC=
+NTFY_ON_SUCCESS=false      # alert on failure, silent on success
 
 # --- dashboard ---
-MAX_AGE_WARN=172800        # 48h — röd rad om senaste push är äldre
+MAX_AGE_WARN=172800        # 48h — flagged if the latest push is older
 
-# --- motor (ADR 0001): restic-spåret (experimentellt) ---
-# Default är den beprövade tar.zst-motorn. Sätt ENGINE=restic för restic-spåret.
-# Se docs/adr/0001-restic-as-backup-engine.md. Onboarding: skapa lösenfil (0600)
-# + kör `lxc-offsite init` en gång innan första backup.
-ENGINE=tar                                     # tar | restic
-BACKUP_MODE=stream                            # stream (1-och-1) | batch (dumpa alla→ladda upp), samma repo
-#RESTIC_BIN=restic                             # override i test (scratch-binär)
-#LOCAL_REPO=true                               # true=cached (repo+copy), false=offsite-only
-#RESTIC_CACHE_REPO=/var/cache/lxc-offsite/repo # lokalt restic-repo (cache-tier)
-#RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp — RELATIV path (Storage Box chroot!)
-# Storage Box kräver port/nyckel i ssh-kommandot (repo-URL:ens värdlabel blir bara ett namn):
+# --- engine (ADR 0001): restic ---
+# restic is the backup engine. Onboarding: run `lxc-offsite setup` (or set the
+# keys below by hand + create the password file 0600 + run `lxc-offsite init`
+# once before the first backup).
+ENGINE=restic                                  # tar (legacy) | restic
+BACKUP_MODE=stream                             # stream (one-by-one) | batch (dump all→upload), same repo
+#RESTIC_BIN=restic                             # override in tests (scratch binary)
+#LOCAL_REPO=true                               # true=cached (local repo+copy), false=offsite-only
+#RESTIC_CACHE_REPO=/var/cache/lxc-offsite/repo # local restic repo (cache tier)
+#RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp — RELATIVE path (Storage Box is chrooted!)
+# The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name):
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
-#RESTIC_SFTP_CONNECTIONS=8                     # parallella sftp-anslutningar (snabbare restore)
-#RESTIC_PASSWORD_FILE=/etc/lxc-offsite/restic-pass   # repo-lösen (DR-nyckel), 0600
-#RESTIC_CACHE_DIR=/var/lib/lxc-offsite/restic-cache  # restics egen metadata-cache
-#TR_STORAGE=nvmepool                           # engångs-storage för test-restore
+#RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
+#RESTIC_PASSWORD_FILE=/etc/lxc-offsite/restic-pass   # repo password (DR key), 0600
+#RESTIC_CACHE_DIR=/var/lib/lxc-offsite/restic-cache  # restic's own metadata cache
+#TR_STORAGE=nvmepool                           # throwaway storage for test-restore

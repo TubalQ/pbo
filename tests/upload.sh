@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/upload.sh — steg 4-tester (upload + offsite-verifiering), mockad rclone.
+# tests/upload.sh — step 4 tests (upload + offsite verification), mocked rclone.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 BIN=./lxc-offsite
@@ -27,30 +27,30 @@ export MOCK_LOG="$ROOT/run/rclone.calls"; : > "$MOCK_LOG"
 out="$(MOCK_REMOTE_TYPE=crypt LXCO_CONFIG=$ROOT/run/cfgA $BIN --json backup 8002 2>/dev/null)"; rc=$?
 grep -q '"status":"uploaded"' <<<"$out" && [[ $rc == 0 ]] && ok "upload: status uploaded (exit 0)" || bad "A status ($rc: $out)"
 grep -q '"verified":"offsite"' <<<"$out" && ok "A: verified=offsite" || bad "A verified"
-grep -q '^copy ' "$MOCK_LOG" && ok "A: rclone copy anropades" || bad "A copy ej anropad"
-grep -q '^cryptcheck ' "$MOCK_LOG" && ok "A: crypt-remote → cryptcheck" || bad "A cryptcheck ej vald ($(cat "$MOCK_LOG"))"
-grep -q -- '--include 8002' "$MOCK_LOG" 2>/dev/null || grep -q 'include' "$MOCK_LOG" && ok "A: include-filter används" || bad "A include"
+grep -q '^copy ' "$MOCK_LOG" && ok "A: rclone copy called" || bad "A copy not called"
+grep -q '^cryptcheck ' "$MOCK_LOG" && ok "A: crypt-remote → cryptcheck" || bad "A cryptcheck not chosen ($(cat "$MOCK_LOG"))"
+grep -q -- '--include 8002' "$MOCK_LOG" 2>/dev/null || grep -q 'include' "$MOCK_LOG" && ok "A: include filter used" || bad "A include"
 
-# --- B: icke-crypt remote → check --checksum ---
+# --- B: non-crypt remote → check --checksum ---
 mkcfg "$ROOT/run/cfgB"; : > "$MOCK_LOG"
 MOCK_REMOTE_TYPE=sftp LXCO_CONFIG=$ROOT/run/cfgB $BIN --json backup 8002 >/dev/null 2>&1
-grep -q '^check ' "$MOCK_LOG" && ok "B: sftp-remote → check --checksum" || bad "B check ej vald ($(cat "$MOCK_LOG"))"
-grep -q 'checksum' "$MOCK_LOG" && ok "B: --checksum flaggan med" || bad "B checksum-flagga"
+grep -q '^check ' "$MOCK_LOG" && ok "B: sftp-remote → check --checksum" || bad "B check not chosen ($(cat "$MOCK_LOG"))"
+grep -q 'checksum' "$MOCK_LOG" && ok "B: --checksum flag included" || bad "B checksum-flag"
 
-# --- C: verifiering misslyckas → radera + avbryt (EX_DATAERR 65) ---
+# --- C: verification fails → delete + abort (EX_DATAERR 65) ---
 mkcfg "$ROOT/run/cfgC"; : > "$MOCK_LOG"
 MOCK_REMOTE_TYPE=crypt MOCK_VERIFY_OK=0 LXCO_CONFIG=$ROOT/run/cfgC $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
-[[ $rc == 65 ]] && ok "C: verifieringsfel → EX_DATAERR (65)" || bad "C exit ($rc)"
-grep -q '^delete ' "$MOCK_LOG" && ok "C: uppladdat raderades vid verifieringsfel" || bad "C delete ($(cat "$MOCK_LOG"))"
+[[ $rc == 65 ]] && ok "C: verification error → EX_DATAERR (65)" || bad "C exit ($rc)"
+grep -q '^delete ' "$MOCK_LOG" && ok "C: uploaded file deleted on verification error" || bad "C delete ($(cat "$MOCK_LOG"))"
 
-# --- D: upload misslyckas → avbryt (EX_UNAVAILABLE 69), ingen verifiering ---
+# --- D: upload fails → abort (EX_UNAVAILABLE 69), no verification ---
 mkcfg "$ROOT/run/cfgD"; : > "$MOCK_LOG"
 MOCK_UPLOAD_OK=0 LXCO_CONFIG=$ROOT/run/cfgD $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
-[[ $rc == 69 ]] && ok "D: uploadfel → EX_UNAVAILABLE (69)" || bad "D exit ($rc)"
-grep -qE '^(check|cryptcheck) ' "$MOCK_LOG" && bad "D: verifiering kördes trots uploadfel" || ok "D: ingen verifiering efter uploadfel"
+[[ $rc == 69 ]] && ok "D: upload error → EX_UNAVAILABLE (69)" || bad "D exit ($rc)"
+grep -qE '^(check|cryptcheck) ' "$MOCK_LOG" && bad "D: verification ran despite upload error" || ok "D: no verification after upload error"
 
-# --- E: lokala artefakter finns kvar oavsett (arkiv verifierat lokalt före upload) ---
-[[ -n "$(ls "$ROOT/run/cache/8002"/*.tar.zst 2>/dev/null)" ]] && ok "E: lokalt arkiv finns" || bad "E arkiv"
+# --- E: local artifacts remain regardless (archive verified locally before upload) ---
+[[ -n "$(ls "$ROOT/run/cache/8002"/*.tar.zst 2>/dev/null)" ]] && ok "E: local archive exists" || bad "E archive"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]

@@ -1,9 +1,9 @@
-# etc/config.dev — ISOLERAD dev-config. Pekar alla sökvägar till repo-lokal
-# ./run/ så inget rör host-systemet. Används via:
-#   LXCO_CONFIG=$PWD/etc/config.dev ./lxc-offsite <kommando>
-# Riktiga operationer (vzdump/pct/rclone) körs ALDRIG härifrån — enbart
-# skelett-, lås- och config-logik testas. Integrationstest sker mot temporära
-# LXC:er och den befintliga test-boxen u546749-sub5 (steg 4+).
+# etc/config.dev — ISOLATED dev config. Points all paths to the repo-local
+# ./run/ so nothing touches the host system. Used via:
+#   LXCO_CONFIG=$PWD/etc/config.dev ./lxc-offsite <command>
+# Real operations (vzdump/pct/restic) are NEVER run from here — only the
+# skeleton, lock and config logic is tested. Integration tests run against
+# temporary throwaway LXCs.
 
 CACHE_DIR=./run/cache
 LOG_DIR=./run/log

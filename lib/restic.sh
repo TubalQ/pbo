@@ -1,21 +1,21 @@
 # shellcheck shell=bash
-# lib/restic.sh — restic-motorn (ADR 0001, Väg A). Aktiveras med ENGINE=restic.
+# lib/restic.sh — the restic engine (ADR 0001, Path A). Enabled with ENGINE=restic.
 #
-# vzdump-arkivet (OKOMPRIMERAT) lagras I restic i stället för att pushas som
-# tar.zst via rclone. restore går via `restic restore` → `pct restore`.
+# The vzdump archive (UNCOMPRESSED) is stored IN restic instead of being pushed as
+# tar.zst via rclone. restore goes via `restic restore` → `pct restore`.
 #
-# Repo-modell:
+# Repo model:
 #   LOCAL_REPO=true  (cached)      : backup → RESTIC_CACHE_REPO → copy → RESTIC_OFFSITE_REPO
-#   LOCAL_REPO=false (offsite-only): backup → RESTIC_OFFSITE_REPO direkt (dumpdir transient)
+#   LOCAL_REPO=false (offsite-only): backup → RESTIC_OFFSITE_REPO directly (dumpdir transient)
 #
-# Grupperingsknep: vi backar upp KATALOGEN $CACHE_DIR/<vmid> (stabil path per
-# gäst) → snapshotens .paths blir stabil → `forget --group-by paths` ger
-# behåll-per-gäst. ts läggs som TAGG (ts=YYYY_MM_DD-HH_MM_SS) för urval, vmid som
-# tagg för migrations-säkerhet. Sidecaren (.conf) följer med i snapshoten.
+# Grouping trick: we back up the DIRECTORY $CACHE_DIR/<vmid> (stable path per
+# guest) → the snapshot's .paths stays stable → `forget --group-by paths` gives
+# keep-per-guest. ts is added as a TAG (ts=YYYY_MM_DD-HH_MM_SS) for selection, vmid as
+# a tag for migration safety. The sidecar (.conf) is included in the snapshot.
 
-# --- restic-wrapper: repo + lösen + egen metadata-cache + ev. native-sftp-kommando ---
-# Används av ALLA restic-anrop (även via run_stream) så sftp.command sätts på ETT
-# ställe. Kör som funktion i run_streams subshell (funktioner ärvs).
+# --- restic wrapper: repo + password + own metadata cache + optional native-sftp command ---
+# Used by ALL restic calls (also via run_stream) so sftp.command is set in ONE
+# place. Runs as a function in run_stream's subshell (functions are inherited).
 _restic() {                    # _restic <repo> <args...>
     local opts=()
     [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
@@ -26,7 +26,7 @@ _restic() {                    # _restic <repo> <args...>
         "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
 }
 
-# Primärt LÄS-repo (list/restore/prune): offsite om aktiverat, annars cache.
+# Primary READ repo (list/restore/prune): offsite if enabled, otherwise cache.
 _restic_read_repo() {
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         printf '%s' "$RESTIC_OFFSITE_REPO"
@@ -35,13 +35,13 @@ _restic_read_repo() {
     fi
 }
 
-# Primärt SKRIV-repo (backup): cache i cached-läge, annars offsite direkt.
+# Primary WRITE repo (backup): cache in cached mode, otherwise offsite directly.
 _restic_write_repo() {
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then printf '%s' "$RESTIC_CACHE_REPO"
     else printf '%s' "$RESTIC_OFFSITE_REPO"; fi
 }
 
-# Säkerställ repo (init om ej). Extra args → init.
+# Ensure repo (init if not present). Extra args → init.
 _restic_ensure() {             # _restic_ensure <repo> [init-args...]
     local repo="$1"; shift
     _restic "$repo" cat config >/dev/null 2>&1 && return 0
@@ -49,18 +49,18 @@ _restic_ensure() {             # _restic_ensure <repo> [init-args...]
     _restic "$repo" init "$@"
 }
 
-# restic_init — init cache- och/eller offsite-repo (onboarding, idempotent).
+# restic_init — init cache and/or offsite repo (onboarding, idempotent).
 restic_init() {
-    [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "restic: saknar lösenfil $RESTIC_PASSWORD_FILE (0600)"
+    [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "restic: missing password file $RESTIC_PASSWORD_FILE (0600)"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
-        _restic_ensure "$RESTIC_CACHE_REPO" || die "$EX_SOFTWARE" "restic: init cache-repo misslyckades"
+        _restic_ensure "$RESTIC_CACHE_REPO" || die "$EX_SOFTWARE" "restic: cache repo init failed"
     fi
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
             _restic_ensure "$RESTIC_OFFSITE_REPO" --copy-chunker-params --from-repo "$RESTIC_CACHE_REPO" \
-                || die "$EX_SOFTWARE" "restic: init offsite-repo misslyckades"
+                || die "$EX_SOFTWARE" "restic: offsite repo init failed"
         else
-            _restic_ensure "$RESTIC_OFFSITE_REPO" || die "$EX_SOFTWARE" "restic: init offsite-repo misslyckades"
+            _restic_ensure "$RESTIC_OFFSITE_REPO" || die "$EX_SOFTWARE" "restic: offsite repo init failed"
         fi
     fi
 }
@@ -71,7 +71,7 @@ restic_init() {
 rdo_backup() {
     local vmid="$1"
     local mode; mode="$(_effective_mode "$vmid")"
-    local gtype="lxc"                     # TODO qemu (ADR 0002): qm config-detektering
+    local gtype="lxc"                     # TODO qemu (ADR 0002): qm config detection
     local dumpdir="${CACHE_DIR}/${vmid}"
     local job_id="backup-${vmid}-$(date +%Y%m%d-%H%M%S)"
     local jobfile="${JOBS_DIR}/${job_id}.log"
@@ -83,42 +83,42 @@ rdo_backup() {
     fi
 
     restic_init
-    # Ren dumpdir → snapshotens innehåll = exakt denna körnings arkiv+sidecar.
+    # Clean dumpdir → snapshot content = exactly this run's archive+sidecar.
     rm -f "${dumpdir}"/vzdump-* 2>/dev/null || true
     mkdir -p "$dumpdir" "$JOBS_DIR"
 
-    # 1. vzdump OKOMPRIMERAT (restic komprimerar själv → dedup fungerar)
-    log_info "backup $vmid: vzdump ($mode, okomprimerad) → $dumpdir"
+    # 1. vzdump UNCOMPRESSED (restic compresses itself → dedup works)
+    log_info "backup $vmid: vzdump ($mode, uncompressed) → $dumpdir"
     if ! run_stream "$jobfile" "vzdump[$vmid]" -- \
             vzdump "$vmid" --mode "$mode" --compress 0 --dumpdir "$dumpdir"; then
-        die "$EX_SOFTWARE" "vzdump misslyckades för vmid $vmid (se $jobfile)"
+        die "$EX_SOFTWARE" "vzdump failed for vmid $vmid (see $jobfile)"
     fi
     local archive; archive="$(ls -1t "${dumpdir}"/vzdump-*-"${vmid}"-*.tar 2>/dev/null | head -1)"
-    [[ -n "$archive" && -f "$archive" ]] || die "$EX_SOFTWARE" "ingen okomprimerad vzdump-tar i $dumpdir"
+    [[ -n "$archive" && -f "$archive" ]] || die "$EX_SOFTWARE" "no uncompressed vzdump tar in $dumpdir"
     local base; base="$(basename "$archive")"
     local ts; ts="$(_archive_ts "$base")"; [[ -n "$ts" ]] || ts="$(date +%Y_%m_%d-%H_%M_%S)"
-    # config-sidecar för restore (unprivileged/bind-mounts)
+    # config sidecar for restore (unprivileged/bind-mounts)
     pct config "$vmid" > "${archive}.conf" 2>/dev/null || true
 
-    # 2. restic backup av KATALOGEN (stabil path → grupperingsvänligt)
+    # 2. restic backup of the DIRECTORY (stable path → grouping-friendly)
     local wrepo; wrepo="$(_restic_write_repo)"
     log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts)"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
             _restic "$wrepo" backup "$dumpdir" \
                 --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(hostname -s)"; then
-        die "$EX_SOFTWARE" "restic backup misslyckades för $base (se $jobfile)"
+        die "$EX_SOFTWARE" "restic backup failed for $base (see $jobfile)"
     fi
 
-    # 3. cached-läge: copy nya snapshoten → offsite
+    # 3. cached mode: copy the new snapshot → offsite
     if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         log_info "backup $vmid: restic copy cache → offsite"
         if ! run_stream "$jobfile" "restic-copy[$vmid]" -- \
                 _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$vmid,ts=$ts"; then
-            die "$EX_UNAVAILABLE" "restic copy → offsite misslyckades för vmid $vmid"
+            die "$EX_UNAVAILABLE" "restic copy → offsite failed for vmid $vmid"
         fi
     fi
 
-    # 4. städa lös tar (bor nu i repot)
+    # 4. clean up loose tar (now lives in the repo)
     rm -f "${dumpdir}"/vzdump-* 2>/dev/null || true
 
     local rrepo; rrepo="$(_restic_read_repo)"
@@ -126,18 +126,18 @@ rdo_backup() {
         json_result "uploaded" "true" "vmid" "$vmid" "ts" "$ts" "engine" "restic" \
             "archive" "$base" "repo" "$rrepo" "job" "$jobfile"
     else
-        log_info "backup $vmid: KLART (restic) — ts=$ts"
+        log_info "backup $vmid: DONE (restic) — ts=$ts"
     fi
     return "$EX_OK"
 }
 
 # ---------------------------------------------------------------------------
-# list — emittera SAMMA envelope som tar-motorn ({archives:[...]}) så UI:t orört.
+# list — emit the SAME envelope as the tar engine ({archives:[...]}) so the UI is untouched.
 # ---------------------------------------------------------------------------
 rdo_list() {
     local only="${1:-}"
     local repo; repo="$(_restic_read_repo)"
-    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för list"
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for list"
     local snaps; snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"
     [[ -n "$snaps" ]] || snaps='[]'
     local now; now="$(date +%s)"
@@ -155,16 +155,16 @@ rdo_list() {
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         printf '{"command":"list","status":"ok","ok":true,"dry_run":false,"archives":%s}\n' "$archives"
     else
-        printf '%-6s  %-42s  %12s  %s\n' VMID ARKIV STORLEK SNAP
+        printf '%-6s  %-42s  %12s  %s\n' VMID ARCHIVE SIZE SNAP
         printf '%s' "$archives" | jq -r '.[] | "\(.vmid)  \(.archive)  \(.size_bytes)  \(.snapshot)"'
     fi
 }
 
 # ---------------------------------------------------------------------------
-# extraktion: hämta+verifiera en snapshot till <target>, echo:a tar-sökväg.
+# extraction: fetch+verify a snapshot to <target>, echo the tar path.
 # ---------------------------------------------------------------------------
-# Sätter GLOBALEN RX_TAR (INTE via stdout — log_info går till stdout i icke-json-
-# läge och skulle förorena command-substitution → trasig pct-restore-sökväg).
+# Sets the GLOBAL RX_TAR (NOT via stdout — log_info goes to stdout in non-json
+# mode and would pollute command substitution → broken pct-restore path).
 RX_TAR=""
 _restic_extract() {            # _restic_extract <vmid> <ts> <target> → RX_TAR
     local vmid="$1" ts="$2" target="$3"
@@ -173,16 +173,16 @@ _restic_extract() {            # _restic_extract <vmid> <ts> <target> → RX_TAR
     mkdir -p "$target"
     local id
     id="$(_restic "$repo" snapshots --json --tag "vmid=$vmid,ts=$ts" 2>/dev/null | jq -r '.[-1].short_id // empty')"
-    [[ -n "$id" ]] || { log_error "restic: ingen snapshot vmid=$vmid ts=$ts i $repo"; return 1; }
-    log_info "restic restore snapshot $id → $target (verifierar vid utläsning)"
+    [[ -n "$id" ]] || { log_error "restic: no snapshot vmid=$vmid ts=$ts in $repo"; return 1; }
+    log_info "restic restore snapshot $id → $target (verifies on read-out)"
     _restic "$repo" restore "$id" --target "$target" >/dev/null 2>&1 \
-        || { log_error "restic restore misslyckades (snap $id)"; return 1; }
+        || { log_error "restic restore failed (snap $id)"; return 1; }
     RX_TAR="$(find "$target" -type f -name 'vzdump-*.tar' | head -1)"
-    [[ -n "$RX_TAR" ]] || { log_error "restic: ingen tar i återställd snapshot $id"; return 1; }
+    [[ -n "$RX_TAR" ]] || { log_error "restic: no tar in restored snapshot $id"; return 1; }
     return 0
 }
 
-# Läs unprivileged ur .conf-sidecar bredvid taren (default 1).
+# Read unprivileged from the .conf sidecar next to the tar (default 1).
 _conf_unpriv() {               # _conf_unpriv <tar>
     local conf="${1}.conf" u=1
     [[ -f "$conf" ]] && { u="$(awk -F': ' '/^unprivileged:/{print $2; exit}' "$conf")"; [[ "$u" =~ ^[01]$ ]] || u=1; }
@@ -190,24 +190,24 @@ _conf_unpriv() {               # _conf_unpriv <tar>
 }
 
 # ---------------------------------------------------------------------------
-# restore — restic → pct restore till NYTT vmid (aldrig överskrivning).
+# restore — restic → pct restore to a NEW vmid (never overwrite).
 # ---------------------------------------------------------------------------
 rdo_restore() {
     local src="$1" ts="$2" newid="$3" storage="$4" yes="$5"
-    pct config "$newid" >/dev/null 2>&1 && die "$EX_USAGE" "mål-vmid $newid finns redan — vägrar"
+    pct config "$newid" >/dev/null 2>&1 && die "$EX_USAGE" "target vmid $newid already exists — refusing"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        log_info "[dry-run] restic restore $src ($ts) → nytt vmid $newid"
+        log_info "[dry-run] restic restore $src ($ts) → new vmid $newid"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$src" "target_vmid" "$newid"
         return "$EX_OK"
     fi
     local rdir="${CACHE_DIR}/restore-${newid}"; rm -rf "$rdir"
-    _restic_extract "$src" "$ts" "$rdir" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    _restic_extract "$src" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
     local unpriv; unpriv="$(_conf_unpriv "$tar")"
     [[ -n "$storage" ]] || storage="nvmepool"
     local cmd=(pct restore "$newid" "$tar" --storage "$storage" --unprivileged "$unpriv")
     if [[ "$yes" != "1" ]]; then
-        log_info "restore (visning, kör med --yes): ${cmd[*]}"
+        log_info "restore (preview, run with --yes): ${cmd[*]}"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "planned" "true" "vmid" "$src" \
             "target_vmid" "$newid" "storage" "$storage" "restore_command" "${cmd[*]}"
         rm -rf "$rdir" 2>/dev/null || true
@@ -216,19 +216,19 @@ rdo_restore() {
     local jobfile="${JOBS_DIR}/restore-${newid}-$(date +%Y%m%d-%H%M%S).log"
     audit_log "restore src=$src ts=$ts target=$newid storage=$storage unprivileged=$unpriv engine=restic"
     if ! run_stream "$jobfile" "pct-restore[$newid]" -- "${cmd[@]}"; then
-        die "$EX_SOFTWARE" "pct restore misslyckades för mål $newid (se $jobfile)"
+        die "$EX_SOFTWARE" "pct restore failed for target $newid (see $jobfile)"
     fi
     rm -rf "$rdir" 2>/dev/null || true
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "restored" "true" "vmid" "$src" "target_vmid" "$newid" "storage" "$storage" "engine" "restic"
     else
-        log_info "restore: KLART → CT $newid (restic, unprivileged=$unpriv, storage=$storage)"
+        log_info "restore: DONE → CT $newid (restic, unprivileged=$unpriv, storage=$storage)"
     fi
     return "$EX_OK"
 }
 
 # ---------------------------------------------------------------------------
-# test-restore — full kedja mot engångs-vmid (återanvänder _tr_* ur testrestore.sh).
+# test-restore — full chain against a throwaway vmid (reuses _tr_* from testrestore.sh).
 # ---------------------------------------------------------------------------
 rdo_test_restore() {
     local vmid="$1"
@@ -236,17 +236,17 @@ rdo_test_restore() {
     local ts
     ts="$(_restic "$repo" snapshots --json --tag "vmid=$vmid" 2>/dev/null \
         | jq -r '[ .[] | (.tags // []) | map(select(startswith("ts=")))[0] // empty | sub("ts=";"") ] | sort | last // empty')"
-    [[ -n "$ts" ]] || die "$EX_DATAERR" "test-restore: inga restic-snapshots för vmid $vmid"
-    local target; target="$(_tr_pick_target)" || die "$EX_UNAVAILABLE" "inget ledigt engångs-vmid 9000–9099"
+    [[ -n "$ts" ]] || die "$EX_DATAERR" "test-restore: no restic snapshots for vmid $vmid"
+    local target; target="$(_tr_pick_target)" || die "$EX_UNAVAILABLE" "no free throwaway vmid 9000–9099"
     audit_log "test-restore vmid=$vmid ts=$ts throwaway=$target engine=restic"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        log_info "[dry-run] test-restore $vmid ($ts) → engångs-$target"
+        log_info "[dry-run] test-restore $vmid ($ts) → throwaway-$target"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "throwaway" "$target"
         return "$EX_OK"
     fi
     local rdir="${CACHE_DIR}/restore-${target}"; rm -rf "$rdir"
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
-    _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
     local unpriv; unpriv="$(_conf_unpriv "$tar")"
     local storage="${TR_STORAGE:-nvmepool}"
@@ -254,50 +254,50 @@ rdo_test_restore() {
     if ! run_stream "$jobfile" "pct-restore[$target]" -- \
             pct restore "$target" "$tar" --storage "$storage" --unprivileged "$unpriv"; then ok=0; stage="restore"; fi
     if (( ok )) && ! run_stream "$jobfile" "pct-start[$target]" -- pct start "$target"; then ok=0; stage="start"; fi
-    if (( ok )); then log_info "test-restore: väntar på att CT $target svarar…"; _tr_wait "$target" || { ok=0; stage="respond"; }; fi
+    if (( ok )); then log_info "test-restore: waiting for CT $target to respond…"; _tr_wait "$target" || { ok=0; stage="respond"; }; fi
     _tr_destroy "$target"; rm -rf "$rdir" 2>/dev/null || true
     if (( ok )); then
-        notify_success "test-restore OK: vmid $vmid ($ts) bootade på engångs-$target (restic)"
+        notify_success "test-restore OK: vmid $vmid ($ts) booted on throwaway-$target (restic)"
         if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_result "test_ok" "true" "vmid" "$vmid" "ts" "$ts" "throwaway" "$target"
-        else log_info "test-restore: ✅ vmid $vmid bootade från restic (engångs-$target städad)"; fi
+        else log_info "test-restore: ✅ vmid $vmid booted from restic (throwaway-$target cleaned up)"; fi
         return "$EX_OK"
     fi
     [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "test_failed" "false" "vmid" "$vmid" "stage" "$stage" "throwaway" "$target"
-    die "$EX_SOFTWARE" "test-restore MISSLYCKADES i steg '$stage' för vmid $vmid"
+    die "$EX_SOFTWARE" "test-restore FAILED at step '$stage' for vmid $vmid"
 }
 
 # ---------------------------------------------------------------------------
-# prune — restic forget/prune. Envelope {cache_deleted,offsite_deleted} som UI:t.
-# offsite_deleted = borttagna snapshot-id (offsite/läs-repot). --group-by paths
-# ger behåll-per-gäst (stabil dumpdir-path).
+# prune — restic forget/prune. Envelope {cache_deleted,offsite_deleted} like the UI.
+# offsite_deleted = removed snapshot ids (offsite/read repo). --group-by paths
+# gives keep-per-guest (stable dumpdir path).
 # ---------------------------------------------------------------------------
-# _restic_forget_json <repo> <keep-flags...> → JSON-array av borttagna short_id.
-# --group-by paths ger behåll-per-gäst (stabil dumpdir-path).
+# _restic_forget_json <repo> <keep-flags...> → JSON array of removed short_id.
+# --group-by paths gives keep-per-guest (stable dumpdir path).
 _restic_forget_json() {
     local repo="$1"; shift
-    # `forget --json` ALLENA ger en ren remove-lista (ett json-värde). Kör INTE
-    # --prune här (det strukturerar om outputen); reclaima utrymme separat nedan.
+    # `forget --json` ALONE gives a clean remove list (one json value). Do NOT run
+    # --prune here (it restructures the output); reclaim space separately below.
     local fflags=(forget --group-by paths "$@" --json)
     [[ "${DRY_RUN:-0}" == 1 ]] && fflags+=(--dry-run)
     local out; out="$(_restic "$repo" "${fflags[@]}" 2>/dev/null || echo '[]')"
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
-    # Skarp körning som faktiskt tog bort snapshots → reclaima packfiler separat.
+    # Real run that actually removed snapshots → reclaim pack files separately.
     if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
-        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) gav fel — utrymme ej helt återvunnet"
+        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error — space not fully reclaimed"
     fi
     printf '%s' "$removed"
 }
 
-# prune — cache-repot prunas keep-last, offsite prunas REN GFS. I cached-läge
-# prunas BÅDA. Envelope {cache_deleted, offsite_deleted} = borttagna id per repo.
+# prune — the cache repo is pruned keep-last, offsite is pruned PURE GFS. In cached mode
+# BOTH are pruned. Envelope {cache_deleted, offsite_deleted} = removed ids per repo.
 rdo_prune() {
-    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för prune"
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for prune"
     local cache_removed='[]' offsite_removed='[]'
-    # Lokalt cache-repo: keep-last (snabb restore-tier).
+    # Local cache repo: keep-last (fast restore tier).
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")"
     fi
-    # Offsite: ren GFS (daily/weekly/monthly) — inget keep-last (cache-koncept).
+    # Offsite: pure GFS (daily/weekly/monthly) — no keep-last (a cache concept).
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
             --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
@@ -309,14 +309,14 @@ rdo_prune() {
             "$dry" "$cache_removed" "$offsite_removed"
     else
         local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length')"; no="$(printf '%s' "$offsite_removed" | jq 'length')"
-        log_info "prune (restic): cache tog bort $nc, offsite tog bort $no$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
+        log_info "prune (restic): cache removed $nc, offsite removed $no$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
     fi
     return "$EX_OK"
 }
 
-# usage — repo-storlek/dedup ur `restic stats` (för Metrics-fliken/dashboarden).
+# usage — repo size/dedup from `restic stats` (for the Metrics tab/dashboard).
 rdo_usage() {
-    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för usage"
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for usage"
     local repo raw rest
     repo="$(_restic_read_repo)"
     raw="$(_restic "$repo" stats --mode raw-data --json 2>/dev/null || echo '{}')"
@@ -332,12 +332,12 @@ rdo_usage() {
            snapshots:($raw.snapshots_count//0),
            files:($rest.total_file_count//0)}'
     else
-        log_info "usage: fysiskt $(jq -r '.total_size//0' <<<"$raw") B, logiskt $(jq -r '.total_size//0' <<<"$rest") B, snapshots $(jq -r '.snapshots_count//0' <<<"$raw")"
+        log_info "usage: physical $(jq -r '.total_size//0' <<<"$raw") B, logical $(jq -r '.total_size//0' <<<"$rest") B, snapshots $(jq -r '.snapshots_count//0' <<<"$raw")"
     fi
     return "$EX_OK"
 }
 
-# verify — restic check (light) el. --read-data (djup) via VERIFY_READ_DATA=1.
+# verify — restic check (light) or --read-data (deep) via VERIFY_READ_DATA=1.
 rdo_verify() {
     local repo; repo="$(_restic_read_repo)"
     local args=(check); [[ "${VERIFY_READ_DATA:-0}" == 1 ]] && args+=(--read-data)
@@ -346,28 +346,28 @@ rdo_verify() {
         return "$EX_OK"
     fi
     [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "repo" "$repo"
-    die "$EX_DATAERR" "restic check FAILADE för $repo"
+    die "$EX_DATAERR" "restic check FAILED for $repo"
 }
 
 # ---------------------------------------------------------------------------
-# BATCH-läge: dumpa ALLA gäster till cache först, ladda sen upp alla → SAMMA repo.
-# (BACKUP_MODE=batch). Fuse-nertiden klumpas i fas 1; en enda upp-fas i fas 2.
-# Faller tillbaka till stream om dumparna inte får plats i CACHE_DIR.
+# BATCH mode: dump ALL guests to cache first, then upload all → the SAME repo.
+# (BACKUP_MODE=batch). Fuse downtime is clumped in phase 1; a single upload phase in phase 2.
+# Falls back to stream if the dumps don't fit in CACHE_DIR.
 # ---------------------------------------------------------------------------
 
-# Uppskattad tar-storlek för en gäst (ZFS used om möjligt, annars konfig-storlek).
+# Estimated tar size for a guest (ZFS used if possible, otherwise config size).
 _guest_bytes() {
     local vmid="$1" spec volid ds used szg
     spec="$(pct config "$vmid" 2>/dev/null | awk '/^rootfs:/{print $2}')"
     volid="${spec%%,*}"                         # storeid:volume
-    ds="${volid/:/\/}"                          # storeid/volume (ZFS-dataset)
+    ds="${volid/:/\/}"                          # storeid/volume (ZFS dataset)
     used="$(zfs list -Hpo used "$ds" 2>/dev/null)"
     if [[ "$used" =~ ^[0-9]+$ ]]; then printf '%s' "$used"; return; fi
-    szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$spec")"   # fallback: konfig-storlek
+    szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$spec")"   # fallback: config size
     printf '%s' "$(( ${szg:-4} * 1073741824 ))"
 }
 
-# Får alla dumpar plats i cachen? (kräver 85% marginal.)
+# Do all dumps fit in the cache? (requires 85% margin.)
 _batch_fits() {
     local free need=0 v
     free="$(df -PB1 "$CACHE_DIR" 2>/dev/null | awk 'NR==2{print $4}')"
@@ -376,24 +376,24 @@ _batch_fits() {
     (( need > 0 && free > need * 100 / 85 ))
 }
 
-# rdo_run_batch <vmid...> → 0 ok/partiell, 2 = ryms ej (be caller köra stream).
+# rdo_run_batch <vmid...> → 0 ok/partial, 2 = doesn't fit (ask caller to run stream).
 rdo_run_batch() {
     local vmids=("$@")
     restic_init
     if ! _batch_fits "${vmids[@]}"; then
-        log_warn "batch: dumparna får inte plats i CACHE_DIR ($CACHE_DIR) → faller tillbaka till stream (1-och-1)"
+        log_warn "batch: dumps don't fit in CACHE_DIR ($CACHE_DIR) → falling back to stream (one-by-one)"
         return 2
     fi
-    acquire_global_lock "queue" "batch" "alla"
+    acquire_global_lock "queue" "batch" "all"
     local start; start="$(date +%s)"
 
-    # --- FAS 1: dumpa alla → cache ---
-    log_info "batch: FAS 1 — dumpar ${#vmids[@]} gäster till cache…"
+    # --- PHASE 1: dump all → cache ---
+    log_info "batch: PHASE 1 — dumping ${#vmids[@]} guests to cache…"
     local dumped=() v mode dumpdir base ts jobfile
     declare -A TS_OF=()
     for v in "${vmids[@]}"; do
         [[ -n "$v" ]] || continue
-        if ! run_preflight "$v"; then log_warn "batch: preflight underkänd för $v — hoppar"; continue; fi
+        if ! run_preflight "$v"; then log_warn "batch: preflight failed for $v — skipping"; continue; fi
         mode="$(_effective_mode "$v")"; dumpdir="${CACHE_DIR}/${v}"
         rm -f "$dumpdir"/vzdump-* 2>/dev/null; mkdir -p "$dumpdir" "$JOBS_DIR"
         jobfile="${JOBS_DIR}/batch-dump-${v}-$(date +%Y%m%d-%H%M%S).log"
@@ -405,40 +405,40 @@ rdo_run_batch() {
                 pct config "$v" > "${base}.conf" 2>/dev/null || true
                 dumped+=("$v"); TS_OF[$v]="$ts"
             else
-                log_warn "batch: hittar ingen tar för $v efter vzdump — hoppar"
+                log_warn "batch: no tar found for $v after vzdump — skipping"
             fi
         else
-            log_warn "batch: vzdump $v MISSLYCKADES — hoppar"
+            log_warn "batch: vzdump $v FAILED — skipping"
         fi
     done
 
-    # --- FAS 2: ladda upp alla dumpar → ETT repo ---
-    log_info "batch: FAS 2 — laddar upp ${#dumped[@]} dumpar → $(_restic_read_repo)…"
+    # --- PHASE 2: upload all dumps → ONE repo ---
+    log_info "batch: PHASE 2 — uploading ${#dumped[@]} dumps → $(_restic_read_repo)…"
     local okc=0 failc=0 failed=() wrepo; wrepo="$(_restic_write_repo)"
     for v in "${dumped[@]}"; do
         ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
         jobfile="${JOBS_DIR}/backup-${v}-$(date +%Y%m%d-%H%M%S).log"
         if ! run_stream "$jobfile" "restic-backup[$v]" -- \
                 _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=lxc" --host "$(hostname -s)"; then
-            failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v MISSLYCKADES"; continue
+            failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v FAILED"; continue
         fi
         if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
             run_stream "$jobfile" "restic-copy[$v]" -- \
                 _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$v,ts=$ts" \
-                || { failc=$((failc+1)); failed+=("$v"); log_warn "batch: copy→offsite $v MISSLYCKADES"; continue; }
+                || { failc=$((failc+1)); failed+=("$v"); log_warn "batch: copy→offsite $v FAILED"; continue; }
         fi
         rm -f "$dumpdir"/vzdump-* 2>/dev/null
         okc=$((okc+1))
     done
     local dur=$(( $(date +%s) - start ))
 
-    if (( failc > 0 )); then notify_failure "batch: ${failc} misslyckades (${failed[*]}) på ${dur}s"
-    else notify_success "batch: ${okc} backuper OK på ${dur}s"; fi
+    if (( failc > 0 )); then notify_failure "batch: ${failc} failed (${failed[*]}) in ${dur}s"
+    else notify_success "batch: ${okc} backups OK in ${dur}s"; fi
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "$( ((failc==0)) && echo ok || echo partial )" "$( ((failc==0)) && echo true || echo false )" \
             "mode" "batch" "backups_ok" "$okc" "backups_failed" "$failc" "duration_s" "$dur" "failed_vmids" "${failed[*]:-}"
     else
-        log_info "batch: klart — ${okc} ok, ${failc} fel, ${dur}s (allt i ett repo)"
+        log_info "batch: done — ${okc} ok, ${failc} failed, ${dur}s (all in one repo)"
     fi
     (( failc == 0 )) || return "$EX_SOFTWARE"
     return "$EX_OK"

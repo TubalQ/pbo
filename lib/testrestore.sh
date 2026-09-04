@@ -1,11 +1,11 @@
 # shellcheck shell=bash
-# lib/testrestore.sh — steg 8: test-restore. Full kedja mot ett ENGÅNGS-vmid:
-# hämta FRÅN OFFSITE (inte cache) → verifiera → pct restore → starta → vänta på
-# att containern svarar → stoppa → destroy. Rapport via ntfy (tyst vid framgång
-# om inte NTFY_ON_SUCCESS=true; larm vid fel).
+# lib/testrestore.sh — step 8: test-restore. Full chain against a THROWAWAY vmid:
+# fetch FROM OFFSITE (not cache) → verify → pct restore → start → wait for
+# the container to respond → stop → destroy. Report via ntfy (silent on success
+# unless NTFY_ON_SUCCESS=true; alerts on failure).
 #
-# Detta är det enda kommandot som verkligen bevisar att en offsite-backup går att
-# återställa OCH boota — resten verifierar bara bytes.
+# This is the only command that truly proves an offsite backup can be
+# restored AND booted — the rest just verify bytes.
 
 _tr_destroy() {
     local id="$1"
@@ -14,7 +14,7 @@ _tr_destroy() {
     pct destroy "$id" --purge >/dev/null 2>&1 || true
 }
 
-# Vänta tills CT:n svarar på exec (eller timeout).
+# Wait until the CT responds to exec (or timeout).
 _tr_wait() {
     local id="$1" i
     for (( i=0; i < ${TR_WAIT_TRIES:-30}; i++ )); do
@@ -24,7 +24,7 @@ _tr_wait() {
     return 1
 }
 
-# Välj högsta lediga engångs-vmid i 9000–9099.
+# Pick the highest free throwaway vmid in 9000–9099.
 _tr_pick_target() {
     local n
     for (( n=9099; n >= 9000; n-- )); do
@@ -39,30 +39,30 @@ do_test_restore() {
     if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_test_restore "$vmid"; return $?; fi
     local remote="${RCLONE_REMOTE}:${REMOTE_PATH}/${vmid}"
 
-    # Senaste offsite-arkivet för vmid:en.
+    # The latest offsite archive for the vmid.
     local base ts
     base="$(rclone lsf "$remote" 2>/dev/null | grep -E '\.tar\.zst$' | sort -r | head -1 || true)"
-    [[ -n "$base" ]] || die "$EX_DATAERR" "test-restore: inga offsite-arkiv för vmid $vmid"
+    [[ -n "$base" ]] || die "$EX_DATAERR" "test-restore: no offsite archives for vmid $vmid"
     ts="$(_archive_ts "$base")"
 
     local target; target="$(_tr_pick_target)" \
-        || die "$EX_UNAVAILABLE" "test-restore: inget ledigt vmid i 9000–9099"
+        || die "$EX_UNAVAILABLE" "test-restore: no free vmid in 9000–9099"
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
     mkdir -p "$JOBS_DIR"
     audit_log "test-restore vmid=$vmid ts=$ts throwaway=$target"
-    log_info "test-restore: vmid $vmid ($ts) → engångs-vmid $target"
+    log_info "test-restore: vmid $vmid ($ts) → throwaway vmid $target"
 
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        log_info "[dry-run] skulle hämta $vmid ($ts), restore→$target, boota, destroy"
+        log_info "[dry-run] would fetch $vmid ($ts), restore→$target, boot, destroy"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "throwaway" "$target"
         return "$EX_OK"
     fi
 
-    # 1. hämta FRÅN OFFSITE (+ sha256). die städar inget — target ej skapad än.
+    # 1. fetch FROM OFFSITE (+ sha256). die cleans up nothing — target not created yet.
     _fetch_core "$vmid" "$ts"
     local archive="$FETCHED_ARCHIVE"
 
-    # unprivileged + storage ur sidecar/meta.
+    # unprivileged + storage from sidecar/meta.
     local unpriv=1
     if [[ -f "${archive}.conf" ]]; then
         unpriv="$(awk -F': ' '/^unprivileged:/{print $2; exit}' "${archive}.conf")"
@@ -72,7 +72,7 @@ do_test_restore() {
     storage="$(jq -r '.source_volumes[0] // empty' "${archive}.meta.json" 2>/dev/null | cut -d'|' -f1)"
     [[ -n "$storage" && "$storage" != "null" ]] || storage="nvmepool"
 
-    # 2–4. restore → start → svara. Från och med nu: städa target vid varje fel.
+    # 2–4. restore → start → respond. From now on: clean up target on every failure.
     local ok=1 stage=""
     if ! run_stream "$jobfile" "pct-restore[$target]" -- \
             pct restore "$target" "$archive" --storage "$storage" --unprivileged "$unpriv"; then
@@ -82,22 +82,22 @@ do_test_restore() {
         ok=0; stage="start"
     fi
     if (( ok )); then
-        log_info "test-restore: väntar på att CT $target svarar…"
+        log_info "test-restore: waiting for CT $target to respond…"
         _tr_wait "$target" || { ok=0; stage="respond"; }
     fi
 
-    # 5. städa alltid.
+    # 5. always clean up.
     _tr_destroy "$target"
 
     if (( ok )); then
-        notify_success "test-restore OK: vmid $vmid ($ts) återställd och bootad på engångs-$target"
+        notify_success "test-restore OK: vmid $vmid ($ts) restored and booted on throwaway-$target"
         if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
             json_result "test_ok" "true" "vmid" "$vmid" "ts" "$ts" "throwaway" "$target"
         else
-            log_info "test-restore: ✅ vmid $vmid bootade från offsite (engångs-$target, städad)"
+            log_info "test-restore: ✅ vmid $vmid booted from offsite (throwaway-$target, cleaned up)"
         fi
         return "$EX_OK"
     fi
     [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "test_failed" "false" "vmid" "$vmid" "stage" "$stage" "throwaway" "$target"
-    die "$EX_SOFTWARE" "test-restore MISSLYCKADES i steg '$stage' för vmid $vmid (engångs-$target städad)"
+    die "$EX_SOFTWARE" "test-restore FAILED at step '$stage' for vmid $vmid (throwaway-$target cleaned up)"
 }

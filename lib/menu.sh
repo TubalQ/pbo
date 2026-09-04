@@ -1,14 +1,14 @@
 # shellcheck shell=bash
-# lib/menu.sh — interaktivt prompt-CLI (rclone config-stil). Ren bash, noll
-# beroenden, inget alternate-screen → funkar identiskt över SSH/serial/tmux.
-# Aktiveras med `lxc-offsite menu`. Ersätter Textual-TUI:n som interaktivt gränssnitt.
+# lib/menu.sh — interactive prompt-CLI (rclone config style). Pure bash, zero
+# dependencies, no alternate-screen → behaves identically over SSH/serial/tmux.
+# Launched with `lxc-offsite menu`. This is the primary interactive interface.
 #
-# All affärslogik ligger kvar i CLI:t; menyn shell:ar ut till `$LXCO_BIN` (eller
-# läser --json). Config-ändringar (BACKUP_ORDER) skrivs atomiskt 0600.
+# No business logic lives here; the menu shells out to `$LXCO_BIN` (or reads
+# --json). Config changes (BACKUP_ORDER) are written atomically, mode 0600.
 
 LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}"
 
-# --- färger (av om ej tty) ---
+# --- colors (off when not a tty) ---
 if [[ -t 1 ]]; then
     C_B=$'\033[1m'; C_D=$'\033[2m'; C_G=$'\033[32m'; C_C=$'\033[36m'
     C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
@@ -18,13 +18,13 @@ fi
 
 _ask()   { local p="$1" d="${2:-}" a; read -r -p "$p${d:+ [$d]}: " a; printf '%s' "${a:-$d}"; }
 _askpw() { local p="$1" a; read -r -s -p "$p: " a; echo >&2; printf '%s' "$a"; }
-_pause() { read -r -p "${C_D}— Enter för att fortsätta —${C_0} " _; }
-_yn()    { local a; a="$(_ask "$1 (j/n)" "${2:-n}")"; [[ "$a" == [jJyY]* ]]; }
+_pause() { read -r -p "${C_D}— press Enter to continue —${C_0} " _; }
+_yn()    { local a; a="$(_ask "$1 (y/n)" "${2:-n}")"; [[ "$a" == [yYjJ]* ]]; }
 
-# Skriv/uppdatera KEY=VALUE i configen (atomiskt, 0600) + uppdatera i minnet.
+# Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
 _cfg_set() {
     local k="$1" v="$2" cfg="${LXCO_CONFIG_LOADED:-${LXCO_CONFIG:-/etc/lxc-offsite/config}}" tmp
-    [[ -f "$cfg" ]] || { printf 'config saknas: %s\n' "$cfg" >&2; return 1; }
+    [[ -f "$cfg" ]] || { printf 'config not found: %s\n' "$cfg" >&2; return 1; }
     tmp="$(mktemp)"
     if grep -qE "^${k}=" "$cfg"; then sed "s|^${k}=.*|${k}=${v}|" "$cfg" > "$tmp"
     else { cat "$cfg"; printf '%s=%s\n' "$k" "$v"; } > "$tmp"; fi
@@ -33,7 +33,7 @@ _cfg_set() {
     return 0
 }
 
-# Klustergäster som TSV: vmid \t name \t type \t node \t status
+# Cluster guests as TSV: vmid \t name \t type \t node \t status
 _menu_guests_tsv() {
     pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
         | jq -r 'sort_by(.vmid)[] | "\(.vmid)\t\(.name // "-")\t\(.type)\t\(.node)\t\(.status)"' 2>/dev/null
@@ -46,41 +46,41 @@ _menu_header() {
     local repo="${RESTIC_OFFSITE_REPO:-${RCLONE_REMOTE:-—}}"
     local prot; prot="$(tr ',' ' ' <<<"${BACKUP_ORDER:-}" | wc -w)"
     printf '%s┌─ %sPBO%s%s · Proxmox Backup Offsite ────────────────────────┐%s\n' "$C_C" "$C_B" "$C_0$C_C" "" "$C_0"
-    printf '%s│%s motor %s%s%s · offsite %s%s%s · skyddade %s%s%s\n' \
+    printf '%s│%s engine %s%s%s · offsite %s%s%s · protected %s%s%s\n' \
         "$C_C" "$C_0" "$C_B" "${ENGINE:-tar}" "$C_0" "$C_C" "$repo" "$C_0" "$C_B" "$prot" "$C_0"
     printf '%s└───────────────────────────────────────────────────────────┘%s\n' "$C_C" "$C_0"
 }
 
-# --- 2. GÄSTER: scan / add / delete (hantera BACKUP_ORDER) ---
+# --- 2. GUESTS: scan / add / delete (manage BACKUP_ORDER) ---
 menu_guests() {
     while true; do
         _menu_header
-        printf '%s Gäster — scanna klustret, lägg till/ta bort ur backup%s\n\n' "$C_B" "$C_0"
-        printf '  %-6s %-22s %-5s %-9s %-9s %s\n' "VMID" "NAMN" "TYP" "NOD" "STATUS" "SKYDDAD"
+        printf '%s Guests — scan the cluster, add/remove from backup%s\n\n' "$C_B" "$C_0"
+        printf '  %-6s %-22s %-5s %-9s %-9s %s\n' "VMID" "NAME" "TYPE" "NODE" "STATUS" "PROTECTED"
         printf '  %s\n' "-------------------------------------------------------------------"
         local v n t nd st mark new
         while IFS=$'\t' read -r v n t nd st; do
             [[ -n "$v" ]] || continue
-            if _is_protected "$v"; then mark="${C_G}✓ ja${C_0}"; new=""
-            else mark="${C_D}—${C_0}"; new=" ${C_Y}(ny)${C_0}"; fi
+            if _is_protected "$v"; then mark="${C_G}✓ yes${C_0}"; new=""
+            else mark="${C_D}—${C_0}"; new=" ${C_Y}(new)${C_0}"; fi
             printf '  %-6s %-22s %-5s %-9s %-9s %b%b\n' "$v" "${n:0:22}" "$t" "$nd" "$st" "$mark" "$new"
         done < <(_menu_guests_tsv)
-        printf '\n  %s[a]%s skydda (lägg till)   %s[d]%s ta bort skydd   %s[r]%s uppdatera   %s[0]%s tillbaka\n' \
+        printf '\n  %s[a]%s protect (add)   %s[d]%s remove from backup   %s[r]%s refresh   %s[0]%s back\n' \
             "$C_B" "$C_0" "$C_B" "$C_0" "$C_B" "$C_0" "$C_B" "$C_0"
-        local c; c="$(_ask "Val" )"
+        local c; c="$(_ask "Choice" )"
         case "$c" in
-            a) local id; id="$(_ask "VMID att skydda")"
+            a) local id; id="$(_ask "VMID to protect")"
                if [[ "$id" =~ ^[0-9]+$ ]] && _menu_guests_tsv | grep -q "^$id	"; then
-                   _is_protected "$id" && { echo "  redan skyddad."; } || {
+                   _is_protected "$id" && { echo "  already protected."; } || {
                        local order; order="$(tr ',' ' ' <<<"$BACKUP_ORDER") $id"
                        _cfg_set BACKUP_ORDER "$(echo $order | tr ' ' ',' | sed 's/^,//')"
-                       echo "  ${C_G}skyddad: $id${C_0}"; }
-               else echo "  ${C_R}okänt vmid $id${C_0}"; fi; _pause ;;
-            d) local id; id="$(_ask "VMID att ta bort ur backup")"
+                       echo "  ${C_G}protected: $id${C_0}"; }
+               else echo "  ${C_R}unknown vmid $id${C_0}"; fi; _pause ;;
+            d) local id; id="$(_ask "VMID to remove from backup")"
                local order=(); local x
                for x in $(tr ',' ' ' <<<"$BACKUP_ORDER"); do [[ "$x" == "$id" ]] || order+=("$x"); done
                _cfg_set BACKUP_ORDER "$(IFS=,; echo "${order[*]}")"
-               echo "  ${C_Y}borttagen ur backup: $id${C_0}"; _pause ;;
+               echo "  ${C_Y}removed from backup: $id${C_0}"; _pause ;;
             r) : ;;
             0|"") return ;;
             *) : ;;
@@ -91,17 +91,17 @@ menu_guests() {
 # --- 3. BACKUP ---
 menu_backup() {
     _menu_header
-    printf '%s Säkerhetskopiera%s\n\n' "$C_B" "$C_0"
-    printf '  %s[1]%s Alla skyddade — en i taget (stream)\n' "$C_B" "$C_0"
-    printf '  %s[2]%s Alla skyddade — allt direkt (batch)\n' "$C_B" "$C_0"
-    printf '  %s[3]%s Välj en gäst\n' "$C_B" "$C_0"
-    printf '  %s[0]%s tillbaka\n\n' "$C_B" "$C_0"
-    local c; c="$(_ask "Val")"
+    printf '%s Back up%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s All protected — one by one (stream)\n' "$C_B" "$C_0"
+    printf '  %s[2]%s All protected — all at once (batch)\n' "$C_B" "$C_0"
+    printf '  %s[3]%s Pick a single guest\n' "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "Choice")"
     case "$c" in
-        1) _yn "Backa upp alla skyddade (stream)?" j && { "$LXCO_BIN" run-schedule --stream; _pause; } ;;
-        2) _yn "Backa upp alla skyddade (batch)?" j && { "$LXCO_BIN" run-schedule --batch; _pause; } ;;
-        3) local id; id="$(_ask "VMID att backa upp")"
-           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Backa upp $id nu?" j && { "$LXCO_BIN" backup "$id"; _pause; } ;;
+        1) _yn "Back up all protected guests (stream)?" y && { "$LXCO_BIN" run-schedule --stream; _pause; } ;;
+        2) _yn "Back up all protected guests (batch)?" y && { "$LXCO_BIN" run-schedule --batch; _pause; } ;;
+        3) local id; id="$(_ask "VMID to back up")"
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Back up $id now?" y && { "$LXCO_BIN" backup "$id"; _pause; } ;;
         *) : ;;
     esac
 }
@@ -110,18 +110,18 @@ menu_backup() {
 menu_status() {
     _menu_header
     printf '%s Status%s\n\n' "$C_B" "$C_0"
-    printf '  Hämtar från repot…\n'
+    printf '  Reading from the repo…\n'
     "$LXCO_BIN" --json list 2>/dev/null | jq -r '
-        .archives as $a | "  gäster med snapshots: \($a|map(.vmid)|unique|length)\n  snapshots totalt:     \($a|length)\n  logisk storlek:       \(($a|map(.size_bytes|tonumber)|add // 0)/1e9*10|floor/10) GB"' 2>/dev/null \
-        || echo "  (kunde ej läsa list)"
+        .archives as $a | "  guests with snapshots: \($a|map(.vmid)|unique|length)\n  snapshots total:       \($a|length)\n  logical size:          \(($a|map(.size_bytes|tonumber)|add // 0)/1e9*10|floor/10) GB"' 2>/dev/null \
+        || echo "  (could not read list)"
     if [[ "${ENGINE:-tar}" == "restic" ]]; then
-        "$LXCO_BIN" --json usage 2>/dev/null | jq -r '"  fysiskt offsite:      \(.physical_bytes/1e9*10|floor/10) GB (dedup \(.compression_ratio)×)"' 2>/dev/null
+        "$LXCO_BIN" --json usage 2>/dev/null | jq -r '"  physical offsite:      \(.physical_bytes/1e9*10|floor/10) GB (dedup \(.compression_ratio)×)"' 2>/dev/null
     fi
-    printf '\n  senaste timer-körning:\n'; systemctl list-timers lxc-offsite.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
+    printf '\n  next scheduled run:\n'; systemctl list-timers lxc-offsite.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
     echo; _pause
 }
 
-# --- SETUP WIZARD (English — used by `pbo setup`, install.sh, and the menu) ---
+# --- SETUP WIZARD (used by `lxc-offsite setup`, install.sh, and the menu) ---
 run_setup_wizard() {
     set +e +u
     printf '\n%s=== PBO · Proxmox Backup Offsite — setup ===%s\n\n' "$C_B" "$C_0"
@@ -163,7 +163,7 @@ run_setup_wizard() {
     # --- restic password (DR key) ---
     printf '\n'
     local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"
-    if _yn "Generate a random repo password (recommended)?" j; then
+    if _yn "Generate a random repo password (recommended)?" y; then
         pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
         echo "  Generated — export it afterwards (menu → Export DR key) and store it safely."
     else
@@ -195,95 +195,95 @@ run_setup_wizard() {
     printf '\n  Creating/verifying the restic repo…\n'
     "$LXCO_BIN" init
     printf '\n%s  Setup complete.%s Next steps:\n' "$C_G" "$C_0"
-    printf '    1) Protect guests:  pbo menu → Guests (scan/add)\n'
-    printf '    2) Test a backup:   pbo menu → Backup\n'
-    printf '    3) %sExport your DR key%s → password manager (pbo menu → Export DR key)\n' "$C_B" "$C_0"
+    printf '    1) Protect guests:  lxc-offsite menu → Guests (scan/add)\n'
+    printf '    2) Test a backup:   lxc-offsite menu → Backup\n'
+    printf '    3) %sExport your DR key%s → password manager (menu → Export DR key)\n' "$C_B" "$C_0"
     return 0
 }
 
-# Menyval 1 → samma wizard (+ paus)
+# Menu choice 1 → same wizard (+ pause)
 menu_setup() { run_setup_wizard; _pause; }
 
-# --- 4. EXPORTERA DR-NYCKEL ---
+# --- 4. EXPORT DR KEY ---
 menu_export() {
     _menu_header
-    printf '%s Exportera DR-nyckel%s\n\n' "$C_B" "$C_0"
-    _yn "Detta visar HEMLIGHETER (repo-lösen på skärmen). Fortsätt?" n || return
+    printf '%s Export DR key%s\n\n' "$C_B" "$C_0"
+    _yn "This shows SECRETS (repo password on screen). Continue?" n || return
     local pf="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}" pw
-    pw="$(cat "$pf" 2>/dev/null || echo '<ingen lösenfil>')"
-    echo; echo "  ${C_Y}# PBO DR-nyckel — HEMLIG. Ny host: installera PBO, klistra in, list→restore${C_0}"
+    pw="$(cat "$pf" 2>/dev/null || echo '<no password file>')"
+    echo; echo "  ${C_Y}# PBO DR key — SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
     echo "  ENGINE=restic"
-    echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<ej satt>}"
-    echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<ej satt>}"
+    echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<not set>}"
+    echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<not set>}"
     echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"
     echo
-    if _yn "Spara kopia till /root/pbo-dr-key.txt (0600)?" n; then
+    if _yn "Save a copy to /root/pbo-dr-key.txt (0600)?" n; then
         ( umask 077; { echo "ENGINE=restic"; echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
           echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
-        echo "  ${C_G}sparad: /root/pbo-dr-key.txt${C_0} — flytta offline och radera från hosten."
+        echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0} — move it offline and delete it from this host."
     fi
     _pause
 }
 
-# --- 6. ÅTERSTÄLL ---
+# --- 6. RESTORE ---
 menu_restore() {
     _menu_header
-    printf '%s Återställ%s\n\n' "$C_B" "$C_0"
-    echo "  Hämtar offsite-arkiv…"
+    printf '%s Restore%s\n\n' "$C_B" "$C_0"
+    echo "  Fetching offsite archives…"
     local listing; listing="$("$LXCO_BIN" --json list 2>/dev/null)"
     local vmids; vmids="$(jq -r '[.archives[].vmid]|unique|.[]' <<<"$listing" 2>/dev/null)"
-    [[ -n "$vmids" ]] || { echo "  Inga offsite-arkiv."; _pause; return; }
-    echo "  Gäster med backup: ${C_C}$(echo $vmids | tr '\n' ' ')${C_0}"
-    local src; src="$(_ask "VMID att återställa")"
+    [[ -n "$vmids" ]] || { echo "  No offsite archives."; _pause; return; }
+    echo "  Guests with backups: ${C_C}$(echo $vmids | tr '\n' ' ')${C_0}"
+    local src; src="$(_ask "VMID to restore")"
     [[ "$src" =~ ^[0-9]+$ ]] || return
     local tss; tss="$(jq -r --arg v "$src" '.archives[]|select(.vmid==$v)|.archive' <<<"$listing" | grep -oE '[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}' | sort -r)"
-    [[ -n "$tss" ]] || { echo "  ${C_R}Inga snapshots för $src.${C_0}"; _pause; return; }
-    echo "  Snapshots (nyast först):"; echo "$tss" | sed 's/^/    /'
-    local ts; ts="$(_ask "Tidsstämpel" "$(echo "$tss" | head -1)")"
+    [[ -n "$tss" ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
+    echo "  Snapshots (newest first):"; echo "$tss" | sed 's/^/    /'
+    local ts; ts="$(_ask "Timestamp" "$(echo "$tss" | head -1)")"
     local used free=9100
     used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"
     while grep -qx "$free" <<<"$used"; do free=$((free+1)); done
-    local newid; newid="$(_ask "Nytt VMID (aldrig överskrivning)" "$free")"
+    local newid; newid="$(_ask "New VMID (never overwrites)" "$free")"
     local stores; stores="$(pvesh get /storage --output-format json 2>/dev/null | jq -r '.[]|select((.content//"")|test("rootdir"))|.storage')"
     echo "  Storage: ${C_C}$(echo $stores | tr '\n' ' ')${C_0}"
     local storage; storage="$(_ask "Storage" "$(echo "$stores" | head -1)")"
-    _yn "Återställ $src ($ts) → NYTT vmid $newid på $storage?" j || return
+    _yn "Restore $src ($ts) → NEW vmid $newid on $storage?" y || return
     "$LXCO_BIN" restore "$src" "$ts" --to "$newid" --storage "$storage" --yes
     _pause
 }
 
-# --- 7. UNDERHÅLL ---
+# --- 7. MAINTENANCE ---
 menu_maint() {
     _menu_header
-    printf '%s Underhåll%s\n\n' "$C_B" "$C_0"
-    printf '  %s[1]%s Prune (torrkörning)     %s[2]%s Prune (skarpt)\n' "$C_B" "$C_0" "$C_B" "$C_0"
-    printf '  %s[3]%s Verifiera (restic check) %s[4]%s Test-restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
-    printf '  %s[0]%s tillbaka\n\n' "$C_B" "$C_0"
-    local c; c="$(_ask "Val")"
+    printf '%s Maintenance%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s Prune (dry run)          %s[2]%s Prune (for real)\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[3]%s Verify (restic check)    %s[4]%s Test-restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "Choice")"
     case "$c" in
         1) "$LXCO_BIN" --dry-run prune; _pause ;;
-        2) _yn "Kör SKARP prune (raderar snapshots utanför policyn)?" n && { "$LXCO_BIN" prune; _pause; } ;;
-        3) echo "  Verifierar (kan ta en stund)…"; "$LXCO_BIN" verify; _pause ;;
-        4) local id; id="$(_ask "VMID för test-restore")"
-           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (hämta→boota→destroy engångskopia)?" j && { "$LXCO_BIN" test-restore "$id"; _pause; } ;;
+        2) _yn "Run a REAL prune (deletes snapshots outside the policy)?" n && { "$LXCO_BIN" prune; _pause; } ;;
+        3) echo "  Verifying (this can take a while)…"; "$LXCO_BIN" verify; _pause ;;
+        4) local id; id="$(_ask "VMID to test-restore")"
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (fetch→boot→destroy a throwaway copy)?" y && { "$LXCO_BIN" test-restore "$id"; _pause; } ;;
         *) : ;;
     esac
 }
 
-# --- huvudmeny ---
+# --- main menu ---
 menu_main() {
-    # Interaktivt: read/grep/[[ ]] returnerar ofta !=0 — dispatcherns set -Eeuo får
-    # INTE fälla menyn. (CLI-åtgärderna körs som egna subprocesser med egen set -e.)
+    # Interactive: read/grep/[[ ]] often return !=0 — the dispatcher's set -Eeuo
+    # must NOT kill the menu. (CLI actions run as their own subprocesses with their own set -e.)
     set +e +u
-    command -v jq >/dev/null 2>&1 || { printf 'jq krävs för menyn (apt install jq)\n' >&2; return 1; }
+    command -v jq >/dev/null 2>&1 || { printf 'jq is required for the menu (apt install jq)\n' >&2; return 1; }
     while true; do
         _menu_header
         printf '\n'
-        printf '  %s[1]%s Setup / onboarding        %s[4]%s Exportera DR-nyckel\n' "$C_B" "$C_0" "$C_B" "$C_0"
-        printf '  %s[2]%s Gäster (scan/add/delete)  %s[5]%s Status\n' "$C_B" "$C_0" "$C_B" "$C_0"
-        printf '  %s[3]%s Säkerhetskopiera          %s[6]%s Återställ\n' "$C_B" "$C_0" "$C_B" "$C_0"
-        printf '  %s[7]%s Underhåll (prune/verify)  %s[0]%s Avsluta\n\n' "$C_B" "$C_0" "$C_B" "$C_0"
-        local c; c="$(_ask "Val")"
+        printf '  %s[1]%s Setup / onboarding        %s[4]%s Export DR key\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[2]%s Guests (scan/add/delete)  %s[5]%s Status\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[3]%s Back up                    %s[6]%s Restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[7]%s Maintenance (prune/verify) %s[0]%s Quit\n\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        local c; c="$(_ask "Choice")"
         case "$c" in
             1) menu_setup ;;
             2) menu_guests ;;

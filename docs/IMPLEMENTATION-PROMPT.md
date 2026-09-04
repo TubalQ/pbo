@@ -1,200 +1,198 @@
-# Implementationsprompt — lxc-offsite
+# Implementation prompt — lxc-offsite
 
-Klistra in nedanstående i Claude Code i en tom repo-katalog.
-Bifoga `PLAN.md` i samma katalog innan du kör.
+Paste the following into Claude Code in an empty repo directory.
+Attach `PLAN.md` in the same directory before you run it.
 
 ---
 
-Du ska bygga `lxc-offsite` från grunden — ett nytt produktionsverktyg för
-Proxmox VE som tar vzdump-arkiv av LXC-containrar, skeppar dem till Hetzner
-Storage Box via rclone över SFTP, och kan hämta tillbaka dem för återställning.
-Med webbgränssnitt i PBS-stil.
+You are to build `lxc-offsite` from scratch — a new production tool for Proxmox VE
+that takes vzdump archives of LXC containers, ships them to Hetzner Storage Box via
+rclone over SFTP, and can fetch them back for restore. With a PBS-style web
+interface.
 
-Detta är inte ett script. Det är ett verktyg som ska gå att lita på i
-produktion och felsöka klockan tre på natten av någon som inte skrev det.
+This is not a script. It is a tool that must be trustworthy in production and
+troubleshootable at three in the morning by someone who did not write it.
 
-`PLAN.md` i repot är kravspecifikationen och `RESEARCH.md` är underlaget bakom
-den. Läs båda först och följ dem. Avvik bara om något är tekniskt felaktigt —
-och säg då till istället för att tyst göra något annat.
+`PLAN.md` in the repo is the requirements specification and `RESEARCH.md` is the
+basis behind it. Read both first and follow them. Deviate only if something is
+technically incorrect — and in that case say so instead of silently doing
+something else.
 
-**Ärv ingen befintlig kodbas.** `RESEARCH.md` går igenom kandidaterna och
-underkänner dem alla — de saknar verifiering, offsite-retention eller båda. Läs
-avsnitt 1 så att du vet vilka misstag som inte ska upprepas, men importera
-ingenting.
+**Inherit no existing codebase.** `RESEARCH.md` goes through the candidates and
+rejects them all — they lack verification, offsite retention, or both. Read
+section 1 so you know which mistakes not to repeat, but import nothing.
 
-## Miljö
+## Environment
 
-- Proxmox VE, kluster `midvault`, två noder
-- ZFS-pooler: `nvmepool` (NVMe mirror), `newbulk` (raidz2)
-- Enbart LXC-containrar, inga VM:ar
-- Befintlig PBS på 10.10.2.133 — **rör den inte**, detta är ett separat lager
-- Befintlig ntfy för notiser
+- Proxmox VE, cluster `mycluster`, two nodes
+- ZFS pools: `nvmepool` (NVMe mirror), `newbulk` (raidz2)
+- LXC containers only, no VMs
+- Existing PBS on 192.0.2.10 — **do not touch it**, this is a separate tier
+- Existing ntfy for notifications
 - Offsite: Hetzner Storage Box, SFTP port 23, via rclone crypt
-- Befintlig Traefik i **egen dedikerad VM** — förutsätt aldrig att den delar VM
-- Befintlig Pocket-ID som OIDC-provider
+- An existing reverse proxy in its **own dedicated VM** — never assume it shares a VM
+- An existing OIDC provider
 
-## Språk och stil
+## Language and style
 
 - CLI: Bash, `#!/usr/bin/env bash`, `set -Eeuo pipefail`
-- API: Python 3 + FastAPI, i egen venv under `/opt/lxc-offsite`
-- Frontend: ExtJS + `proxmox-widget-toolkit` från `/usr/share/javascript/`
-- Projektet licensieras **AGPL-3.0**, LICENSE-fil i repo-roten från commit ett
-- Inga externa beroenden utöver: `rclone`, `vzdump`, `pct`, `zstd`, `jq`,
+- API: Python 3 + FastAPI, in its own venv under `/opt/lxc-offsite`
+- Frontend: ExtJS + `proxmox-widget-toolkit` from `/usr/share/javascript/`
+- The project is licensed **AGPL-3.0**, LICENSE file in the repo root from commit one
+- No external dependencies beyond: `rclone`, `vzdump`, `pct`, `zstd`, `jq`,
   `sha256sum`, `flock`, `curl`, `systemd`
-- Varje funktion som kan misslyckas returnerar en meningsfull exit-kod
-- All output loggas till både stdout och `/var/log/lxc-offsite/lxc-offsite.log`
-  med tidsstämpel och nivå (INFO/WARN/ERROR)
-- Inga `echo` för fel — använd en `log_error`-funktion som även triggar notis
-- Kommentarer på svenska, kod och variabelnamn på engelska
+- Every function that can fail returns a meaningful exit code
+- All output is logged to both stdout and `/var/log/lxc-offsite/lxc-offsite.log`
+  with timestamp and level (INFO/WARN/ERROR)
+- No `echo` for errors — use a `log_error` function that also triggers a notification
+- Comments in Swedish, code and variable names in English
 
-## Bygg i denna ordning
+## Build in this order
 
-Bygg och testa ett steg i taget. Stanna och redovisa efter varje steg innan du
-går vidare.
+Build and test one step at a time. Stop and report after each step before moving
+on.
 
-**Steg 1 — skelett och konfiguration.** Argumentparsning, subkommandon,
-konfigläsning från `/etc/lxc-offsite/config`, logging, låshantering,
-`--dry-run` och `--json` globalt.
+**Step 1 — skeleton and configuration.** Argument parsing, subcommands, config
+reading from `/etc/lxc-offsite/config`, logging, lock handling, `--dry-run` and
+`--json` globally.
 
-Låsningen är två nivåer och måste sitta rätt från början: ett **globalt** lås som
-släpper igenom en backup/push åt gången oavsett vmid, och ett **per-vmid**-lås
-mot dubbelköning. Schemalagda körningar köar på det globala låset med timeout;
-manuella avslutar direkt med besked om vad som blockerar. `fetch` och `restore`
-tar aldrig det globala låset. Inga riktiga operationer än. Alla subkommandon
-ska svara med "not implemented".
+Locking is two-level and must be correct from the start: a **global** lock that
+lets through one backup/push at a time regardless of vmid, and a **per-vmid** lock
+against double-queuing. Scheduled runs queue on the global lock with a timeout;
+manual ones exit immediately with a message about what is blocking. `fetch` and
+`restore` never take the global lock. No real operations yet. All subcommands
+should respond with "not implemented".
 
-`--json` är inte valfritt och inte något som läggs till sist. GUI:t konsumerar
-enbart den outputen, så varje subkommando måste ha den från början.
+`--json` is not optional and not something added last. The GUI consumes only that
+output, so every subcommand must have it from the start.
 
-**Steg 2 — preflight.** Innan någon backup:
-- containern finns (`pct config <vmid>`)
-- ZFS-poolen har ≥ 1,5 × containerns använda storlek fritt
-- cache-katalogen finns och är skrivbar
-- rclone-remote svarar (`rclone about`)
-- parsning av `/etc/pve/lxc/<vmid>.conf`: identifiera bind-mounts och
-  `backup=0`-volymer, logga WARN per fynd, skriv in dem i meta-filen
+**Step 2 — preflight.** Before any backup:
+- the container exists (`pct config <vmid>`)
+- the ZFS pool has ≥ 1.5 × the container's used size free
+- the cache directory exists and is writable
+- the rclone remote responds (`rclone about`)
+- parse `/etc/pve/lxc/<vmid>.conf`: identify bind mounts and `backup=0` volumes,
+  log a WARN per finding, write them into the meta file
 
-**Steg 3 — backup.** `vzdump --mode snapshot --compress zstd`, sedan sha256,
-sedan `zstd -t` + `tar -tf > /dev/null` som strukturkontroll, sedan meta.json.
-Ingen uppladdning än.
+**Step 3 — backup.** `vzdump --mode snapshot --compress zstd`, then sha256, then
+`zstd -t` + `tar -tf > /dev/null` as a structure check, then meta.json. No upload
+yet.
 
-**Steg 3b — realtidslogg.** Innan uppladdningen byggs: en funktion som strömmar
-subprocess-output rad för rad med progressiva tidsstämplar till både logg och
-jobbfil. Utan detta ser en 40-minuters rclone-överföring ut som en hängd process,
-och då kommer någon att döda den mitt i. Cirka trettio rader, men den avgör om
-verktyget känns tillförlitligt eller inte.
+**Step 3b — real-time log.** Before the upload is built: a function that streams
+subprocess output line by line with progressive timestamps to both the log and the
+job file. Without this, a 40-minute rclone transfer looks like a hung process, and
+then someone will kill it midway. About thirty lines, but it determines whether the
+tool feels reliable or not.
 
-**Steg 4 — uppladdning och verifiering.** `rclone copy` med
-`--transfers`/`--checkers` från config, aldrig `--inplace`. Efter uppladdning:
-`rclone check --checksum` mellan cache och offsite. Misslyckas den, radera det
-uppladdade objektet och avbryt med fel.
+**Step 4 — upload and verification.** `rclone copy` with `--transfers`/`--checkers`
+from config, never `--inplace`. After upload: `rclone check --checksum` between
+cache and offsite. If it fails, delete the uploaded object and abort with an error.
 
-**Steg 5 — list och fetch.** `rclone lsjson` parsas med `jq` till en läsbar
-tabell (vmid, tidsstämpel, storlek, ålder). `fetch` hämtar ett valt arkiv till
-`$CACHE_DIR/restore/` och verifierar sha256 mot sidecar-filen.
+**Step 5 — list and fetch.** `rclone lsjson` parsed with `jq` into a readable table
+(vmid, timestamp, size, age). `fetch` retrieves a selected archive to
+`$CACHE_DIR/restore/` and verifies sha256 against the sidecar file.
 
-**Steg 6 — restore.** `pct restore` till ett **nytt** vmid. Läs `unprivileged`
-ur arkivets config och sätt flaggan explicit. Vägra köra om mål-vmid redan
-existerar. Kräv `--yes` för att faktiskt köra; utan den, skriv ut kommandot
-som skulle körts.
+**Step 6 — restore.** `pct restore` to a **new** vmid. Read `unprivileged` from the
+archive's config and set the flag explicitly. Refuse to run if the target vmid
+already exists. Require `--yes` to actually run; without it, print the command that
+would have been run.
 
-**Steg 7 — prune.** Separat policy för cache och offsite enligt config.
-Måste stödja `--dry-run`. Måste vägra radera det senaste arkivet per vmid
-oavsett vad policyn säger. Radera aldrig något offsite som inte har en
-verifierad hash.
+**Step 7 — prune.** Separate policy for cache and offsite according to config. Must
+support `--dry-run`. Must refuse to delete the latest archive per vmid regardless
+of what the policy says. Never delete anything offsite that does not have a
+verified hash.
 
-**Steg 8 — test-restore.** Full kedja: hämta från offsite (inte cache),
-verifiera, restore till engångs-vmid i intervallet 9000–9099, starta, vänta på
-att containern svarar, stoppa, destroy. Rapportera resultat via ntfy.
+**Step 8 — test-restore.** Full chain: fetch from offsite (not cache), verify,
+restore to a throwaway vmid in the range 9000–9099, start, wait for the container
+to respond, stop, destroy. Report the result via ntfy.
 
-**Steg 9 — systemd och schemaläggning.** **En** timer, inte en mall per
-container: `lxc-offsite.timer` + `lxc-offsite.service` som kör
-`lxc-offsite run-schedule`. Det subkommandot betar av `BACKUP_ORDER`
-sekventiellt, en container i taget. `Type=oneshot`,
-`TimeoutStartSec=infinity`, `OnFailure=` som notifierar. Ingen
-`RandomizedDelaySec` — körningen är ändå sekventiell och starttiden ska vara
-förutsägbar.
+**Step 9 — systemd and scheduling.** **One** timer, not a template per container:
+`lxc-offsite.timer` + `lxc-offsite.service` that runs `lxc-offsite run-schedule`.
+That subcommand works through `BACKUP_ORDER` sequentially, one container at a time.
+`Type=oneshot`, `TimeoutStartSec=infinity`, `OnFailure=` that notifies. No
+`RandomizedDelaySec` — the run is sequential anyway and the start time should be
+predictable.
 
-Implementera även `lxc-offsite status`: pågående jobb, kölängd, och vilken vmid
-som håller globala låset.
+Also implement `lxc-offsite status`: running jobs, queue length, and which vmid
+holds the global lock.
 
-**Steg 10 — PVE-storage för cachen.** Registrera cachen som directory storage
-med `pvesm add dir ... --content backup --is_mountpoint 1`. Verifiera att arkiv
-dyker upp i PVE:s egna backupvy och att restore går att köra därifrån.
-`is_mountpoint 1` är obligatoriskt — utan den skriver PVE till rootfilsystemet
-om monteringen fallerar.
+**Step 10 — PVE storage for the cache.** Register the cache as a directory storage
+with `pvesm add dir ... --content backup --is_mountpoint 1`. Verify that archives
+show up in PVE's own backup view and that restore can be run from there.
+`is_mountpoint 1` is mandatory — without it, PVE writes to the root filesystem if
+the mount fails.
 
-**Steg 11 — API.** FastAPI som enbart anropar CLI:t med `--json`. Ingen
-affärslogik i API-lagret. Långkörande operationer startas som transienta
-systemd-units via `systemd-run` och returnerar jobb-ID direkt; ingen endpoint
-blockerar på en rclone-överföring. Loggar strömmas via en `/jobs/<id>/log`-endpoint.
-Kör som dedikerad icke-root-användare med en sudoers-fil med fullständiga
-sökvägar och inga wildcards. Bind till nodens LAN-adress, aldrig 0.0.0.0.
+**Step 11 — API.** FastAPI that only calls the CLI with `--json`. No business logic
+in the API layer. Long-running operations are started as transient systemd units
+via `systemd-run` and return a job ID immediately; no endpoint blocks on an rclone
+transfer. Logs are streamed via a `/jobs/<id>/log` endpoint. Run as a dedicated
+non-root user with a sudoers file with full paths and no wildcards. Bind to the
+node's LAN address, never 0.0.0.0.
 
-**Steg 12 — frontend.** ExtJS mot `proxmox-widget-toolkit`. Vyerna enligt
-PLAN.md sektion 7: Dashboard, Offsite-arkiv, Lokal cache, Jobb, Konfiguration.
-Använd toolkitens egna grid-, tasklog- och formulärkomponenter så att resultatet
-blir identiskt med PBS, inte ungefär likt. Patcha aldrig PVE:s egna filer och
-lägg inte in någon apt-hook.
+**Step 12 — frontend.** ExtJS against `proxmox-widget-toolkit`. The views per
+PLAN.md section 7: Dashboard, Offsite archives, Local cache, Jobs, Configuration.
+Use the toolkit's own grid, tasklog, and form components so the result is identical
+to PBS, not roughly similar. Never patch PVE's own files and do not add any apt
+hook.
 
-**Steg 13 — auth och audit.** Pocket-ID via Traefik forward-auth. Destruktiva
-åtgärder kräver att användaren skriver in vmid manuellt som bekräftelse. Allt
-sådant loggas i `/var/log/lxc-offsite/audit.log` med OIDC-subjekt, tidsstämpel
-och parametrar. Hookscript-sökvägen visas skrivskyddad — den kräver root@pam och
-får aldrig vara redigerbar via webben.
+**Step 13 — auth and audit.** An OIDC provider via a reverse proxy forward-auth. Destructive
+actions require the user to type the vmid manually as confirmation. All such
+actions are logged in `/var/log/lxc-offsite/audit.log` with the OIDC subject,
+timestamp, and parameters. The hook-script path is shown read-only — it requires
+root@pam and must never be editable via the web.
 
-**Steg 14 — installer och runbook.** `install.sh` som lägger filer på plats med
-rätt ägare och rättigheter (config och rclone.conf `0600 root:root`). En
-`RUNBOOK.md` som dokumenterar manuell återställning **utan verktyget** — enbart
-med `rclone` och `pct` — steg för steg.
+**Step 14 — installer and runbook.** `install.sh` that puts files in place with the
+right owner and permissions (config and rclone.conf `0600 root:root`). A
+`RUNBOOK.md` that documents manual restore **without the tool** — with only
+`rclone` and `pct` — step by step.
 
-## Hårda krav
+## Hard requirements
 
-- Det senaste arkivet per vmid får aldrig raderas av prune
-- Uppladdning som avbryts får inte lämna ett synligt halvt arkiv offsite
-- `restore` skriver aldrig över ett existerande vmid
-- Verifiering sker på checksumma, aldrig på storlek eller modtime
-- Notiser skickas vid fel; framgång är tyst om inte `NTFY_ON_SUCCESS=true`
-- Dashboarden varnar om Storage Box-snapshots inte kan bekräftas vara aktiva —
-  de är det enda ransomware-skyddet i denna arkitektur
-- Inga hemligheter i loggar, felmeddelanden eller `set -x`-output
-- Aldrig två `vzdump` samtidigt — det globala låset är ett hårt krav, inte en
-  optimering. Två parallella dumpar mot raidz2 straffar körande containrar
-- Schemalagd körning som blockeras **köar**; manuell avslutar med besked
-- GUI och CLI måste alltid visa samma siffror — GUI:t äger ingen egen sanning
-- Ingen endpoint blockerar på en nätverksöverföring
-- Allt i GUI:t går att göra från CLI:t med API-tjänsten stoppad
-- Hookscriptet villkorar på VMID; `backup-abort` är felsignalen, inte `backup-end`
+- The latest archive per vmid must never be deleted by prune
+- An interrupted upload must not leave a visible half archive offsite
+- `restore` never overwrites an existing vmid
+- Verification is on checksum, never on size or modtime
+- Notifications are sent on failure; success is silent unless `NTFY_ON_SUCCESS=true`
+- The dashboard warns if Storage Box snapshots cannot be confirmed active — they
+  are the only ransomware protection in this architecture
+- No secrets in logs, error messages, or `set -x` output
+- Never two `vzdump` at once — the global lock is a hard requirement, not an
+  optimization. Two parallel dumps against raidz2 punish running containers
+- A scheduled run that is blocked **queues**; a manual one exits with a message
+- The GUI and CLI must always show the same numbers — the GUI owns no truth of its own
+- No endpoint blocks on a network transfer
+- Everything in the GUI can be done from the CLI with the API service stopped
+- The hook script conditions on VMID; `backup-abort` is the failure signal, not `backup-end`
 
-## Testning
+## Testing
 
-Skriv `tests/` med bats eller ren bash. Minst:
-- preflight avvisar för lite ZFS-utrymme
-- bind-mount ger WARN och hamnar i meta.json
-- prune med dry-run rör ingenting
-- prune vägrar radera sista arkivet
-- globalt lås hindrar två samtidiga backuper av *olika* vmid
-- per-vmid-lås hindrar dubbelköning av *samma* vmid
-- schemalagd körning köar vid upptaget lås, manuell avslutar
-- `fetch` går att köra medan en backup pågår
-- korrupt sidecar-hash gör att fetch misslyckas
+Write `tests/` with bats or plain bash. At minimum:
+- preflight rejects too little ZFS space
+- a bind mount gives a WARN and ends up in meta.json
+- prune with dry-run touches nothing
+- prune refuses to delete the last archive
+- the global lock prevents two concurrent backups of *different* vmids
+- the per-vmid lock prevents double-queuing of the *same* vmid
+- a scheduled run queues on a busy lock, a manual one exits
+- `fetch` can run while a backup is in progress
+- a corrupt sidecar hash causes fetch to fail
 
-Mocka `rclone`, `vzdump` och `pct` i testerna. Kör inte mot riktig hårdvara.
+Mock `rclone`, `vzdump`, and `pct` in the tests. Do not run against real hardware.
 
-## Vad du inte ska göra
+## What you must not do
 
-- Inte röra PBS-konfigurationen på 10.10.2.133
-- Inte anta att Traefik delar VM med något annat
-- Inte lägga till funktioner som inte står i PLAN.md
-- Inte byta ut vzdump-arkiv mot borg, restic eller egen chunk-lagring — det
-  beslutet är fattat och motiverat i PLAN.md avsnitt 1
-- Inte förlita dig på borg append-only som skydd; det fungerar inte på Storage Box
-- Inte skriva `rclone sync` någonstans — bara `copy`, `check`, `lsjson`,
-  `delete` på explicit angivna sökvägar
-- Inte rclone-montera offsite som PVE-storage — offsite nås bara via explicita
-  `rclone copy`-anrop
-- Inte patcha pve-manager eller widget-toolkit, och inte installera apt-hooks
-- Inte lägga affärslogik i API-lagret
-- Inte hårdkoda vmid, hostnamn eller sökvägar
+- Do not touch the PBS configuration on 192.0.2.10
+- Do not assume the reverse proxy shares a VM with anything else
+- Do not add features not in PLAN.md
+- Do not replace vzdump archives with borg, restic, or your own chunk storage — that
+  decision is made and justified in PLAN.md section 1
+- Do not rely on borg append-only as protection; it does not work on Storage Box
+- Do not write `rclone sync` anywhere — only `copy`, `check`, `lsjson`, `delete` on
+  explicitly specified paths
+- Do not rclone-mount offsite as PVE storage — offsite is reached only via explicit
+  `rclone copy` calls
+- Do not patch pve-manager or the widget toolkit, and do not install apt hooks
+- Do not put business logic in the API layer
+- Do not hardcode vmids, hostnames, or paths
 
-Börja med steg 1. Redovisa och vänta på klartecken innan steg 2.
+Start with step 1. Report and wait for the go-ahead before step 2.

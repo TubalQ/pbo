@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/backup.sh — steg 3-tester (dump/sha256/strukturkontroll/meta), mockad vzdump.
+# tests/backup.sh — step 3 tests (dump/sha256/structure check/meta), mocked vzdump.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 BIN=./lxc-offsite
@@ -14,7 +14,7 @@ pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 
-# Fixtures (samma stil som steg 2).
+# Fixtures (same style as step 2).
 printf 'nvmepool/subvol-8002-disk-0 1073741824\nnewbulk/subvol-8002-disk-1 5368709120\n' > "$MOCK_ZFS_USED"
 printf 'nvmepool 485331534807\nnewbulk 3497914662912\n' > "$MOCK_ZPOOL_FREE"
 cat > "$MOCK_CONF_DIR/8002.conf" <<'C'
@@ -30,43 +30,43 @@ mkcfg() { local f="$1"; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/
 mkcfg "$ROOT/run/cfg"
 export LXCO_CONFIG="$ROOT/run/cfg"
 
-# --- kör backup ---
+# --- run backup ---
 out="$($BIN --json backup 8002 2>/dev/null)"; rc=$?
 grep -q '"status":"dumped"' <<<"$out" && [[ $rc == 0 ]] && ok "backup: status dumped (exit 0)" || bad "status ($rc: $out)"
 
 archive="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
-[[ -f "$archive" ]] && ok "arkiv skapat: $(basename "$archive")" || bad "arkiv saknas ($archive)"
-[[ -f "$archive.sha256" ]] && ok "sha256-sidecar finns" || bad "sha256-sidecar saknas"
-[[ -f "$archive.meta.json" ]] && ok "meta.json finns" || bad "meta.json saknas"
-[[ -f "$archive.conf" ]] && ok "config-sidecar finns" || bad "config-sidecar saknas"
+[[ -f "$archive" ]] && ok "archive created: $(basename "$archive")" || bad "archive missing ($archive)"
+[[ -f "$archive.sha256" ]] && ok "sha256 sidecar exists" || bad "sha256 sidecar missing"
+[[ -f "$archive.meta.json" ]] && ok "meta.json exists" || bad "meta.json missing"
+[[ -f "$archive.conf" ]] && ok "config sidecar exists" || bad "config sidecar missing"
 
-# sha256 stämmer mot arkivet
+# sha256 matches the archive
 want="$(awk '{print $1}' "$archive.sha256")"
 got="$(sha256sum "$archive" | awk '{print $1}')"
-[[ "$want" == "$got" ]] && ok "sha256 matchar arkivet" || bad "sha256 stämmer ej"
+[[ "$want" == "$got" ]] && ok "sha256 matches the archive" || bad "sha256 mismatch"
 
-# strukturkontroll: arkivet är ett giltigt tar.zst
-zstd -t "$archive" >/dev/null 2>&1 && ok "arkivet passerar zstd -t" || bad "zstd -t"
-tar --zstd -tf "$archive" >/dev/null 2>&1 && ok "arkivet passerar tar -tf" || bad "tar -tf"
+# structure check: the archive is a valid tar.zst
+zstd -t "$archive" >/dev/null 2>&1 && ok "archive passes zstd -t" || bad "zstd -t"
+tar --zstd -tf "$archive" >/dev/null 2>&1 && ok "archive passes tar -tf" || bad "tar -tf"
 
-# meta.json: giltig JSON + bind-mount/backup=0 med
-python3 -m json.tool "$archive.meta.json" >/dev/null 2>&1 && ok "meta.json är giltig JSON" || bad "meta.json ogiltig"
-grep -q 'bind' "$archive.meta.json" && ok "meta: bind-mount registrerad" || bad "meta bind-mount"
-grep -q 'mp2' "$archive.meta.json" && ok "meta: backup=0-volym registrerad" || bad "meta backup=0"
-grep -q "\"sha256\": \"$got\"" "$archive.meta.json" && ok "meta: sha256 = arkivets" || bad "meta sha256"
+# meta.json: valid JSON + bind-mount/backup=0 included
+python3 -m json.tool "$archive.meta.json" >/dev/null 2>&1 && ok "meta.json is valid JSON" || bad "meta.json invalid"
+grep -q 'bind' "$archive.meta.json" && ok "meta: bind-mount registered" || bad "meta bind-mount"
+grep -q 'mp2' "$archive.meta.json" && ok "meta: backup=0 volume registered" || bad "meta backup=0"
+grep -q "\"sha256\": \"$got\"" "$archive.meta.json" && ok "meta: sha256 = archive's" || bad "meta sha256"
 
-# jobbfil med realtidslogg (steg 3b)
+# job file with real-time log (step 3b)
 job="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["job"])' <<<"$out" 2>/dev/null)"
-[[ -f "$job" ]] && grep -q 'creating vzdump archive' "$job" && ok "jobbfil har realtidslogg" || bad "jobbfil ($job)"
-grep -qE '\[\+ *[0-9]+s\]' "$job" && ok "jobblogg har progressiva tidsstämplar" || bad "tidsstämplar saknas"
+[[ -f "$job" ]] && grep -q 'creating vzdump archive' "$job" && ok "job file has real-time log" || bad "job file ($job)"
+grep -qE '\[\+ *[0-9]+s\]' "$job" && ok "job log has progressive timestamps" || bad "timestamps missing"
 
-# KEEP_LOCAL-oberoende: en andra körning ska ge ett nytt arkiv (prune i steg 7)
+# KEEP_LOCAL-independent: a second run should produce a new archive (prune in step 7)
 sleep 1
 out2="$($BIN --json backup 8002 2>/dev/null)"
 a2="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["archive"])' <<<"$out2" 2>/dev/null)"
-[[ "$a2" != "$archive" && -f "$a2" ]] && ok "andra körningen ger nytt arkiv" || bad "andra körning ($a2)"
+[[ "$a2" != "$archive" && -f "$a2" ]] && ok "second run produces new archive" || bad "second run ($a2)"
 
-# --- fuse-CT tvingas till --mode stop (deadlock-spärr) ---
+# --- fuse-CT forced to --mode stop (deadlock guard) ---
 cat > "$MOCK_CONF_DIR/8009.conf" <<'C'
 hostname: fuse-ct
 rootfs: nvmepool:subvol-8009-disk-0,size=8G
@@ -76,20 +76,20 @@ C
 printf 'nvmepool/subvol-8009-disk-0 1073741824\n' >> "$MOCK_ZFS_USED"
 out="$($BIN --json backup 8009 2>/dev/null)"
 a="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
-grep -q '"mode": "stop"' "$a.meta.json" && ok "fuse-CT → --mode stop (auto-spärr)" || bad "fuse mode ($(grep mode "$a.meta.json"))"
-# normal CT förblir snapshot
-grep -q '"mode": "snapshot"' "$archive.meta.json" && ok "icke-fuse CT → snapshot" || bad "8002 mode"
-# VZDUMP_STOP_VMIDS-override
+grep -q '"mode": "stop"' "$a.meta.json" && ok "fuse-CT → --mode stop (auto-guard)" || bad "fuse mode ($(grep mode "$a.meta.json"))"
+# normal CT stays snapshot
+grep -q '"mode": "snapshot"' "$archive.meta.json" && ok "non-fuse CT → snapshot" || bad "8002 mode"
+# VZDUMP_STOP_VMIDS override
 mkcfg "$ROOT/run/cfg2"; echo "VZDUMP_STOP_VMIDS=8002" >> "$ROOT/run/cfg2"
 out="$(LXCO_CONFIG=$ROOT/run/cfg2 $BIN --json backup 8002 2>/dev/null)"
 a2="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
 grep -q '"mode": "stop"' "$a2.meta.json" && ok "VZDUMP_STOP_VMIDS override → stop" || bad "override mode"
 
-# --- dry-run rör ingenting ---
+# --- dry-run touches nothing ---
 before="$(ls "$ROOT/run/cache/8002" | wc -l)"
 $BIN --json --dry-run backup 8002 >/dev/null 2>&1
 after="$(ls "$ROOT/run/cache/8002" | wc -l)"
-[[ "$before" == "$after" ]] && ok "--dry-run skapar inget arkiv" || bad "dry-run skrev ($before→$after)"
+[[ "$before" == "$after" ]] && ok "--dry-run creates no archive" || bad "dry-run wrote ($before→$after)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]

@@ -1,20 +1,19 @@
-# Dev-runtime (isolerad config.dev skriver hit) — aldrig i git.
+# Dev runtime (the isolated config.dev writes here) — never in git.
 /run/
 run/
 
-# Secrets — bor i rclone.conf / Vaultwarden, aldrig i repot.
-etc/rclone.conf
+# Secrets — the restic password lives in the password file, never in the repo.
 etc/config
-etc/api.env
+etc/restic-pass
 *.env
 id_ed25519*
+id_rsa*
 *.key
 
-# Skräp
+# Junk
 *.log
 *.tmp
 __pycache__/
 *.pyc
 .venv/
 venv/
-tui/*.png

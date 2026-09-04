@@ -1,12 +1,12 @@
 [Unit]
-Description=Daglig lxc-offsite offsite-backup
-Documentation=https://git.midvault.se/ai-pvet440/lxc-offsite
+Description=Daily lxc-offsite offsite backup
+Documentation=https://github.com/ai-pvet440/lxc-offsite
 
 [Timer]
-# 05:00 varje natt (restic offsite; PBS avvecklas → detta blir primärt).
+# 05:00 every night.
 OnCalendar=*-*-* 05:00:00
 Persistent=true
-# Ingen RandomizedDelaySec: körningen är sekventiell, starttiden ska vara förutsägbar.
+# No RandomizedDelaySec: the run is sequential and the start time should be predictable.
 
 [Install]
 WantedBy=timers.target

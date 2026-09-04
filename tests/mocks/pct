@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mock pct: config/restore/start/exec/stop/destroy. Loggar till $MOCK_LOG.
+# mock pct: config/restore/start/exec/stop/destroy. Logs to $MOCK_LOG.
 [ -n "${MOCK_LOG:-}" ] && echo "pct $*" >> "$MOCK_LOG"
 case "${1:-}" in
   config)  f="$MOCK_CONF_DIR/${2}.conf"; [ -f "$f" ] && cat "$f" || exit 1 ;;
