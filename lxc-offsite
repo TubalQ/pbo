@@ -24,6 +24,8 @@ source "${SELF_DIR}/lib/backup.sh"
 source "${SELF_DIR}/lib/upload.sh"
 # shellcheck source=lib/list.sh
 source "${SELF_DIR}/lib/list.sh"
+# shellcheck source=lib/restore.sh
+source "${SELF_DIR}/lib/restore.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -155,10 +157,24 @@ cmd_fetch() {
     do_fetch "$1" "$2"
 }
 
+# restore <vmid> <ts> --to <nytt-vmid> [--storage <pool>] [--yes]
 cmd_restore() {
     require_vmid "${1:-}"
-    acquire_vmid_lock "$1"
-    not_implemented
+    local src="$1" ts="${2:-}"
+    [[ -n "$ts" ]] || die "$EX_USAGE" "restore kräver <vmid> <ts> --to <nytt-vmid>"
+    shift 2 || true
+    local newid="" storage="" yes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --to)      newid="$2"; shift 2 ;;
+            --storage) storage="$2"; shift 2 ;;
+            --yes)     yes=1; shift ;;
+            *) die "$EX_USAGE" "okänd restore-flagga: $1" ;;
+        esac
+    done
+    is_vmid "$newid" || die "$EX_USAGE" "restore kräver --to <nytt-vmid> (giltigt vmid)"
+    acquire_vmid_lock "$newid"
+    do_restore "$src" "$ts" "$newid" "$storage" "$yes"
 }
 
 cmd_list()         { do_list "${1:-}"; }

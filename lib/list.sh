@@ -62,8 +62,11 @@ do_list() {
     fi
 }
 
-# do_fetch <vmid> <ts>  — hämtar arkiv+sidecars till cache/restore, verifierar sha256.
-do_fetch() {
+# _fetch_core <vmid> <ts> — hämtar arkiv+sidecars till cache/restore och
+# verifierar sha256. Sätter FETCHED_ARCHIVE. Ingen JSON-utmatning (återanvänds
+# av restore). die vid fel. rclone copy hoppar över redan hämtade filer.
+FETCHED_ARCHIVE=""
+_fetch_core() {
     local vmid="$1" ts="$2"
     local remote="${RCLONE_REMOTE}:${REMOTE_PATH}/${vmid}"
     local restoredir="${CACHE_DIR}/restore"
@@ -71,16 +74,9 @@ do_fetch() {
     local jobfile="${JOBS_DIR}/${job_id}.log"
     mkdir -p "$restoredir" "$JOBS_DIR"
 
-    # Hitta arkivets basnamn offsite som matchar vmid + ts.
     local base
     base="$(rclone lsf "$remote" 2>/dev/null | grep -E "^vzdump-lxc-${vmid}-.*${ts}.*\.tar\.zst$" | head -1 || true)"
     [[ -n "$base" ]] || die "$EX_DATAERR" "hittar inget offsite-arkiv för vmid $vmid ts '$ts'"
-
-    if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        log_info "[dry-run] skulle hämta $remote/$base* → $restoredir"
-        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "archive" "$base"
-        return "$EX_OK"
-    fi
 
     log_info "fetch $vmid: $base → $restoredir"
     if ! run_stream "$jobfile" "rclone-fetch[$vmid]" -- \
@@ -89,7 +85,6 @@ do_fetch() {
         die "$EX_UNAVAILABLE" "rclone copy (fetch) misslyckades för $base"
     fi
 
-    # Verifiera sha256 mot sidecaren.
     local archive="${restoredir}/${base}"
     [[ -f "$archive" && -f "${archive}.sha256" ]] || die "$EX_DATAERR" "arkiv eller sha256-sidecar saknas efter fetch"
     if ( cd "$restoredir" && sha256sum -c "${base}.sha256" >/dev/null 2>&1 ); then
@@ -98,11 +93,22 @@ do_fetch() {
         rm -f "$archive"
         die "$EX_DATAERR" "sha256 STÄMMER EJ för hämtat $base — raderat, återställ ej"
     fi
+    FETCHED_ARCHIVE="$archive"
+}
 
+# do_fetch <vmid> <ts> — CLI-kommandot: _fetch_core + resultat.
+do_fetch() {
+    local vmid="$1" ts="$2"
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then
+        log_info "[dry-run] skulle hämta arkiv för vmid $vmid ts '$ts' → ${CACHE_DIR}/restore"
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid"
+        return "$EX_OK"
+    fi
+    _fetch_core "$vmid" "$ts"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        json_result "fetched" "true" "vmid" "$vmid" "archive" "$archive" "verified" "sha256"
+        json_result "fetched" "true" "vmid" "$vmid" "archive" "$FETCHED_ARCHIVE" "verified" "sha256"
     else
-        log_info "fetch $vmid: KLART — $archive (sha256-verifierat)"
+        log_info "fetch $vmid: KLART — $FETCHED_ARCHIVE (sha256-verifierat)"
     fi
     return "$EX_OK"
 }

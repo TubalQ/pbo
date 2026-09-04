@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# mock: pct config <vmid> → cat fixture, annars exit 1 (finns ej)
-[ "$1" = config ] || exit 0
-f="$MOCK_CONF_DIR/$2.conf"
-[ -f "$f" ] && cat "$f" || exit 1
+# mock pct: config <vmid> → fixture; restore → MOCK_RESTORE_OK; annars 0.
+case "${1:-}" in
+  config)  f="$MOCK_CONF_DIR/${2}.conf"; [ -f "$f" ] && cat "$f" || exit 1 ;;
+  restore) [ "${MOCK_RESTORE_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  *) exit 0 ;;
+esac
