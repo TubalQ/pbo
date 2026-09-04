@@ -211,6 +211,53 @@ def launch(user, args, tag):
                    check=True, capture_output=True, text=True, timeout=20)
     return unit
 
+# ---- jobbstatus (task-färg + dashboard-verifiering) ----
+# Jobben skriver ingen egen slutmarkör i loggen — vi läser kommandots egen
+# utdata (vzdump/rclone) och härleder ok/failed/running heuristiskt.
+_FAIL_RE = re.compile(r"\b(ERROR|FAILED|FAILADE|misslyckades|Permission denied|No such file)\b", re.I)
+_OK_RE = re.compile(r"finished successfully|differences found|sha256|KLART|verifierad|restored", re.I)
+def _job_status(path):
+    try:
+        txt = open(path, errors="replace").read()[-8000:]
+    except OSError:
+        return "unknown"
+    m = re.search(r"(\d+) differences found", txt)   # rclone cryptcheck: >0 = mismatch
+    if m and m.group(1) != "0":
+        return "failed"
+    if "STÄMMER EJ" in txt or _FAIL_RE.search(txt):
+        return "failed"
+    try:
+        fresh = (time.time() - os.path.getmtime(path)) < 25
+    except OSError:
+        fresh = False
+    if _OK_RE.search(txt):
+        return "ok"
+    return "running" if fresh else "ok"
+
+def _last_verify():
+    """Senaste offsite-cryptcheck ur nyaste backup-jobbet: 'OK' eller 'N diffs'."""
+    fs = sorted(glob.glob(JOBS + "/backup-*.log"), key=os.path.getmtime, reverse=True)
+    if not fs:
+        return None
+    try:
+        m = re.search(r"(\d+) differences found", open(fs[0], errors="replace").read()[-4000:])
+    except OSError:
+        return None
+    return None if not m else ("OK" if m.group(1) == "0" else m.group(1) + " diffs")
+
+def _last_testrestore():
+    fs = sorted(glob.glob(JOBS + "/testrestore-*.log"), key=os.path.getmtime, reverse=True)
+    if not fs:
+        return None
+    return {"age": int(os.path.getmtime(fs[0])), "status": _job_status(fs[0])}
+
+def _next_free_vmid(used, start=9101):
+    taken = {int(x) for x in used if str(x).isdigit()}
+    v = start
+    while v in taken:
+        v += 1
+    return v
+
 # ---- auth-endpoints ----
 @app.post("/api/login")
 def login(response: Response, username: str = Body(...), password: str = Body(...)):
@@ -256,13 +303,17 @@ def state(user: str = Depends(current_user)):
             continue
         guests.append({"vmid": v, "name": g.get("name"), "type": g.get("type"),
                        "node": g.get("node"), "protected": False, "snapshots": len(snaps.get(v, []))})
-    tasks = [{"name": os.path.basename(f)[:-4], "mtime": int(os.path.getmtime(f))}
+    tasks = [{"name": os.path.basename(f)[:-4], "mtime": int(os.path.getmtime(f)),
+              "status": _job_status(f)}
              for f in sorted(glob.glob(JOBS + "/*.log"), key=os.path.getmtime, reverse=True)[:10]]
     total = sum(a.get("size_bytes", 0) for arr in snaps.values() for a in arr)
+    next_free = _next_free_vmid(set(allg) | set(snaps))
     return JSONResponse({"status": _cached("status", 5, lambda: cli("status")), "guests": guests,
                          "snapshots": snaps, "tasks": tasks, "offsite_bytes": total, "user": user,
+                         "next_free_vmid": next_free,
                          "config": {k: cfg.get(k) for k in ("BACKUP_ORDER", "RCLONE_REMOTE",
-                                    "KEEP_LOCAL", "KEEP_OFFSITE_DAILY", "VZDUMP_MODE")}})
+                                    "KEEP_LOCAL", "KEEP_OFFSITE_DAILY", "KEEP_OFFSITE_WEEKLY",
+                                    "KEEP_OFFSITE_MONTHLY", "VZDUMP_MODE")}})
 
 @app.get("/api/tasks/{name}")
 def task_log(name: str, user: str = Depends(current_user)):
@@ -421,7 +472,8 @@ def resources(user: str = Depends(current_user)):
                 "backup_running": running, "last_job": last,
                 "offsite_bytes": offsite_bytes, "snapshots": snap_count,
                 "cache_dir": cache_dir, "cache_used": cache_used, "cache_total": cache_total,
-                "remote": cfg.get("RCLONE_REMOTE")}
+                "remote": cfg.get("RCLONE_REMOTE"),
+                "last_verify": _last_verify(), "test_restore": _last_testrestore()}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

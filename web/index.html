@@ -256,20 +256,19 @@ td.num{text-align:right}
             </div></div>
             <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg><span id="statusHdrText">lxc-offsite — protected</span></h3><div class="bd">
               <div class="res">
-                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/></svg><span class="rl">Guests protected</span><span class="rv st good" id="kGuests">12 / 12 OK</span><span class="rbar"><i class="g" style="width:100%"></i></span></div>
-                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg><span class="rl">Verified offsite</span><span class="rv">100 %</span><span class="rbar"><i style="width:100%"></i></span></div>
-                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg><span class="rl">Offsite used (encrypted)</span><span class="rv" id="kOffsite">17.6 GiB</span><span class="rbar"><i style="width:18%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/></svg><span class="rl">Guests protected</span><span class="rv" id="kGuests">—</span><span class="rbar"><i class="g" id="kGuestsBar" style="width:0%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg><span class="rl">Offsite verified</span><span class="rv" id="kVerify">—</span><span class="rbar"><i id="kVerifyBar" style="width:0%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg><span class="rl">Offsite used (encrypted)</span><span class="rv" id="kOffsite">—</span><span class="rbar"><i id="kOffsiteBar" style="width:0%"></i></span></div>
                 <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg><span class="rl">Next scheduled run</span><span class="rv">daily 03:30</span></div>
                 <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span class="rl">Encryption</span><span class="rv st good">on · crypt</span></div>
-                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="rl">Restore tested</span><span class="rv st good">122 booted</span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="rl">Restore tested</span><span class="rv" id="kRestoreTest">—</span></div>
               </div>
               <div style="margin-top:10px;font-size:12px;color:var(--muted)">Sign-in: root@pam (Proxmox ticket auth) · Notifications: ntfy on failure · 1 VM awaiting VM support</div>
             </div></div>
 
             <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg>Datastore Usage</h3><div class="bd" style="padding:0">
               <div class="grid" style="border:0"><table><thead><tr><th>Name</th><th>Type</th><th class="num">Size</th><th class="num">Used</th><th class="num">Available</th><th>Usage</th></tr></thead><tbody id="dsUsageBody">
-                <tr><td class="mono">lxc-offsite-cache</td><td>local cache</td><td class="num mono">50 GB</td><td class="num mono">481 MB</td><td class="num mono">49.5 GB</td><td style="min-width:120px"><span class="bar" style="display:inline-block;width:100px;vertical-align:middle"><i class="g" style="width:3%"></i></span> 1%</td></tr>
-                <tr><td class="mono">hetzner-crypt</td><td>offsite (sftp+crypt)</td><td class="num mono">—</td><td class="num mono">17.6 GiB</td><td class="num mono">—</td><td style="color:var(--muted)">14 snapshots</td></tr>
+                <tr><td colspan="6" style="color:var(--muted);padding:10px 11px">Loading…</td></tr>
               </tbody></table></div>
             </div></div>
 
@@ -294,7 +293,7 @@ td.num{text-align:right}
         <div class="cbody">
           <!-- Content tab: grouped snapshots -->
           <div class="dtab" data-tab="content">
-            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up now</button><button class="btn" data-goto="prune">Prune…</button></div>
+            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up all guests</button><button class="btn" data-goto="prune">Prune…</button></div>
             <div class="grid"><table>
               <thead><tr><th style="width:34%">Backup Group / Snapshot</th><th>Backup Time</th><th class="num">Size</th><th>Location</th><th>Verify</th><th style="width:150px">Actions</th></tr></thead>
               <tbody id="contentRows"></tbody>
@@ -336,16 +335,23 @@ td.num{text-align:right}
             </div></div><div class="box"><h3>Run</h3><div class="bd">
               <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">Prune removes snapshots outside the policy. Dry run shows exactly what would be removed.</p>
               <button class="btn">Dry run prune</button> <button class="btn pri">Run prune</button>
+              <div id="pruneOut" style="margin-top:10px"></div>
             </div></div></div>
           </div>
           <!-- Verify -->
           <div class="dtab" data-tab="verify" hidden>
-            <div class="box"><h3>Verification</h3><div class="bd">
+            <div class="cols"><div class="box"><h3>Verification</h3><div class="bd">
               <div class="kvr"><span class="lbl">Method (offsite)</span><span class="val">rclone cryptcheck</span></div>
               <div class="kvr"><span class="lbl">Method (local)</span><span class="val">sha256 + zstd -t</span></div>
               <div class="kvr"><span class="lbl">Last result</span><span class="val st good" id="verLast">—</span></div>
-              <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Verification runs automatically on every backup (cryptcheck offsite + sha256 local). Test-restore (which boots a snapshot on a throwaway VMID) is available from the CLI: <span class="mono">lxc-offsite test-restore &lt;vmid&gt;</span>.</p>
+              <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Runs automatically on every backup (cryptcheck offsite + sha256 local).</p>
             </div></div>
+            <div class="box"><h3>Run test-restore</h3><div class="bd">
+              <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">Fetches a snapshot, boots it on a throwaway VMID, then destroys it — proves the backup actually restores. Runs in the background; watch it under Tasks.</p>
+              <div class="field"><label>Guest</label><select id="vrGuest"></select></div>
+              <button class="btn pri" id="vrRun">Run test-restore</button>
+              <div id="vrMsg" style="font-size:12px;margin-top:8px"></div>
+            </div></div></div>
           </div>
           <!-- Options -->
           <div class="dtab" data-tab="options" hidden>
@@ -459,6 +465,9 @@ password2 = <span class="mask">•••••••••• (click “Reveal�
 <script>
 const groups=[];       // filled live from /api/state (see hydrate) — no example data
 let contentLoaded=false;
+let RET='—';           // retention-sträng (KEEP_LOCAL · daily/weekly/monthly) — sätts live
+let NEXTVMID=null;      // nästa lediga vmid från hosten — default vid restore
+function gotoTasks(){var n=document.querySelector('.tnode[data-nav="tasks"]');if(n)n.click();}
 const locPill=w=>w==='both'?'<span class="chip-loc">local</span> <span class="chip-off">offsite</span>':w==='offsite'?'<span class="chip-off">offsite</span>':'<span class="chip-loc">local</span>';
 const ib=(t,svg,on)=>`<button class="iconbtn${on?' on':''}" title="${t}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${svg}</svg></button>`;
 const ICO={restore:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',verify:'<path d="M20 6 9 17l-5-5"/>',prot:'<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',prune:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>'};
@@ -488,6 +497,7 @@ document.getElementById('guestRows').innerHTML=groups.map(grp=>grp.vm
 
 const rscrim=document.getElementById('rscrim');
 function openRestore(item){window._rest=item;const p=item.s,grp=item.grp;
+ if(NEXTVMID)document.getElementById('rnew').value=NEXTVMID;
  document.getElementById('rsummary').innerHTML=`Source: <b>${grp.g}</b> ${grp.name} · ${p.ts} · ${p.size} · ${locPill(p.where)}`;
  const set=()=>document.getElementById('rcmd').textContent=`lxc-offsite restore ${grp.g.split('/')[1]} ${p.tskey||'?'} --to ${document.getElementById('rnew').value} --storage ${document.getElementById('rstore').value}`;
  document.getElementById('rnew').oninput=set;document.getElementById('rstore').onchange=set;set();
@@ -518,7 +528,8 @@ document.addEventListener('click',e=>{const tg=e.target.closest('.tg');if(tg&&!t
  const seg=e.target.closest('.ftabs button');if(seg){seg.parentElement.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b===seg));}});
 // theme
 const root=document.documentElement;
-document.getElementById('themeBtn').onclick=()=>{const cur=root.getAttribute('data-theme');const sys=matchMedia('(prefers-color-scheme:dark)').matches;const now=cur||(sys?'dark':'light');root.setAttribute('data-theme',now==='dark'?'light':'dark');};
+try{var _th=localStorage.getItem('lxco-theme');if(_th)root.setAttribute('data-theme',_th);}catch(e){}
+document.getElementById('themeBtn').onclick=()=>{const cur=root.getAttribute('data-theme');const sys=matchMedia('(prefers-color-scheme:dark)').matches;const now=cur||(sys?'dark':'light');const nxt=now==='dark'?'light':'dark';root.setAttribute('data-theme',nxt);try{localStorage.setItem('lxco-theme',nxt);}catch(e){}};
 
 // tasks — the list + logs come live from /api/state and /api/tasks (see hydrate/loadTaskLog).
 // Pre-hydration state is neutral; no example logs.
@@ -532,9 +543,11 @@ const human=b=>{b=+b||0;const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&
 const fmtTs=s=>{try{return String(s).replace('T',' ').slice(0,19);}catch(e){return s;}};
 const guestRowLive=g=>{const vm=g.type==='qemu';const prot=!!g.protected;
  if(vm)return `<tr><td><span class="grpname">${g.name||g.vmid}</span> <span class="vmid">vm/${g.vmid}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">VM support coming</span></td><td>—</td></tr>`;
- return `<tr><td><span class="grpname">${g.name||g.vmid}</span> <span class="vmid">ct/${g.vmid}</span>${prot?'':' <span class="tag">new</span>'}</td><td><span class="tag">LXC</span></td><td class="mono">${prot?'2 · 7/4/6':'—'}</td><td class="mono">${g.snapshots?g.snapshots+' snap':'—'}</td><td style="text-align:center"><button class="tg" data-vmid="${g.vmid}" aria-pressed="${prot}" title="${prot?'Protected — click to stop backing up':'Not protected — click to back up'}"></button></td><td style="text-align:center"><button class="btn" data-backup="${g.vmid}" style="height:22px;padding:0 9px;font-size:11px">Back up</button></td></tr>`;};
+ return `<tr><td><span class="grpname">${g.name||g.vmid}</span> <span class="vmid">ct/${g.vmid}</span>${prot?'':' <span class="tag">new</span>'}</td><td><span class="tag">LXC</span></td><td class="mono">${prot?RET:'—'}</td><td class="mono">${g.snapshots?g.snapshots+' snap':'—'}</td><td style="text-align:center"><button class="tg" data-vmid="${g.vmid}" aria-pressed="${prot}" title="${prot?'Protected — click to stop backing up':'Not protected — click to back up'}"></button></td><td style="text-align:center"><button class="btn" data-backup="${g.vmid}" style="height:22px;padding:0 9px;font-size:11px">Back up</button></td></tr>`;};
 function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();return null;}return r.json();}).then(s=>{
  if(!s||!Array.isArray(s.guests)||!s.guests.length)return;
+ var cfg=s.config||{};RET=(cfg.KEEP_LOCAL||'2')+' · '+(cfg.KEEP_OFFSITE_DAILY||'7')+'/'+(cfg.KEEP_OFFSITE_WEEKLY||'4')+'/'+(cfg.KEEP_OFFSITE_MONTHLY||'6');
+ if(s.next_free_vmid)NEXTVMID=s.next_free_vmid;
  groups.length=0;
  const byId={};(s.guests||[]).forEach(g=>{byId[g.vmid]=g;});
  // Content mirrors the CLI `list`: one group per vmid that has real offsite archives, newest first.
@@ -549,22 +562,24 @@ function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();r
  renderContent();
  const gr=document.getElementById('guestRows');if(gr){gr.innerHTML=s.guests.map(guestRowLive).join('');
    gr.querySelectorAll('.tg[data-vmid]').forEach(t=>{t.onclick=function(){var on=t.getAttribute('aria-pressed')==='true';act(on?'DELETE':'POST','/api/guests/'+t.dataset.vmid,null,(on?'Stopped backing up ':'Now backing up ')+'guest '+t.dataset.vmid);};});
-   gr.querySelectorAll('[data-backup]').forEach(function(b){b.onclick=function(){act('POST','/api/backup/'+b.dataset.backup,null,'Backup of guest '+b.dataset.backup+' started — see Tasks');};});}
+   gr.querySelectorAll('[data-backup]').forEach(function(b){b.onclick=function(){act('POST','/api/backup/'+b.dataset.backup,null,'Backup of guest '+b.dataset.backup+' started — see Tasks');gotoTasks();};});}
  const n=s.guests.filter(g=>g.protected).length;
  const kg=document.getElementById('kGuests');if(kg)kg.textContent=n+' / '+n+' OK';
+ var kgb=document.getElementById('kGuestsBar');if(kgb)kgb.style.width=(n>0?100:0)+'%';
+ var vg=document.getElementById('vrGuest');if(vg)vg.innerHTML=s.guests.filter(function(g){return g.protected&&g.type!=='qemu';}).map(function(g){return '<option value="'+g.vmid+'">'+(g.name||g.vmid)+' (ct/'+g.vmid+')</option>';}).join('')||'<option value="">— no protected guests —</option>';
  const ko=document.getElementById('kOffsite');if(ko)ko.textContent=human(s.offsite_bytes);
  var sg=document.getElementById('sumGroups');if(sg)sg.textContent=n+' protected'+(s.guests.some(function(x){return x.type==='qemu';})?' · 1 VM pending':'');
  const tl=document.querySelector('.tasklist');
  const hasTasks=Array.isArray(s.tasks)&&s.tasks.length;
  if(tl&&hasTasks){
-   tl.innerHTML=s.tasks.map((t,i)=>`<button class="taskrow"${i===0?' aria-selected="true"':''} data-live="${t.name}"><span class="st good"><span class="dot"></span></span><span class="ti"><b>${t.name.split('-')[0]}</b><span>${t.name}</span></span></button>`).join('');
+   tl.innerHTML=s.tasks.map((t,i)=>`<button class="taskrow"${i===0?' aria-selected="true"':''} data-live="${t.name}"><span class="st ${taskCls(t.status)}"><span class="dot"></span></span><span class="ti"><b>${t.name.split('-')[0]}</b><span>${t.name}</span></span></button>`).join('');
    tl.querySelectorAll('[data-live]').forEach(b=>b.addEventListener('click',()=>{tl.querySelectorAll('.taskrow').forEach(x=>x.setAttribute('aria-selected',x===b));loadTaskLog(b.dataset.live);}));
    if(!window.curTask)loadTaskLog(s.tasks[0].name);
  }else if(tl){tl.innerHTML='<div class="taskrow" style="cursor:default"><span class="ti"><b style="color:var(--muted)">No tasks yet</b><span>backups and restores show here</span></span></div>';}
  // Dashboard "Recent Tasks" card — live from the same job logs.
  const dt=document.getElementById('dashTasks');
  if(dt){dt.innerHTML=hasTasks
-   ? s.tasks.slice(0,6).map(t=>`<div class="taskline"><span class="tn">${t.name}</span><span class="td">${fmtAgo(t.mtime)}</span></div>`).join('')
+   ? s.tasks.slice(0,6).map(t=>`<div class="taskline"><span class="st ${taskCls(t.status)}" style="flex:none"><span class="dot"></span></span><span class="tn">${t.name}</span><span class="td">${fmtAgo(t.mtime)}</span></div>`).join('')
    : '<div class="taskline"><span class="tn" style="color:var(--muted)">No tasks yet</span></div>';}
  const v=document.querySelector('.mh-ver');if(v)v.textContent='0.1.0 · live';
 }).catch(()=>{});}
@@ -574,10 +589,10 @@ function showLogin(){var e=document.getElementById('loginscrim');if(e)e.hidden=f
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._t);t._t=setTimeout(function(){t.style.opacity=0;},2800);}
 async function act(method,url,body,msg){try{var r=await fetch(url,{method:method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===401){showLogin();return;}var j=await r.json().catch(function(){return{};});if(j&&j.result){toast('Prune dry run — cache '+((j.result.cache_deleted||[]).length)+', offsite '+((j.result.offsite_deleted||[]).length));}else{toast(msg||'Done');}setTimeout(hydrate,2000);return j;}catch(e){toast('Error: '+e);}}
 function byText(t){return [].slice.call(document.querySelectorAll('button')).filter(function(b){return b.textContent.replace(/\s+/g,' ').trim()===t;});}
-byText('Back up now').forEach(function(b){b.onclick=function(){act('POST','/api/run-schedule',null,'Backup of all guests started — see Tasks');};});
-byText('Dry run prune').forEach(function(b){b.onclick=function(){act('POST','/api/prune',{dry_run:true});};});
-byText('Run prune').forEach(function(b){b.onclick=function(){if(confirm('Run prune now? This deletes snapshots outside the policy.'))act('POST','/api/prune',{dry_run:false},'Prune started');};});
-var rpri=document.querySelector('#rscrim .btn.pri');if(rpri)rpri.onclick=function(){var it=window._rest;if(!it)return;var tgt=document.getElementById('rnew').value;act('POST','/api/restore',{vmid:it.grp.g.split('/')[1],ts:it.s.tskey||'',target:tgt,storage:document.getElementById('rstore').value},'Restore started → new VMID '+tgt);document.getElementById('rscrim').hidden=true;};
+byText('Back up all guests').forEach(function(b){b.onclick=function(){if(!confirm('Back up ALL protected guests now? This runs a full sequential backup and can take a while.'))return;act('POST','/api/run-schedule',null,'Backup of all guests started — see Tasks');gotoTasks();};});
+byText('Dry run prune').forEach(function(b){b.onclick=async function(){var o=document.getElementById('pruneOut');if(o)o.innerHTML='<span style="color:var(--muted)">Running dry run…</span>';try{var r=await fetch('/api/prune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:true})});if(r.status===401){showLogin();return;}var j=await r.json();renderPrune(o,j.result);}catch(e){if(o)o.innerHTML='<span style="color:var(--crit)">Error: '+e+'</span>';}};});
+byText('Run prune').forEach(function(b){b.onclick=function(){if(!confirm('Run prune now? This deletes snapshots outside the policy.'))return;var o=document.getElementById('pruneOut');if(o)o.innerHTML='<span style="color:var(--muted)">Prune started — see Tasks.</span>';act('POST','/api/prune',{dry_run:false},'Prune started');gotoTasks();};});
+var rpri=document.querySelector('#rscrim .btn.pri');if(rpri)rpri.onclick=function(){var it=window._rest;if(!it)return;var tgt=document.getElementById('rnew').value;act('POST','/api/restore',{vmid:it.grp.g.split('/')[1],ts:it.s.tskey||'',target:tgt,storage:document.getElementById('rstore').value},'Restore started → new VMID '+tgt);document.getElementById('rscrim').hidden=true;gotoTasks();};
 var lb=document.getElementById('logoutBtn');if(lb)lb.onclick=async function(){await fetch('/api/logout',{method:'POST'});showLogin();};
 document.querySelectorAll('[data-goto]').forEach(function(b){b.onclick=function(){selectTab(b.dataset.goto);};});
 var db=document.getElementById('docBtn');if(db)db.onclick=function(){window.open('https://git.midvault.se/ai-pvet440/lxc-offsite','_blank');};
@@ -608,6 +623,7 @@ fetch('/api/config').then(function(r){return r.ok?r.json():null;}).then(function
 var scb=document.getElementById('cfSaveCache');if(scb)scb.onclick=async function(){var b={path:document.getElementById('cfCachePath').value,create_dataset:document.getElementById('cfCreateDs').checked,pool:document.getElementById('cfPool').value,quota_gb:parseInt(document.getElementById('cfQuota').value,10)||0};try{var r=await fetch('/api/config/cache',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('cfMsg',r.ok,r.ok?('Saved · '+j.cache_dir+(j.created?' (dataset '+j.created+')':'')):('Error: '+(j.detail||'failed')));}catch(e){setMsg('cfMsg',false,'Error: '+e);}};
 var rsb=document.getElementById('rmSave');if(rsb)rsb.onclick=async function(){var b={name:document.getElementById('rmName').value,host:document.getElementById('rmHost').value,sftp_user:document.getElementById('rmUser').value,port:document.getElementById('rmPort').value,key_file:document.getElementById('rmKey').value,use_crypt:document.getElementById('rmCrypt').checked,password:document.getElementById('rmPw').value,password2:document.getElementById('rmPw2').value,remote_path:'lxc'};try{var r=await fetch('/api/config/remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',r.ok,r.ok?('Saved remote "'+j.remote+'" — click Test connection'):('Error: '+(j.detail||'failed')));}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
 var rtb=document.getElementById('rmTest');if(rtb)rtb.onclick=async function(){setMsg('rmMsg',true,'Testing…');try{var r=await fetch('/api/config/test',{method:'POST'});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',j.ok,j.msg);}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
+var vrb=document.getElementById('vrRun');if(vrb)vrb.onclick=function(){var vg=document.getElementById('vrGuest');var vm=vg&&vg.value;if(!vm){setMsg('vrMsg',false,'Pick a guest first.');return;}if(!confirm('Run test-restore for guest '+vm+'? It fetches, boots and destroys a throwaway copy.'))return;setMsg('vrMsg',true,'Started — see Tasks.');act('POST','/api/test-restore/'+vm,null,'Test-restore of '+vm+' started');gotoTasks();};
 /* --- live host resources (Dashboard) + live task log --- */
 function _set(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
 function _bar(id,p){var e=document.getElementById(id);if(e)e.style.width=Math.min(100,Math.max(0,p))+'%';}
@@ -634,7 +650,24 @@ function loadRes(){fetch('/api/resources').then(function(r){return r.ok?r.json()
  if(d.cache_used!=null&&d.cache_total){_set('sumCache',human(d.cache_used)+' / '+human(d.cache_total));_bar('sumCacheBar',Math.round(d.cache_used/d.cache_total*100));}
  _set('sumSnaps',d.snapshots||0);if(d.last_job)_set('sumLast',fmtAgo(d.last_job));_set('sumVerify','cryptcheck on backup');
  _set('verLast',(d.snapshots||0)+' snapshots · cryptcheck');
+ // Dashboard statusruta: offsite-användning + verifiering + restore-test (live, ej frusna)
+ var offB=d.offsite_bytes||0;_set('kOffsite',human(offB));_bar('kOffsiteBar',Math.min(100,offB/107374182400*100));
+ var kv=document.getElementById('kVerify');
+ if(kv){if(d.last_verify==null){kv.textContent='—';kv.className='rv';_bar('kVerifyBar',0);}
+  else if(d.last_verify==='OK'){kv.textContent='OK · cryptcheck';kv.className='rv st good';_bar('kVerifyBar',100);}
+  else{kv.textContent=d.last_verify+' · cryptcheck';kv.className='rv st crit';_bar('kVerifyBar',100);}}
+ var kt=document.getElementById('kRestoreTest');
+ if(kt){var tr=d.test_restore;if(!tr){kt.textContent='not yet';kt.className='rv';}
+  else{kt.textContent=(tr.status==='failed'?'failed':tr.status==='running'?'running…':'OK')+' · '+fmtAgo(tr.age);kt.className='rv '+(tr.status==='failed'?'st crit':tr.status==='running'?'st info':'st good');}}
 }).catch(function(){});}
+function taskCls(st){return st==='failed'?'crit':st==='running'?'info':'good';}
+function renderPrune(o,res){if(!o)return;
+ if(!res||res.error){o.innerHTML='<span style="color:var(--crit)">Dry run failed'+(res&&res.error?': '+res.error:'')+'</span>';return;}
+ var cd=res.cache_deleted||[],od=res.offsite_deleted||[];
+ if(!cd.length&&!od.length){o.innerHTML='<span class="st good"><span class="dot"></span>Nothing to prune — everything is within policy.</span>';return;}
+ var esc=function(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;');};
+ var mk=function(t,a){return a.length?('<div style="margin-top:6px"><b>'+t+' ('+a.length+')</b><div class="cmd" style="margin-top:4px">'+a.map(esc).join('\n')+'</div></div>'):'';};
+ o.innerHTML='<div style="font-size:12px;color:var(--warn);margin-bottom:2px">Dry run — would remove '+(cd.length+od.length)+' snapshot(s):</div>'+mk('Local cache',cd)+mk('Offsite',od);}
 function fmtAgo(ep){var s=Math.max(0,Math.floor(Date.now()/1000-ep));if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';}
 window.curTask=null;
 function loadTaskLog(name){window.curTask=name;var lt=document.getElementById('logtitle');if(lt)lt.textContent=name;
