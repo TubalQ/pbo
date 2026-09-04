@@ -273,11 +273,8 @@ td.num{text-align:right}
               </tbody></table></div>
             </div></div>
 
-            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Recent Tasks</h3><div class="bd">
-              <div class="taskline"><span class="tn">run-schedule <span class="tc">— 12/12 guests</span></span><span class="td">23 min</span><span class="st good"><span class="dot"></span>OK</span></div>
-              <div class="taskline"><span class="tn">backup ct/9003 <span class="tc">— upload + cryptcheck</span></span><span class="td">16 s</span><span class="st good"><span class="dot"></span>OK</span></div>
-              <div class="taskline"><span class="tn">test-restore ct/122 <span class="tc">— boot + cleanup</span></span><span class="td">6 min</span><span class="st good"><span class="dot"></span>OK</span></div>
-              <div class="taskline"><span class="tn">verify ct/113 <span class="tc">— cryptcheck</span></span><span class="td">4 s</span><span class="st good"><span class="dot"></span>OK</span></div>
+            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Recent Tasks</h3><div class="bd" id="dashTasks">
+              <div class="taskline"><span class="tn" style="color:var(--muted)">Loading tasks…</span></div>
             </div></div>
           </div>
         </div>
@@ -377,11 +374,9 @@ td.num{text-align:right}
         <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><h1>Tasks</h1></div>
         <div class="cbody"><div class="tasks">
           <div class="tasklist">
-            <button class="taskrow" aria-selected="true" data-j="j0"><span class="st good"><span class="dot"></span></span><span class="ti"><b>run-schedule</b><span>12/12 OK · 23 min</span></span></button>
-            <button class="taskrow" data-j="j1"><span class="st good"><span class="dot"></span></span><span class="ti"><b>backup ct/9003</b><span>11:34 · uploaded</span></span></button>
-            <button class="taskrow" data-j="j2"><span class="st good"><span class="dot"></span></span><span class="ti"><b>test-restore ct/122</b><span>boot ok · cleaned</span></span></button>
+            <div class="taskrow" style="cursor:default"><span class="ti"><b style="color:var(--muted)">Loading tasks…</b><span>live job logs from this host</span></span></div>
           </div>
-          <div class="logpane"><div class="lh"><span class="st good"><span class="dot"></span></span><b class="mono" id="logtitle">run-schedule</b><span style="margin-left:auto;color:#5fd39a" id="logstat">12/12 OK</span></div><div class="logbody" id="logbody"></div></div>
+          <div class="logpane"><div class="lh"><span class="st good"><span class="dot"></span></span><b class="mono" id="logtitle">Tasks</b><span style="margin-left:auto;color:#5fd39a" id="logstat"></span></div><div class="logbody" id="logbody"></div></div>
         </div></div>
       </div>
 
@@ -525,15 +520,12 @@ document.addEventListener('click',e=>{const tg=e.target.closest('.tg');if(tg&&!t
 const root=document.documentElement;
 document.getElementById('themeBtn').onclick=()=>{const cur=root.getAttribute('data-theme');const sys=matchMedia('(prefers-color-scheme:dark)').matches;const now=cur||(sys?'dark':'light');root.setAttribute('data-theme',now==='dark'?'light':'dark');};
 
-// tasks
-const T=s=>`<span class="t">${s}</span>`;
-const logs={j0:{title:'run-schedule',stat:'12/12 OK',lines:[[T('12:45'),'<span class="in">run-schedule: 12 guests, one at a time</span>'],[T('12:45'),'<span class="ok">✓ ct/110 postgres-db — uploaded + cryptcheck</span>'],[T('12:46'),'<span class="em">ct/116 vaultwarden — fuse → --mode stop</span>'],[T('12:46'),'<span class="ok">✓ ct/116 — back up and running, verified</span>'],[T('12:55'),'ct/113 nextcloud — 6.6 GB (heaviest)'],[T('13:08'),'<span class="ok">done — 12 ok, 0 failed, 23 min</span>']]},
- j1:{title:'backup-ct/9003',stat:'uploaded',lines:[[T('11:34'),'excluding mp0 (backup=0) · bind mp1 (not a volume)'],[T('11:34'),'<span class="ok">archive 159MB · sha256 ok · structure ok</span>'],[T('11:34'),'<span class="ok">cryptcheck: 0 differences · 4 matching files ✓</span>']]},
- j2:{title:'test-restore-ct/122',stat:'boot ok',lines:[[T('13:15'),'<span class="in">test-restore 122 → throwaway 9099</span>'],[T('13:17'),'<span class="ok">fetch: sha256 verified ✓</span>'],[T('13:21'),'pct restore + start → responded'],[T('13:21'),'<span class="ok">✓ booted from offsite, throwaway cleaned</span>']]}};
-const body=document.getElementById('logbody'),lt=document.getElementById('logtitle'),ls=document.getElementById('logstat');
-function renderLog(j){const d=logs[j];lt.textContent=d.title;ls.textContent=d.stat;body.innerHTML=d.lines.map(l=>`<div class="l">${l[0]} ${l[1]}</div>`).join('');}
-document.querySelectorAll('.taskrow').forEach(b=>b.onclick=()=>{document.querySelectorAll('.taskrow').forEach(x=>x.setAttribute('aria-selected',x===b));renderLog(b.dataset.j);});
-renderLog('j0'); selectTab('content');
+// tasks — the list + logs come live from /api/state and /api/tasks (see hydrate/loadTaskLog).
+// Pre-hydration state is neutral; no example logs.
+(function(){var b=document.getElementById('logbody');if(b)b.innerHTML='<div class="l" style="color:var(--muted)">Select a task to see its live log.</div>';
+ var ls=document.getElementById('logstat');if(ls)ls.textContent='';
+ var lt=document.getElementById('logtitle');if(lt)lt.textContent='Tasks';})();
+selectTab('content');
 
 /* --- live hydration from the API (falls back to example data offline) --- */
 const human=b=>{b=+b||0;const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return (b<10&&i>0?b.toFixed(1):Math.round(b))+' '+u[i];};
@@ -563,11 +555,17 @@ function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();r
  const ko=document.getElementById('kOffsite');if(ko)ko.textContent=human(s.offsite_bytes);
  var sg=document.getElementById('sumGroups');if(sg)sg.textContent=n+' protected'+(s.guests.some(function(x){return x.type==='qemu';})?' · 1 VM pending':'');
  const tl=document.querySelector('.tasklist');
- if(tl&&Array.isArray(s.tasks)&&s.tasks.length){
+ const hasTasks=Array.isArray(s.tasks)&&s.tasks.length;
+ if(tl&&hasTasks){
    tl.innerHTML=s.tasks.map((t,i)=>`<button class="taskrow"${i===0?' aria-selected="true"':''} data-live="${t.name}"><span class="st good"><span class="dot"></span></span><span class="ti"><b>${t.name.split('-')[0]}</b><span>${t.name}</span></span></button>`).join('');
    tl.querySelectorAll('[data-live]').forEach(b=>b.addEventListener('click',()=>{tl.querySelectorAll('.taskrow').forEach(x=>x.setAttribute('aria-selected',x===b));loadTaskLog(b.dataset.live);}));
-   loadTaskLog(s.tasks[0].name);
- }
+   if(!window.curTask)loadTaskLog(s.tasks[0].name);
+ }else if(tl){tl.innerHTML='<div class="taskrow" style="cursor:default"><span class="ti"><b style="color:var(--muted)">No tasks yet</b><span>backups and restores show here</span></span></div>';}
+ // Dashboard "Recent Tasks" card — live from the same job logs.
+ const dt=document.getElementById('dashTasks');
+ if(dt){dt.innerHTML=hasTasks
+   ? s.tasks.slice(0,6).map(t=>`<div class="taskline"><span class="tn">${t.name}</span><span class="td">${fmtAgo(t.mtime)}</span></div>`).join('')
+   : '<div class="taskline"><span class="tn" style="color:var(--muted)">No tasks yet</span></div>';}
  const v=document.querySelector('.mh-ver');if(v)v.textContent='0.1.0 · live';
 }).catch(()=>{});}
 
