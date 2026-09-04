@@ -21,9 +21,10 @@ _gfs_keep() {
     local -a names=(); local n
     while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done
     [[ "${#names[@]}" -gt 0 ]] || return 0
-    # Sortera fallande på tidsstämpel.
+    # Sortera fallande — arkivnamn har zero-paddad ts (YYYY_MM_DD-HH_MM_SS) så
+    # lexikalt fallande = kronologiskt nyast först.
     local -a sorted
-    mapfile -t sorted < <(printf '%s\n' "${names[@]}" | sort -t- -k1 -r 2>/dev/null | sort -r)
+    mapfile -t sorted < <(printf '%s\n' "${names[@]}" | sort -r)
     declare -A seen_d=() seen_w=() seen_m=()
     local kept_d=0 kept_w=0 kept_m=0 first=1
     local name ts ds dk wk mk keep
@@ -110,6 +111,10 @@ do_prune() {
     PRUNE_CACHE_DELETED=(); PRUNE_OFFSITE_DELETED=()
     prune_cache
     [[ "${OFFSITE_ENABLED:-true}" == "true" ]] && prune_offsite || log_info "prune: OFFSITE_ENABLED=false → hoppar offsite."
+
+    if [[ "${DRY_RUN:-0}" != 1 && $(( ${#PRUNE_CACHE_DELETED[@]} + ${#PRUNE_OFFSITE_DELETED[@]} )) -gt 0 ]]; then
+        audit_log "prune cache=${#PRUNE_CACHE_DELETED[@]} offsite=${#PRUNE_OFFSITE_DELETED[@]} offsite_list=[${PRUNE_OFFSITE_DELETED[*]:-}]"
+    fi
 
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         local c o

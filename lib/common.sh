@@ -51,6 +51,7 @@ set_defaults() {
     : "${RCLONE_CONFIG_FILE:=}"        # egen rclone.conf (annars rclones default)
     : "${TR_WAIT_TRIES:=30}"           # test-restore: antal försök att nå CT
     : "${TR_WAIT_SLEEP:=2}"            # test-restore: sekunder mellan försök
+    : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # bekräfta att Hetzner-snapshots är på
     : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard varnar om senaste push är äldre
 
     # Härledda sökvägar.
@@ -120,6 +121,15 @@ log_info()  { _log INFO  "$@"; }
 log_warn()  { _log WARN  "$@"; }
 # Fel loggas OCH triggar notis (stub i steg 1, riktig i steg 8/notify.sh).
 log_error() { _log ERROR "$@"; notify_failure "$*" 2>/dev/null || true; }
+
+# Audit-logg för destruktiva/utåtriktade åtgärder (vem gjorde vad).
+# Rad: "2026-09-04T.. user=<sudo/uid> restore src=110 target=9010 …".
+audit_log() {
+    local who="${SUDO_USER:-$(id -un 2>/dev/null || echo root)}"
+    local line; line="$(date --iso-8601=seconds) user=${who} $*"
+    [[ -n "${AUDIT_FILE:-}" ]] && printf '%s\n' "$line" >> "$AUDIT_FILE" 2>/dev/null || true
+    _log INFO "audit: $*"
+}
 
 # die <exit-kod> <meddelande...>
 die() {

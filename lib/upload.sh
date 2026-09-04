@@ -63,6 +63,7 @@ verify_offsite() {
     fi
 
     log_error "verify $vmid: offsite MATCHAR EJ lokalt — raderar uppladdat och avbryter"
+    audit_log "offsite-delete verifieringsfel dest=$dest base=$base"
     rclone delete "$dest" --include "${base}*" >/dev/null 2>&1 || \
         log_warn "verify $vmid: kunde inte städa halvt uppladdat — kontrollera $dest manuellt"
     die "$EX_DATAERR" "offsite-verifiering FAILADE för $base"

@@ -48,6 +48,7 @@ do_test_restore() {
         || die "$EX_UNAVAILABLE" "test-restore: inget ledigt vmid i 9000–9099"
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
     mkdir -p "$JOBS_DIR"
+    audit_log "test-restore vmid=$vmid ts=$ts throwaway=$target"
     log_info "test-restore: vmid $vmid ($ts) → engångs-vmid $target"
 
     if [[ "${DRY_RUN:-0}" == 1 ]]; then

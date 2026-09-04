@@ -61,6 +61,7 @@ do_restore() {
     # Kör.
     local job_id="restore-${newid}-$(date +%Y%m%d-%H%M%S)"
     local jobfile="${JOBS_DIR}/${job_id}.log"
+    audit_log "restore src=$src ts=$ts target=$newid storage=$storage unprivileged=$unpriv"
     log_info "restore: ${cmd[*]}"
     if ! run_stream "$jobfile" "pct-restore[$newid]" -- "${cmd[@]}"; then
         die "$EX_SOFTWARE" "pct restore misslyckades för mål $newid (se $jobfile)"

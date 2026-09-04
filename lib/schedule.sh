@@ -9,6 +9,9 @@
 # do_run_schedule — kör backup för varje vmid i BACKUP_ORDER, sekventiellt.
 do_run_schedule() {
     [[ -n "${BACKUP_ORDER:-}" ]] || die "$EX_CONFIG" "BACKUP_ORDER är tom — inget att schemalägga."
+    # Ransomware-skydd: SFTP ger ingen append-only. Påminn om Storage Box-snapshots.
+    [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]] || \
+        log_warn "run-schedule: Storage Box-snapshots EJ bekräftade — en komprometterad host kan radera offsite. Slå på Hetzners snapshots och sätt STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
     local self="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}"
     local ids=(); IFS=', ' read -ra ids <<<"$BACKUP_ORDER"
 
