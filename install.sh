@@ -72,18 +72,24 @@ systemctl daemon-reload
 
 cat <<EOF
 
-Klart. lxc-offsite installerat.
+Installed: lxc-offsite (PBO · Proxmox Backup Offsite).
 
-Nästa steg:
-  1. Starta gränssnittet:   lxc-offsite tui        (Textual; whiptail-fallback: tui --simple)
-       → Setup-fliken gör restic-onboarding (repo/sftp/lösen/init) åt dig.
-  2. Eller CLI:   lxc-offsite --dry-run backup <vmid>   ·   lxc-offsite test-restore <vmid>
-  3. Enabla schemat när du är redo:
-       systemctl enable --now lxc-offsite.timer   &&   systemctl list-timers lxc-offsite.timer
+  Setup:      $BIN setup     — guided config (engine/cache/sftp/password/mode/ntfy → init)
+  Interface:  $BIN menu      — interactive prompt-CLI (guests/backup/restore/status)
+  Schedule:   systemctl enable --now lxc-offsite.timer   (runs 05:00 nightly)
 
-Motor: default ENGINE=tar (rclone crypt). För restic-spåret: sätt ENGINE=restic i
-config (eller via TUI Setup) + kör 'lxc-offsite init'. Se docs/adr/0001.
-Web-konsolen (api/web) är fryst som referens — TUI:n är primärt gränssnitt.
-
-Avinstallera: ta bort $LIBDIR, $BIN, units i $UNITDIR. Config/creds i $CFGDIR lämnas.
+Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
 EOF
+
+# --- interactive first-run setup (only on a real terminal) ---
+if [[ -t 0 && -t 1 ]]; then
+    printf '\n'
+    read -r -p "Run the interactive setup wizard now? [Y/n] " _ans
+    if [[ -z "$_ans" || "$_ans" == [Yy]* ]]; then
+        "$BIN" setup
+    else
+        echo "OK — run '$BIN setup' whenever you're ready."
+    fi
+else
+    echo "Non-interactive install — run '$BIN setup' to configure."
+fi

@@ -66,6 +66,7 @@ Globala flaggor:
   -V, --version       versionsnummer
 
 Kommandon:
+  setup                       interaktiv setup-wizard (engine/cache/sftp/lösen/mode/ntfy → init)
   menu                        interaktivt prompt-CLI (rclone-stil) — gäster/backup/restore/status
   tui                         (äldre) Textual-TUI — fryst till förmån för `menu`
   init                        (restic) skapa/verifiera repo(s)
@@ -192,6 +193,7 @@ cmd_restore() {
 
 cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) init:ade/klara"; else log_warn "init: bara meningsfullt med ENGINE=restic"; fi; }
 cmd_menu()         { menu_main; }
+cmd_setup()        { run_setup_wizard; }
 cmd_tui() {
     case "${1:-}" in
         --selftest) _tui_selftest; return ;;
@@ -233,6 +235,7 @@ main() {
 
     case "$LXCO_COMMAND" in
         init)          cmd_init "$@" ;;
+        setup)         cmd_setup "$@" ;;
         menu)          cmd_menu "$@" ;;
         tui)           cmd_tui "$@" ;;
         backup)        cmd_backup "$@" ;;

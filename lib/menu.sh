@@ -121,37 +121,88 @@ menu_status() {
     echo; _pause
 }
 
-# --- 1. SETUP / onboarding (restic-wizard) ---
-menu_setup() {
-    _menu_header
-    printf '%s Setup / onboarding (restic)%s\n\n' "$C_B" "$C_0"
-    local eng; eng="$(_ask "Motor (restic/tar)" "restic")"
-    if [[ "$eng" != "restic" ]]; then _cfg_set ENGINE tar; echo "  ${C_G}ENGINE=tar satt.${C_0}"; _pause; return; fi
-    local mode host user port key repo pass
-    mode="$(_ask "Läge (cached=lokal+offsite / offsite=bara offsite)" "offsite")"
-    host="$(_ask "SFTP-host (t.ex. uXXXXX-subN.your-storagebox.de)")"
-    [[ -n "$host" ]] || { echo "  ${C_R}SFTP-host krävs — avbryter.${C_0}"; _pause; return; }
-    user="$(_ask "SFTP-user" "$host")"
-    port="$(_ask "Port" "23")"
-    key="$(_ask "SSH-nyckelfil på hosten" "/root/.ssh/id_rsa")"
-    repo="$(_ask "Repo-path (RELATIV — Storage Box chroot)" "lxc-restic")"
-    if _yn "Generera repo-lösen automatiskt?" j; then
-        pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
-        echo "  ${C_D}lösen genererat (visas via meny 4 Export).${C_0}"
-    else pass="$(_askpw "Repo-lösen (DR-nyckel!)")"; fi
-    local passfile="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"
-    ( umask 077; printf '%s\n' "$pass" > "$passfile" )
+# --- SETUP WIZARD (English — used by `pbo setup`, install.sh, and the menu) ---
+run_setup_wizard() {
+    set +e +u
+    printf '\n%s=== PBO · Proxmox Backup Offsite — setup ===%s\n\n' "$C_B" "$C_0"
+    local eng; eng="$(_ask "Backup engine (restic/tar)" "restic")"
+    if [[ "$eng" != "restic" ]]; then _cfg_set ENGINE tar; echo "  ENGINE=tar set."; return 0; fi
     _cfg_set ENGINE restic
-    _cfg_set LOCAL_REPO "$([[ "$mode" == cached ]] && echo true || echo false)"
+
+    # --- cache tier ---
+    printf '\n%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
+    local cdir
+    if _yn "Do you have local cache space you want to use?" n; then
+        cdir="$(_ask "Where should the cache live? (path)" "/var/cache/lxc-offsite")"
+        mkdir -p "$cdir" 2>/dev/null
+        _cfg_set LOCAL_REPO true
+        _cfg_set CACHE_DIR "$cdir"
+        _cfg_set RESTIC_CACHE_REPO "$cdir/repo"
+        echo "  Cached mode: local repo at $cdir/repo + copy to offsite."
+    else
+        cdir="$(_ask "Path for temporary dump staging" "/var/cache/lxc-offsite")"
+        mkdir -p "$cdir" 2>/dev/null
+        _cfg_set LOCAL_REPO false
+        _cfg_set CACHE_DIR "$cdir"
+        echo "  Offsite-only mode: minimal local disk."
+    fi
+
+    # --- SFTP / repo ---
+    printf '\n'
+    local host user port key repo
+    host="$(_ask "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)")"
+    [[ -n "$host" ]] || { echo "  ${C_R}SFTP host required — aborting setup.${C_0}"; return 1; }
+    user="$(_ask "SFTP user" "$host")"
+    port="$(_ask "SFTP port" "23")"
+    key="$(_ask "SSH key file on this host" "/root/.ssh/id_rsa")"
+    repo="$(_ask "Repo path (RELATIVE — Storage Box is chrooted)" "lxc-restic")"
     _cfg_set OFFSITE_ENABLED true
     _cfg_set RESTIC_OFFSITE_REPO "sftp:hetzner:${repo}"
-    _cfg_set RESTIC_PASSWORD_FILE "$passfile"
     _cfg_set RESTIC_SFTP_COMMAND "\"ssh ${user}@${host} -p ${port} -i ${key} -o StrictHostKeyChecking=accept-new -s sftp\""
-    echo; echo "  Config skriven. Skapar/verifierar repo…"
+
+    # --- restic password (DR key) ---
+    printf '\n'
+    local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"
+    if _yn "Generate a random repo password (recommended)?" j; then
+        pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
+        echo "  Generated — export it afterwards (menu → Export DR key) and store it safely."
+    else
+        pass="$(_askpw "Enter restic repo password (this IS your DR key)")"
+    fi
+    ( umask 077; printf '%s\n' "$pass" > "$passfile" )
+    _cfg_set RESTIC_PASSWORD_FILE "$passfile"
+
+    # --- backup mode ---
+    printf '\n'
+    local mode; mode="$(_ask "Back up all: one-by-one (stream) or all-at-once (batch)?" "stream")"
+    if [[ "$mode" == "batch" ]]; then _cfg_set BACKUP_MODE batch; else _cfg_set BACKUP_MODE stream; fi
+
+    # --- ntfy ---
+    printf '\n'
+    if _yn "Enable ntfy notifications (alert on failure)?" n; then
+        local nurl ntopic
+        nurl="$(_ask "ntfy base URL (e.g. https://ntfy.example.com)")"
+        ntopic="$(_ask "ntfy topic" "lxc-offsite")"
+        _cfg_set NTFY_URL "$nurl"
+        _cfg_set NTFY_TOPIC "$ntopic"
+        echo "  ntfy enabled (add a token to NTFY_CREDS_FILE if your server needs auth)."
+    else
+        _cfg_set NTFY_URL ""
+        echo "  ntfy disabled."
+    fi
+
+    # --- init ---
+    printf '\n  Creating/verifying the restic repo…\n'
     "$LXCO_BIN" init
-    echo "  ${C_G}Setup klar.${C_0} VIKTIGT: exportera DR-nyckeln (meny 4) → Vaultwarden + offline."
-    _pause
+    printf '\n%s  Setup complete.%s Next steps:\n' "$C_G" "$C_0"
+    printf '    1) Protect guests:  pbo menu → Guests (scan/add)\n'
+    printf '    2) Test a backup:   pbo menu → Backup\n'
+    printf '    3) %sExport your DR key%s → password manager (pbo menu → Export DR key)\n' "$C_B" "$C_0"
+    return 0
 }
+
+# Menyval 1 → samma wizard (+ paus)
+menu_setup() { run_setup_wizard; _pause; }
 
 # --- 4. EXPORTERA DR-NYCKEL ---
 menu_export() {
