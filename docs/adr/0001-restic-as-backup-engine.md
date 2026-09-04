@@ -61,6 +61,31 @@ restore / test-restore:
 Offsite-repot initieras med delad chunker för dedup-paritet:
 `restic -r $OFFSITE_REPO init --copy-chunker-params --from-repo $CACHE_REPO`.
 
+### Backend: restics inbyggda sftp (native), inte rclone
+
+`$OFFSITE_REPO` är restics **inbyggda sftp-backend**, direkt över ssh — ingen
+rclone i datavägen:
+
+```
+OFFSITE_REPO=sftp:u546749-sub5@u546749.your-storagebox.de:23/lxc-restic
+# ssh-nyckel via ~/.ssh/config eller -o sftp.args; parallella anslutningar: -o sftp.connections=N
+```
+
+Skäl:
+- **Ett lager mindre.** Produkten är "för SFTP" → den direkta backenden är den
+  ärligaste passformen; SSH-nyckeln finns redan (`/root/.ssh/id_rsa`).
+- **Append-only-enforcement bor i SSH-lagret.** `restic backup` bara *lägger till*
+  pack-filer; det är `prune` som raderar. En SSH-endpoint (forced-command /
+  no-delete-nyckel / `chattr +a`) som tillåter skriv men förbjuder delete släpper
+  igenom hostens backuper men blockerar radering = append-only. Med native sftp
+  äger *ni* den punkten. (restics dokumenterade `--append-only` gäller bara
+  rest-server-backenden, inte sftp — på SFTP är SSH-sidan enforcement-punkten.)
+
+**crypt-remoten (`hetzner-crypt`) utgår** oavsett backend — restic krypterar själv.
+**Alternativ (dokumenterat, ej valt):** `rclone:hetzner:lxc-restic` återanvänder den
+*rena* rclone-sftp-remoten som transport (ger rclones pool/retry/`--bwlimit` i
+datavägen) — välj bara om en enda transport-config för allt är önskvärt.
+
 ## 3. Alternativ som övervägdes (och varför inte)
 
 - **Behåll bespoke tar.zst.** Enkelt och revisionsbart, men taket är permanent
@@ -182,7 +207,7 @@ oförberedda Storage Box-snapshots).
 ## 10. Öppna frågor / uppföljning
 
 - Janitor-domänen: separat maskin, cron på SFTP-boxen, eller offline-triggad?
-- `restic` via native `sftp:` vs `rclone:`-backend (återanvänd befintlig rclone-remote)?
+- ~~native `sftp:` vs `rclone:`-backend~~ **Beslutat: native sftp** (se §2, Backend).
 - VM-stöd (`qm`) i samma motor — Väg A funkar för `vzdump-qemu` också (annan restore).
 - Nyckelrotation för repo-lösen (split knowledge?).
 - Väg B som senare fil-nivå-optimering — separat ADR om/när det blir aktuellt.
