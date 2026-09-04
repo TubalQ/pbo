@@ -264,25 +264,45 @@ rdo_test_restore() {
 # offsite_deleted = borttagna snapshot-id (offsite/läs-repot). --group-by paths
 # ger behåll-per-gäst (stabil dumpdir-path).
 # ---------------------------------------------------------------------------
+# _restic_forget_json <repo> <keep-flags...> → JSON-array av borttagna short_id.
+# --group-by paths ger behåll-per-gäst (stabil dumpdir-path).
+_restic_forget_json() {
+    local repo="$1"; shift
+    # `forget --json` ALLENA ger en ren remove-lista (ett json-värde). Kör INTE
+    # --prune här (det strukturerar om outputen); reclaima utrymme separat nedan.
+    local fflags=(forget --group-by paths "$@" --json)
+    [[ "${DRY_RUN:-0}" == 1 ]] && fflags+=(--dry-run)
+    local out; out="$(_restic "$repo" "${fflags[@]}" 2>/dev/null || echo '[]')"
+    local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
+    # Skarp körning som faktiskt tog bort snapshots → reclaima packfiler separat.
+    if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) gav fel — utrymme ej helt återvunnet"
+    fi
+    printf '%s' "$removed"
+}
+
+# prune — cache-repot prunas keep-last, offsite prunas REN GFS. I cached-läge
+# prunas BÅDA. Envelope {cache_deleted, offsite_deleted} = borttagna id per repo.
 rdo_prune() {
-    local repo; repo="$(_restic_read_repo)"
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för prune"
-    # TODO (förfining): offsite bör pruna REN GFS (daily/weekly/monthly) medan
-    # cache-repot prunar keep-last; och i cached-läge ska BÅDA repona prunas.
-    # Nu prunas bara läs-repot med keep-last+GFS (union → keep-last kan hålla kvar
-    # extra offsite; ofarligt). Separera vid skarp-härdning.
-    local flags=(--group-by paths --keep-last "${RESTIC_KEEP_LAST}" \
-        --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
-        --keep-monthly "${KEEP_OFFSITE_MONTHLY}" --json)
-    [[ "${DRY_RUN:-0}" == 1 ]] && flags+=(--dry-run) || flags+=(--prune)
-    local out; out="$(_restic "$repo" forget "${flags[@]}" 2>/dev/null || echo '[]')"
-    local removed; removed="$(printf '%s' "$out" | jq -c '[ .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
+    local cache_removed='[]' offsite_removed='[]'
+    # Lokalt cache-repo: keep-last (snabb restore-tier).
+    if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
+        cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")"
+    fi
+    # Offsite: ren GFS (daily/weekly/monthly) — inget keep-last (cache-koncept).
+    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+        offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
+            --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
+            --keep-monthly "${KEEP_OFFSITE_MONTHLY}")"
+    fi
     local dry; dry="$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        printf '{"command":"prune","status":"ok","ok":true,"dry_run":%s,"cache_deleted":[],"offsite_deleted":%s}\n' "$dry" "$removed"
+        printf '{"command":"prune","status":"ok","ok":true,"dry_run":%s,"cache_deleted":%s,"offsite_deleted":%s}\n' \
+            "$dry" "$cache_removed" "$offsite_removed"
     else
-        local n; n="$(printf '%s' "$removed" | jq 'length')"
-        log_info "prune (restic): tog bort $n snapshot(s)$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
+        local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length')"; no="$(printf '%s' "$offsite_removed" | jq 'length')"
+        log_info "prune (restic): cache tog bort $nc, offsite tog bort $no$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
     fi
     return "$EX_OK"
 }
