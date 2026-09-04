@@ -86,6 +86,27 @@ Skäl:
 *rena* rclone-sftp-remoten som transport (ger rclones pool/retry/`--bwlimit` i
 datavägen) — välj bara om en enda transport-config för allt är önskvärt.
 
+### Lägen: local cache eller bara offsite (valbart)
+
+Användaren ska kunna välja **var backuperna bor** — alla har inte en extra disk
+för ett lokalt repo. Två ortogonala config-nycklar (läggs till i Fas 1):
+
+| Läge | `LOCAL_REPO` | `OFFSITE_ENABLED` | Flöde |
+|---|---|---|---|
+| **cached** (default) | `true` | `true` | `restic backup` → lokalt repo → `restic copy` → offsite. Lokalt repo = snabb restore-tier + staging. `KEEP_LOCAL` gäller. |
+| **offsite-only** | `false` | `true` | `vzdump --stdout \| restic backup --stdin` **direkt** till offsite-sftp-repot. Ingen persistent lokal datalagring — bara transient scratch för aktuell gäst. `KEEP_LOCAL` N/A. |
+| local-only | `true` | `false` | backup till lokalt repo, ingen push (airgap/test). |
+
+- **offsite-only** minimerar diskfotavtryck (viktigt för små hostar): inget lokalt
+  repo att underhålla; restic har ändå sin metadata-cache (`RESTIC_CACHE_DIR`) för
+  fart. Priset: varje restore/test-restore hämtar från offsite (redan sant idag),
+  och `--stdin`-snapshoten bär taren men **inte** `.conf`-sidecaren i samma
+  snapshot — configen läggs som en andra sökväg i scratch-katalogen som backas med
+  (dvs. `restic backup $SCRATCH/<id>/` i stället för ren stdin när sidecars behövs).
+- **cached** ger snabbast restore (lokal kopia) och billig `copy` till offsite.
+- UI:t (onboarding) exponerar valet som en enkel växel: **"Var ska backuperna
+  bo? · Lokal cache + offsite · Bara offsite"** (se §6).
+
 ## 3. Alternativ som övervägdes (och varför inte)
 
 - **Behåll bespoke tar.zst.** Enkelt och revisionsbart, men taket är permanent
@@ -145,7 +166,7 @@ Läspanelerna blir **billigare/bättre**; skrivpanelerna är **avgränsat** arbe
 | Tasks + logg-färg | oförändrad mekanism; tuna `_job_status`-token ("Fatal:", "no errors were found") | Nästan oförändrad |
 
 **Tre paneler kräver riktig omskrivning:**
-1. **Remotes/onboarding** (störst): repo-URL (`sftp:`/`rclone:`) + repo-lösen + engångs-`restic init`; crypt-lösen/salt-fälten **försvinner**.
+1. **Remotes/onboarding** (störst): repo-URL (`sftp:`) + repo-lösen + engångs-`restic init`; crypt-lösen/salt-fälten **försvinner**. Plus en **läges-växel** "Lokal cache + offsite / Bara offsite" (§2) som sätter `LOCAL_REPO`/`OFFSITE_ENABLED`, och en rad om immutability-läget (lokal janitor → förlita på provider-snapshots; §7).
 2. **Prune-panelen**: `forget --dry-run --json` ger `{keep:[ids], remove:[ids]}` + återvunna bytes — inte filnamns-arrayer; `renderPrune()` skrivs om.
 3. **Restore-modal + export-key**: `ts` → snapshot-`id`; export-key ger repo-lösen + repo-URL i stället för `rclone.conf`.
 
@@ -165,9 +186,26 @@ restic ändrar inte immutability-strategin — den **förstärker** den:
   hosten. En ransomware-drabbad host kan inte utplåna historik.
 - **Provider-snapshots** som baslinje där append-only inte kan tvingas (Hetzner
   BTRFS / rsync.net ZFS) — verifieras, inte bara bockas i.
-- **Spänning att hantera:** `restic prune` kräver delete offsite → alltid från
-  janitor-sidan, aldrig hosten. `forget` (släpper snapshot-referenser) är billigt
-  och kan köras från hosten; det tunga `prune` hör janitorn till.
+- **Spänning att hantera:** `restic prune` kräver delete offsite → hör janitorn
+  till. `forget` (släpper snapshot-referenser) är billigt och kan köras från hosten;
+  det tunga `prune` (repack + radera) körs separat.
+
+### Janitor: lokal systemd-timer / cron-script (default)
+
+`prune` körs som en **egen systemd-tjänst+timer** (eller cron som anropar ett
+script), **skild från backup-timern**. Enkelt och self-contained — passar
+local-only.
+
+> **Ärlig konsekvens:** kör janitorn på **samma host** måste hosten ha en
+> **delete-kapabel** credential lokalt → en komprometterad host *kan* då köra prune
+> och radera offsite. I det läget är append-only-nyckeln **inte** det verkliga
+> ransomware-skyddet; **provider-snapshots** (Hetzner BTRFS / rsync.net ZFS) blir
+> det. Det är ett acceptabelt homelab-default, men måste stå tydligt i UI:t.
+>
+> **Härdat läge (valbart):** hosten får *bara* append-nyckeln; janitorn triggas
+> från en annan förtroendedomän (separat maskin, cron på SFTP-boxen, eller
+> offline-nyckel). Då är append-only det reella skyddet. Byggs som ett läge, inte
+> som tvång.
 
 ## 8. Migrering / coexistence
 
@@ -206,8 +244,9 @@ oförberedda Storage Box-snapshots).
 
 ## 10. Öppna frågor / uppföljning
 
-- Janitor-domänen: separat maskin, cron på SFTP-boxen, eller offline-triggad?
+- ~~Janitor-domänen~~ **Beslutat: lokal systemd-timer/cron-script (default)**, härdat externt läge valbart (se §7). Öppet: exakt form på det härdade lägets trigger.
 - ~~native `sftp:` vs `rclone:`-backend~~ **Beslutat: native sftp** (se §2, Backend).
+- ~~local cache vs offsite-only~~ **Beslutat: båda, valbart** via `LOCAL_REPO`/`OFFSITE_ENABLED` (se §2, Lägen).
 - VM-stöd (`qm`) i samma motor — Väg A funkar för `vzdump-qemu` också (annan restore).
 - Nyckelrotation för repo-lösen (split knowledge?).
 - Väg B som senare fil-nivå-optimering — separat ADR om/när det blir aktuellt.
