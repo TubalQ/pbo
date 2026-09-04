@@ -10,6 +10,7 @@ import json, os, secrets, subprocess
 
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, DataTable, Footer, Header, Input, Label,
@@ -210,11 +211,15 @@ class LxcoTUI(App):
     TITLE = "lxc-offsite"
     SUB_TITLE = "offsite-backup för Proxmox"
     BINDINGS = [
+        Binding("ctrl+c", "quit", "Avsluta", priority=True),   # annars → buggig copy_text i Textual 8.2
+        ("q", "quit", "Avsluta"),
         ("r", "refresh", "Uppdatera"),
         ("b", "backup_all", "Backa alla"),
         ("e", "export", "Export-nyckel"),
-        ("q", "quit", "Avsluta"),
     ]
+
+    def action_quit(self) -> None:
+        self.exit()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
