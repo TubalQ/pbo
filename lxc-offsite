@@ -14,6 +14,8 @@ set -Eeuo pipefail
 SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
+# shellcheck source=lib/notify.sh  (ersätter notify-stubbarna i common.sh)
+source "${SELF_DIR}/lib/notify.sh"
 # shellcheck source=lib/lock.sh
 source "${SELF_DIR}/lib/lock.sh"
 # shellcheck source=lib/preflight.sh
@@ -28,6 +30,8 @@ source "${SELF_DIR}/lib/list.sh"
 source "${SELF_DIR}/lib/restore.sh"
 # shellcheck source=lib/prune.sh
 source "${SELF_DIR}/lib/prune.sh"
+# shellcheck source=lib/testrestore.sh
+source "${SELF_DIR}/lib/testrestore.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -182,7 +186,7 @@ cmd_restore() {
 cmd_list()         { do_list "${1:-}"; }
 cmd_verify()       { require_vmid "${1:-}"; not_implemented; }
 cmd_prune()        { do_prune; }
-cmd_test_restore() { require_vmid "${1:-}"; not_implemented; }
+cmd_test_restore() { require_vmid "${1:-}"; acquire_vmid_lock "$1"; do_test_restore "$1"; }
 
 # ---------------------------------------------------------------------------
 # Main.

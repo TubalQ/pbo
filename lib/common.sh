@@ -41,10 +41,15 @@ set_defaults() {
     : "${KEEP_OFFSITE_DAILY:=7}"
     : "${KEEP_OFFSITE_WEEKLY:=4}"
     : "${KEEP_OFFSITE_MONTHLY:=6}"
-    : "${NTFY_URL:=}"
+    : "${NTFY_URL:=}"                  # ntfy-server (bas-URL); tom = inga notiser
+    : "${NTFY_TOKEN:=}"                # annars läses från NTFY_CREDS_FILE
+    : "${NTFY_TOPIC:=}"                # annars NTFY_TOPIC_WARN från creds-filen
+    : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
     : "${NTFY_ON_SUCCESS:=false}"
     : "${OFFSITE_ENABLED:=true}"       # false = dumpa+verifiera lokalt, hoppa upload
     : "${RCLONE_CONFIG_FILE:=}"        # egen rclone.conf (annars rclones default)
+    : "${TR_WAIT_TRIES:=30}"           # test-restore: antal försök att nå CT
+    : "${TR_WAIT_SLEEP:=2}"            # test-restore: sekunder mellan försök
     : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard varnar om senaste push är äldre
 
     # Härledda sökvägar.
