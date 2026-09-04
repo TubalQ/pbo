@@ -360,13 +360,29 @@ class LxcoTUI(App):
 
     @work(thread=True, exclusive=True, group="refresh")
     def refresh_data(self):
-        """Hämtar data i en tråd (pvesh/CLI kan vara långsamt) → renderar på main."""
-        cfg = read_cfg()
-        listing = cli_json("list", timeout=90)
-        arcs = listing.get("archives", []) if isinstance(listing, dict) else []
-        gs = guests()
-        prot = protected_set()
-        self.call_from_thread(self._render_data, cfg, arcs, gs, prot)
+        """Hämtar data i en tråd (pvesh/CLI kan vara långsamt) → renderar på main.
+        ALLT fångas: ett worker-undantag skulle annars fälla hela appen (Textual
+        avslutar vid ohanterat worker-fel) — t.ex. när sftp är upptaget av en
+        pågående backup."""
+        try:
+            cfg = read_cfg()
+            listing = cli_json("list", timeout=90)
+            arcs = listing.get("archives", []) if isinstance(listing, dict) else []
+            gs = guests()
+            prot = protected_set()
+            self.call_from_thread(self._render_data, cfg, arcs, gs, prot)
+        except Exception as e:  # noqa: BLE001
+            try:
+                self.call_from_thread(self._load_error, str(e)[:120])
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _load_error(self, msg):
+        try:
+            self.query_one("#statusbar", Static).update(f"  [b red]⚠ kunde ej ladda[/] {msg}")
+            self.notify(f"Dataladdning misslyckades: {msg}", severity="warning")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _render_data(self, cfg, arcs, gs, prot):
         eng = cfg.get("ENGINE", "tar")
@@ -437,20 +453,23 @@ class LxcoTUI(App):
 
     @work(thread=True, exclusive=True, group="metrics")
     def refresh_metrics(self):
-        cur = cpu_raw()
-        cpu = None
-        if cur and self._cpu_prev:
-            dt, di = cur[0] - self._cpu_prev[0], cur[1] - self._cpu_prev[1]
-            cpu = round((1 - di / dt) * 100) if dt > 0 else 0
-        if cur:
-            self._cpu_prev = cur
-        hm = host_metrics()
         try:
-            active = self.query_one(TabbedContent).active == "tab-metrics"
+            cur = cpu_raw()
+            cpu = None
+            if cur and self._cpu_prev:
+                dt, di = cur[0] - self._cpu_prev[0], cur[1] - self._cpu_prev[1]
+                cpu = round((1 - di / dt) * 100) if dt > 0 else 0
+            if cur:
+                self._cpu_prev = cur
+            hm = host_metrics()
+            try:
+                active = self.query_one(TabbedContent).active == "tab-metrics"
+            except Exception:  # noqa: BLE001
+                active = False
+            u = usage() if active else {}
+            self.call_from_thread(self._render_metrics, cpu, hm, u, active)
         except Exception:  # noqa: BLE001
-            active = False
-        u = usage() if active else {}
-        self.call_from_thread(self._render_metrics, cpu, hm, u, active)
+            pass   # metrics får aldrig fälla appen
 
     def _render_metrics(self, cpu, hm, u, active):
         if not active:
