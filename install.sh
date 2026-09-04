@@ -78,7 +78,7 @@ Nästa steg (manuellt):
        systemctl list-timers lxc-offsite.timer
   6. Web-konsol (PBS-lik):
        systemctl enable --now lxc-offsite-api.service
-       → http://<host>:8087   (v1: läs-endpoints, ingen auth än — håll på LAN/bakom traefik)
+       → http://<host>:8008   (v1: läs-endpoints, ingen auth än — håll på LAN/bakom traefik)
 
 Avinstallera: ta bort $LIBDIR, $BIN, units i $UNITDIR. Config/creds i $CFGDIR lämnas.
 EOF
