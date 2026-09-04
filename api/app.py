@@ -344,6 +344,29 @@ def get_config(user: str = Depends(current_user)):
             "remote_path": cfg.get("REMOTE_PATH"), "offsite_enabled": cfg.get("OFFSITE_ENABLED", "true"),
             "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values())}
 
+_cpu_prev = None
+def cpu_percent():
+    """Riktig CPU-belastning via /proc/stat-delta (pvesh cpu-fältet läser ofta 0)."""
+    global _cpu_prev
+    def read():
+        v = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+        return sum(v), v[3] + v[4]  # total, idle+iowait
+    try:
+        if _cpu_prev is None:
+            t1, i1 = read()
+            time.sleep(0.2)
+            t2, i2 = read()
+            _cpu_prev = (t2, i2)
+            dt, di = t2 - t1, i2 - i1
+        else:
+            pt, pi = _cpu_prev
+            total, idle = read()
+            _cpu_prev = (total, idle)
+            dt, di = total - pt, idle - pi
+        return round(1 - di / dt, 4) if dt > 0 else 0.0
+    except Exception:  # noqa: BLE001
+        return None
+
 @app.get("/api/resources")
 def resources(user: str = Depends(current_user)):
     node = os.uname().nodename.split(".")[0]
@@ -352,7 +375,7 @@ def resources(user: str = Depends(current_user)):
                            capture_output=True, text=True, timeout=10)
         d = json.loads(p.stdout)
         ci = d.get("cpuinfo", {})
-        return {"node": node, "cpu": d.get("cpu"), "cpus": ci.get("cpus"),
+        return {"node": node, "cpu": cpu_percent(), "cpus": ci.get("cpus"),
                 "cpu_model": ci.get("model"), "memory": d.get("memory"), "swap": d.get("swap"),
                 "loadavg": d.get("loadavg"), "uptime": d.get("uptime"),
                 "rootfs": d.get("rootfs"), "kversion": d.get("kversion")}
