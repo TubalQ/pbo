@@ -16,6 +16,8 @@ SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF_DIR}/lib/common.sh"
 # shellcheck source=lib/lock.sh
 source "${SELF_DIR}/lib/lock.sh"
+# shellcheck source=lib/preflight.sh
+source "${SELF_DIR}/lib/preflight.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -42,6 +44,7 @@ Globala flaggor:
 
 Kommandon:
   backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
+  preflight <vmid>            kör enbart förkontrollerna (finns/utrymme/cache/rclone)
   run-schedule                backup för varje vmid i BACKUP_ORDER, sekventiellt (köar)
   status                      pågående jobb, kölängd, vem som håller globala låset
   list [vmid]                 lista offsite-arkiv (storlek, datum)
@@ -94,8 +97,26 @@ cmd_backup() {
     local vmid="$1"
     acquire_vmid_lock "$vmid"
     acquire_global_lock "$mode" "backup" "$vmid"
-    # --- här kommer preflight/dump/upload/verify/prune i steg 2–4 ---
+
+    # Steg 2: preflight. FAIL → avbryt innan någon dump.
+    local rc=0
+    run_preflight "$vmid" || rc=$?
+    if (( rc != 0 )); then
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
+        die "$EX_UNAVAILABLE" "preflight underkänd för vmid $vmid — backup avbruten."
+    fi
+
+    # --- här kommer dump/upload/verify/prune i steg 3–4 ---
     not_implemented
+}
+
+# preflight <vmid> — kör enbart förkontrollerna (även intern del av backup).
+cmd_preflight() {
+    require_vmid "${1:-}"
+    local vmid="$1" rc=0
+    run_preflight "$vmid" || rc=$?
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
+    return "$rc"
 }
 
 # run-schedule — schemalagd: köar på globala låset per container, sekventiellt.
@@ -155,6 +176,7 @@ main() {
 
     case "$LXCO_COMMAND" in
         backup)        cmd_backup "$@" ;;
+        preflight)     cmd_preflight "$@" ;;
         run-schedule)  cmd_run_schedule "$@" ;;
         status)        cmd_status "$@" ;;
         list)          cmd_list "$@" ;;

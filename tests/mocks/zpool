@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# mock: zpool list -Hpo free <pool>
+p="${@: -1}"
+awk -v p="$p" '$1==p{print $2; f=1} END{exit !f}' "$MOCK_ZPOOL_FREE" 2>/dev/null

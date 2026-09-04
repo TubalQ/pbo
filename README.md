@@ -16,7 +16,7 @@ Under uppbyggnad, steg för steg enligt `docs/IMPLEMENTATION-PROMPT.md`.
 | Steg | Innehåll | Läge |
 |---|---|---|
 | 1 | Skelett: subkommandon, config, logging, tvånivålås, `--dry-run`/`--json` | ✅ |
-| 2 | Preflight (vmid, ZFS-utrymme, rclone, bind-mount-detektering) | ⏳ |
+| 2 | Preflight (vmid, ZFS-utrymme, rclone, bind-mount-detektering) | ✅ |
 | 3 | backup: vzdump + sha256 + strukturkontroll + meta.json | ⏳ |
 | 3b | realtidslogg av subprocess-output | ⏳ |
 | 4 | uppladdning + `rclone check --checksum` | ⏳ |

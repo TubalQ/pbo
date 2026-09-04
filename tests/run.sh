@@ -26,9 +26,8 @@ printf 'lxc-offsite — steg 1-tester\n'
 rm -rf "$PWD/run"
 
 # --- verktyget måste självt skapa LOCK_DIR (regression: ensure_dirs) ---
-out="$($BIN --json backup 9001 2>/dev/null)"
-grep -q 'not_implemented' <<<"$out" && ok "skapar LOCK_DIR själv på tom miljö" || bad "LOCK_DIR auto-skapas ($out)"
-mkdir -p "$LOCKDIR"
+$BIN --json status >/dev/null 2>&1
+[[ -d "$LOCKDIR" ]] && ok "skapar LOCK_DIR själv på tom miljö" || bad "LOCK_DIR auto-skapas"
 
 # --- grundläggande CLI ---
 $BIN --help    2>&1 | grep -q 'Användning' && ok "help visar användning" || bad "help"
@@ -41,10 +40,11 @@ out="$($BIN --json status 2>/dev/null)"
 [[ "$out" == '{'*'}' ]] && ok "status --json ger ett JSON-objekt" || bad "status --json ($out)"
 grep -q '"status":"ok"' <<<"$out" && ok "status --json innehåller status:ok" || bad "status json-fält"
 
-out="$($BIN --json backup 9001 2>/dev/null)"
-grep -q '"status":"not_implemented"' <<<"$out" && ok "backup svarar not_implemented (json)" || bad "backup json ($out)"
+# list har ingen preflight → lämpligt för att testa json-envelopen isolerat.
+out="$($BIN --json list 2>/dev/null)"
+grep -q '"status":"not_implemented"' <<<"$out" && ok "list svarar not_implemented (json)" || bad "list json ($out)"
 grep -q '"dry_run":false' <<<"$out" && ok "dry_run-fält finns" || bad "dry_run-fält"
-out="$($BIN --json --dry-run backup 9001 2>/dev/null)"
+out="$($BIN --json --dry-run list 2>/dev/null)"
 grep -q '"dry_run":true' <<<"$out" && ok "--dry-run reflekteras i json" || bad "dry_run true"
 
 # --- vmid-validering ---

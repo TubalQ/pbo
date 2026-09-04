@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mock: pct config <vmid> → cat fixture, annars exit 1 (finns ej)
+[ "$1" = config ] || exit 0
+f="$MOCK_CONF_DIR/$2.conf"
+[ -f "$f" ] && cat "$f" || exit 1
