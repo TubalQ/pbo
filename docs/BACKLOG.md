@@ -14,5 +14,11 @@
   (Väg A: vzdump-tar lagras i restic, `pct restore` orört, CLI-envelope behålls).
   Migrering i faser (`ENGINE=restic|tar`-flagga), coexistence tills bevisat skarpt.
 
+## VM + kluster
+- **Riktning satt:** qemu-VM-stöd + kluster-medvetenhet — se
+  [`docs/adr/0002-vm-och-kluster-stod.md`](adr/0002-vm-och-kluster-stod.md)
+  (typ-gren `pct`/`qm`; kluster = agent-per-nod + delat offsite-repo +
+  pmxcfs-config). Fas 1 = VM lokalt, Fas 2 = kluster.
+
 ## Övrigt
 - (fyll på)
