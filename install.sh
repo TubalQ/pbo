@@ -56,6 +56,14 @@ install -m 0644 "$SRC"/web/index.html /opt/lxc-offsite/web/index.html
 /opt/lxc-offsite/api/venv/bin/pip install -q -r /opt/lxc-offsite/api/requirements.txt
 echo "    console → /opt/lxc-offsite/{api,web}"
 
+echo "==> TUI (Textual — primärt gränssnitt)"
+install -d -m 0755 /opt/lxc-offsite/tui
+install -m 0644 "$SRC"/tui/lxco_tui.py "$SRC"/tui/lxco.tcss "$SRC"/tui/requirements.txt /opt/lxc-offsite/tui/
+[[ -d /opt/lxc-offsite/tui/venv ]] || python3 -m venv /opt/lxc-offsite/tui/venv
+/opt/lxc-offsite/tui/venv/bin/pip install -q --upgrade pip >/dev/null 2>&1 || true
+/opt/lxc-offsite/tui/venv/bin/pip install -q -r /opt/lxc-offsite/tui/requirements.txt
+echo "    TUI → 'lxc-offsite tui'  (whiptail-fallback: 'tui --simple')"
+
 echo "==> systemd-units (installeras, enablas EJ)"
 install -m 0644 "$SRC/systemd/lxc-offsite.service" "$UNITDIR/lxc-offsite.service"
 install -m 0644 "$SRC/systemd/lxc-offsite.timer"   "$UNITDIR/lxc-offsite.timer"

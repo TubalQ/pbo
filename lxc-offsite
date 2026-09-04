@@ -177,7 +177,23 @@ cmd_restore() {
 }
 
 cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) init:ade/klara"; else log_warn "init: bara meningsfullt med ENGINE=restic"; fi; }
-cmd_tui()          { if [[ "${1:-}" == "--selftest" ]]; then _tui_selftest; else tui_main; fi; }
+cmd_tui() {
+    case "${1:-}" in
+        --selftest) _tui_selftest; return ;;
+        --simple)   tui_main; return ;;   # whiptail-fallback (noll-beroende)
+    esac
+    # Primärt: Textual-appen (snygg). Faller tillbaka på whiptail om venv saknas.
+    local py
+    for py in "${SELF_DIR}/tui/.venv/bin/python" /opt/lxc-offsite/tui/venv/bin/python; do
+        if [[ -x "$py" ]]; then
+            LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}" \
+            LXCO_CONFIG="${LXCO_CONFIG:-/etc/lxc-offsite/config}" \
+                exec "$py" "${SELF_DIR}/tui/lxco_tui.py"
+        fi
+    done
+    log_warn "Textual-TUI saknas (venv ej byggd) → whiptail-fallback (kör 'install.sh' eller 'tui --simple')"
+    tui_main
+}
 cmd_list()         { do_list "${1:-}"; }
 cmd_verify()       { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_verify; else require_vmid "${1:-}"; not_implemented; fi; }
 cmd_prune()        { do_prune; }
