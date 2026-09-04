@@ -66,6 +66,25 @@ out2="$($BIN --json backup 8002 2>/dev/null)"
 a2="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["archive"])' <<<"$out2" 2>/dev/null)"
 [[ "$a2" != "$archive" && -f "$a2" ]] && ok "andra körningen ger nytt arkiv" || bad "andra körning ($a2)"
 
+# --- fuse-CT tvingas till --mode stop (deadlock-spärr) ---
+cat > "$MOCK_CONF_DIR/8009.conf" <<'C'
+hostname: fuse-ct
+rootfs: nvmepool:subvol-8009-disk-0,size=8G
+features: nesting=1,keyctl=1,fuse=1
+unprivileged: 1
+C
+printf 'nvmepool/subvol-8009-disk-0 1073741824\n' >> "$MOCK_ZFS_USED"
+out="$($BIN --json backup 8009 2>/dev/null)"
+a="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
+grep -q '"mode": "stop"' "$a.meta.json" && ok "fuse-CT → --mode stop (auto-spärr)" || bad "fuse mode ($(grep mode "$a.meta.json"))"
+# normal CT förblir snapshot
+grep -q '"mode": "snapshot"' "$archive.meta.json" && ok "icke-fuse CT → snapshot" || bad "8002 mode"
+# VZDUMP_STOP_VMIDS-override
+mkcfg "$ROOT/run/cfg2"; echo "VZDUMP_STOP_VMIDS=8002" >> "$ROOT/run/cfg2"
+out="$(LXCO_CONFIG=$ROOT/run/cfg2 $BIN --json backup 8002 2>/dev/null)"
+a2="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
+grep -q '"mode": "stop"' "$a2.meta.json" && ok "VZDUMP_STOP_VMIDS override → stop" || bad "override mode"
+
 # --- dry-run rör ingenting ---
 before="$(ls "$ROOT/run/cache/8002" | wc -l)"
 $BIN --json --dry-run backup 8002 >/dev/null 2>&1

@@ -30,6 +30,7 @@ set_defaults() {
     : "${RCLONE_REMOTE:=hetzner-crypt}"
     : "${REMOTE_PATH:=lxc}"
     : "${VZDUMP_MODE:=snapshot}"
+    : "${VZDUMP_STOP_VMIDS:=}"         # dessa (+ auto-upptäckta fuse-CT) → --mode stop
     : "${VZDUMP_COMPRESS:=zstd}"
     : "${VZDUMP_ZSTD_THREADS:=4}"
     : "${RCLONE_TRANSFERS:=4}"

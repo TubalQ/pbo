@@ -25,7 +25,7 @@ Under uppbyggnad, steg för steg enligt `docs/IMPLEMENTATION-PROMPT.md`.
 | 7 | prune (cache+offsite, skyddar senaste) | ✅ |
 | 8 | test-restore + ntfy-notiser | ✅ |
 | 9 | systemd timer + `run-schedule` + `status` | ✅ (units ej enablade) |
-| 10 | PVE dir-storage för cachen | ⏳ |
+| 10 | PVE dir-storage för cachen | ✅ |
 | 11 | FastAPI (tunt skal runt CLI:t) | ⏳ |
 | 12 | ExtJS-frontend (proxmox-widget-toolkit) | ⏳ |
 | 13 | Pocket-ID-auth + audit | ⏳ |

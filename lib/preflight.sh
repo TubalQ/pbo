@@ -30,6 +30,12 @@ _pf_add_check() { # <namn> <ok:true|false> <detalj>
     fi
 }
 
+# Storage-typ för en storeid (zfspool/lvmthin/dir/…) ur storage.cfg.
+_pf_storage_type() {
+    awk -v id="$1" '/^[a-z]+:[[:space:]]*[^ ]/{ ty=$1; sub(/:$/,"",ty); if($2==id){print ty; exit} }' \
+        /etc/pve/storage.cfg 2>/dev/null
+}
+
 # Bygg storeid→pool-karta ur storage.cfg (endast zfspool-typ).
 _pf_pool_for_storeid() {
     local want="$1"
@@ -73,20 +79,30 @@ _pf_parse_volumes() {
             PF_EXCLUDED+=("$key")
             continue
         fi
-        # Volym som ska backas: mappa till ZFS-dataset.
-        local storeid="${volspec%%:*}" volume="${volspec#*:}" pool
-        pool="$(_pf_pool_for_storeid "$storeid")"
-        PF_BACKUP_VOLUMES+=("$pool|$pool/$volume")
+        # Volym som ska backas: ZFS-volymer ZFS-utrymmeskollas, övriga (LVM/dir)
+        # hoppas (vzdump hanterar deras snapshot-utrymme själv).
+        local storeid="${volspec%%:*}" volume="${volspec#*:}" pool st
+        st="$(_pf_storage_type "$storeid")"
+        if [[ "$st" == "zfspool" ]]; then
+            pool="$(_pf_pool_for_storeid "$storeid")"
+            PF_BACKUP_VOLUMES+=("$pool|$pool/$volume")
+        else
+            PF_NONZFS_VOLUMES+=("$key=$storeid:$volume(${st:-okänd})")
+        fi
     done <<<"$conf"
     return 0
 }
 
 # ZFS-utrymme: per involverad pool, kräv free ≥ 1.5 × summan av volymernas used.
 _pf_check_zfs_space() {
-    [[ "${#PF_BACKUP_VOLUMES[@]}" -gt 0 ]] || {
-        _pf_add_check "zfs_space" "false" "inga backup-bara volymer hittades"
-        return 1
-    }
+    if [[ "${#PF_BACKUP_VOLUMES[@]}" -eq 0 ]]; then
+        if [[ "${#PF_NONZFS_VOLUMES[@]}" -gt 0 ]]; then
+            _pf_add_check "zfs_space" "true" "inga ZFS-volymer (${PF_NONZFS_VOLUMES[*]}) — ZFS-utrymmeskoll hoppas"
+        else
+            _pf_add_check "zfs_space" "false" "inga backup-bara volymer hittades"
+        fi
+        return 0
+    fi
     # Summera used per pool.
     declare -A used_by_pool=()
     local entry pool ds u
@@ -153,7 +169,7 @@ _pf_h() {
 run_preflight() {
     local vmid="$1"
     PF_CHECKS_JSON=""; PF_WARNINGS=(); PF_BINDMOUNTS=(); PF_EXCLUDED=(); PF_FAIL=0
-    PF_BACKUP_VOLUMES=()
+    PF_BACKUP_VOLUMES=(); PF_NONZFS_VOLUMES=()
 
     if _pf_parse_volumes "$vmid"; then
         _pf_check_zfs_space

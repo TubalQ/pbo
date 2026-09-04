@@ -110,5 +110,16 @@ mkcfg "$ROOT/run/cfgG"
 LXCO_CONFIG=$ROOT/run/cfgG $BIN backup 8003 >/dev/null 2>&1; rc=$?
 [[ $rc == 69 ]] && ok "G: backup avbryts vid underkänd preflight (exit 69)" || bad "G backup-avbrott ($rc)"
 
+# --- H: rootfs på icke-ZFS storage (local-lvm) → zfs_space hoppas, ändå ready ---
+cat > "$MOCK_CONF_DIR/8004.conf" <<'C'
+hostname: pa-lvm
+rootfs: local-lvm:vm-8004-disk-0,size=8G
+unprivileged: 1
+C
+mkcfg "$ROOT/run/cfgH"
+out="$(LXCO_CONFIG=$ROOT/run/cfgH $BIN --json preflight 8004 2>/dev/null)"; rc=$?
+grep -q '"name":"zfs_space","ok":true' <<<"$out" && [[ $rc == 0 ]] && ok "H: icke-ZFS storage → zfs_space hoppas (ready)" || bad "H ($rc: $out)"
+grep -q 'ZFS-utrymmeskoll hoppas' <<<"$out" && ok "H: förklarande detalj" || bad "H detalj"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]

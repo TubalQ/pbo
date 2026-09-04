@@ -37,6 +37,23 @@ run_stream() {
 # ---------------------------------------------------------------------------
 get_ct_hostname() { pct config "$1" 2>/dev/null | awk -F': ' '/^hostname:/{print $2; exit}'; }
 
+# En CT med fuse=1 (podman/fuse-overlayfs) DEADLOCKar vzdump --mode snapshot OCH
+# suspend (fuse-mounten hänger i fsfreeze/rsync-final). Måste köras --mode stop.
+_ct_is_fuse() { pct config "$1" 2>/dev/null | grep -qE '^features:.*fuse=1'; }
+_in_csv() { local n="$1" l=",${2// /},"; [[ "$l" == *",$n,"* ]]; }
+
+# Effektivt vzdump-läge för en vmid: stop om fuse ELLER i VZDUMP_STOP_VMIDS.
+_effective_mode() {
+    local vmid="$1"
+    if _ct_is_fuse "$vmid"; then
+        printf 'stop'; return
+    fi
+    if _in_csv "$vmid" "${VZDUMP_STOP_VMIDS:-}"; then
+        printf 'stop'; return
+    fi
+    printf '%s' "$VZDUMP_MODE"
+}
+
 # mk_json_array <array-namn> → JSON-strängarray (tom = []).
 mk_json_array() {
     local -n _arr="$1"
@@ -62,7 +79,7 @@ _tar_list_zstd() {
 # meta.json — pekare-metadata bredvid arkivet (aldrig secrets).
 # ---------------------------------------------------------------------------
 write_meta() {
-    local metafile="$1" vmid="$2" host="$3" base="$4" size="$5" sha="$6"
+    local metafile="$1" vmid="$2" host="$3" base="$4" size="$5" sha="$6" mode="${7:-$VZDUMP_MODE}"
     local pve; pve="$(pveversion 2>/dev/null | head -1)"
     local bm ex sv
     bm="$(mk_json_array PF_BINDMOUNTS)"
@@ -76,7 +93,7 @@ write_meta() {
   "size_bytes": $size,
   "sha256": "$(json_escape "$sha")",
   "pve_version": "$(json_escape "$pve")",
-  "mode": "$(json_escape "$VZDUMP_MODE")",
+  "mode": "$(json_escape "$mode")",
   "compress": "$(json_escape "$VZDUMP_COMPRESS")",
   "created": "$(date --iso-8601=seconds)",
   "source_volumes": $sv,
@@ -94,21 +111,25 @@ do_backup() {
     local vmid="$1"
     local dumpdir="${CACHE_DIR}/${vmid}"
     local host; host="$(get_ct_hostname "$vmid")"
+    local mode; mode="$(_effective_mode "$vmid")"
+    if [[ "$mode" != "$VZDUMP_MODE" ]]; then
+        log_warn "backup $vmid: kör --mode $mode (fuse/överlagrad FS → snapshot deadlockar; kort nertid istället för fryst tjänst)"
+    fi
     local job_id="backup-${vmid}-$(date +%Y%m%d-%H%M%S)"
     local jobfile="${JOBS_DIR}/${job_id}.log"
     mkdir -p "$dumpdir" "$JOBS_DIR"
 
     # --- dry-run: visa planen, rör ingenting ---
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        log_info "[dry-run] vzdump $vmid --mode $VZDUMP_MODE --compress $VZDUMP_COMPRESS --dumpdir $dumpdir"
-        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "dumpdir" "$dumpdir"
+        log_info "[dry-run] vzdump $vmid --mode $mode --compress $VZDUMP_COMPRESS --dumpdir $dumpdir"
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "mode" "$mode" "dumpdir" "$dumpdir"
         return "$EX_OK"
     fi
 
     # --- 1. dump (steg 3, via run_stream = steg 3b) ---
-    log_info "backup $vmid: startar vzdump ($VZDUMP_MODE/$VZDUMP_COMPRESS) → $dumpdir"
+    log_info "backup $vmid: startar vzdump ($mode/$VZDUMP_COMPRESS) → $dumpdir"
     if ! run_stream "$jobfile" "vzdump[$vmid]" -- \
-            vzdump "$vmid" --mode "$VZDUMP_MODE" --compress "$VZDUMP_COMPRESS" --dumpdir "$dumpdir"; then
+            vzdump "$vmid" --mode "$mode" --compress "$VZDUMP_COMPRESS" --dumpdir "$dumpdir"; then
         die "$EX_SOFTWARE" "vzdump misslyckades för vmid $vmid (se $jobfile)"
     fi
 
@@ -140,7 +161,7 @@ do_backup() {
     log_info "backup $vmid: strukturkontroll OK"
 
     # --- 4. meta.json + config-sidecar (bind-mount-återskapning vid restore) ---
-    write_meta "${archive}.meta.json" "$vmid" "$host" "$base" "$size" "$sha"
+    write_meta "${archive}.meta.json" "$vmid" "$host" "$base" "$size" "$sha" "$mode"
     pct config "$vmid" > "${archive}.conf" 2>/dev/null || true
     log_info "backup $vmid: meta.json + config-sidecar skrivna"
 
