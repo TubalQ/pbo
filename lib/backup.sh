@@ -28,7 +28,8 @@ run_stream() {
         [[ -n "${LOG_FILE:-}" ]] && printf '%s [%s] %s\n' "$(date --iso-8601=seconds)" "$label" "$line" >> "$LOG_FILE"
     done
     rc="$(<"$rcfile")"; rm -f "$rcfile"
-    log_info "← $label: klart (rc=$rc, ${SECONDS}s totalt i processen)"
+    local dur=$(( $(date +%s) - start ))   # kommandots EGEN tid (ej $SECONDS = hela processen)
+    log_info "← $label: klart (rc=$rc, ${dur}s)"
     return "${rc:-1}"
 }
 

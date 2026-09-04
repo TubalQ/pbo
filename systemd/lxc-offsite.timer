@@ -3,8 +3,8 @@ Description=Daglig lxc-offsite offsite-backup
 Documentation=https://git.midvault.se/ai-pvet440/lxc-offsite
 
 [Timer]
-# 03:30 — efter PBS (02:00) så de inte konkurrerar om I/O.
-OnCalendar=*-*-* 03:30:00
+# 05:00 varje natt (restic offsite; PBS avvecklas → detta blir primärt).
+OnCalendar=*-*-* 05:00:00
 Persistent=true
 # Ingen RandomizedDelaySec: körningen är sekventiell, starttiden ska vara förutsägbar.
 

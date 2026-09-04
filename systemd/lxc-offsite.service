@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/lxc-offsite/lxc-offsite run-schedule
-# Backup + rclone kan ta lång tid — låt den gå klart.
+# Backup + upload (restic över sftp) kan ta lång tid — låt den gå klart.
 TimeoutStartSec=infinity
 # Snäll mot körande containrar (I/O på raidz2).
 Nice=10
