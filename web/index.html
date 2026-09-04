@@ -365,15 +365,25 @@ td.num{text-align:right}
             <div class="cl done"><span class="mk">✓</span><div class="t"><b>Restore tested</b><span>test-restore of 122 booted from offsite</span></div></div>
             <div class="cl todo"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
           </div></div>
-          <div class="cols" style="margin-top:12px"><div class="box"><h3>Local cache</h3><div class="bd">
-            <div class="kvr"><span class="lbl">Path</span><span class="val">/var/cache/lxc-offsite</span></div>
-            <div class="kvr"><span class="lbl">Quota</span><span class="val">50 GB (0.9% used)</span></div>
-            <div class="kvr"><span class="lbl">PVE storage</span><span class="val">lxc-offsite-cache</span></div>
-          </div></div><div class="box"><h3>Offsite remote</h3><div class="bd">
-            <div class="kvr"><span class="lbl">Remote</span><span class="val">hetzner-crypt</span></div>
-            <div class="kvr"><span class="lbl">Transport</span><span class="val">sftp:23 · crypt</span></div>
-            <div class="kvr"><span class="lbl">Encryption</span><span class="val">filenames + content</span></div>
-          </div></div></div>
+          <div class="cols" style="margin-top:12px">
+            <div class="box"><h3>Local cache</h3><div class="bd">
+              <div class="field"><label>Cache path</label><input id="cfCachePath" value="/var/cache/lxc-offsite"></div>
+              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota</label>
+              <div class="row2"><div class="field"><label>Pool</label><input id="cfPool" value="nvmepool"></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
+              <button class="btn pri" id="cfSaveCache">Save cache</button>
+              <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
+            </div></div>
+            <div class="box"><h3>Offsite remote (rclone / SFTP)</h3><div class="bd">
+              <div class="field"><label>Remote name</label><input id="rmName" value="hetzner"></div>
+              <div class="row2"><div class="field"><label>SFTP host</label><input id="rmHost" placeholder="uXXXXX.your-storagebox.de"></div><div class="field"><label>Port</label><input id="rmPort" value="23"></div></div>
+              <div class="field"><label>SFTP user</label><input id="rmUser" placeholder="uXXXXX-subN"></div>
+              <div class="field"><label>SSH key file (on host)</label><input id="rmKey" value="/root/.ssh/id_rsa"></div>
+              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="rmCrypt" checked> Encrypt (filenames + content)</label>
+              <div class="row2"><div class="field"><label>Crypt password</label><input id="rmPw" type="password" autocomplete="new-password"></div><div class="field"><label>Salt (password2)</label><input id="rmPw2" type="password" autocomplete="new-password"></div></div>
+              <div style="display:flex;gap:7px"><button class="btn pri" id="rmSave">Save remote</button><button class="btn" id="rmTest">Test connection</button></div>
+              <div id="rmMsg" style="font-size:12px;margin-top:8px"></div>
+            </div></div>
+          </div>
         </div>
       </div>
 
@@ -577,6 +587,15 @@ var db=document.getElementById('docBtn');if(db)db.onclick=function(){window.open
 async function fetchKey(){var r=await fetch('/api/export-key');if(r.status===401){showLogin();throw 'auth';}return r.text();}
 var rk=document.getElementById('revealKeyBtn');if(rk)rk.onclick=async function(){try{var t=await fetchKey();var kb=document.getElementById('keybox');if(kb)kb.textContent=t;toast('Config revealed — treat as a secret');}catch(e){if(e!=='auth')toast('Failed — '+e);}};
 var ck=document.getElementById('copyKeyBtn');if(ck)ck.onclick=async function(){try{var t=await fetchKey();await navigator.clipboard.writeText(t);toast('DR config copied to clipboard');}catch(e){if(e!=='auth')toast('Copy failed — '+e);}};
+/* --- Setup: cache + remote onboarding --- */
+function setMsg(id,ok,txt){var e=document.getElementById(id);if(e){e.style.color=ok?'var(--good)':'var(--crit)';e.textContent=txt;}}
+fetch('/api/config').then(function(r){return r.ok?r.json():null;}).then(function(c){if(!c)return;var g=function(id){return document.getElementById(id);};
+ if(c.cache_dir&&g('cfCachePath'))g('cfCachePath').value=c.cache_dir;
+ if(c.sftp&&g('rmName')){if(c.sftp.name)g('rmName').value=c.sftp.name;if(c.sftp.host)g('rmHost').value=c.sftp.host;if(c.sftp.user)g('rmUser').value=c.sftp.user;if(c.sftp.port)g('rmPort').value=c.sftp.port;if(c.sftp.key_file)g('rmKey').value=c.sftp.key_file;}
+ if(g('rmCrypt'))g('rmCrypt').checked=!!c.crypt;}).catch(function(){});
+var scb=document.getElementById('cfSaveCache');if(scb)scb.onclick=async function(){var b={path:document.getElementById('cfCachePath').value,create_dataset:document.getElementById('cfCreateDs').checked,pool:document.getElementById('cfPool').value,quota_gb:parseInt(document.getElementById('cfQuota').value,10)||0};try{var r=await fetch('/api/config/cache',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('cfMsg',r.ok,r.ok?('Saved · '+j.cache_dir+(j.created?' (dataset '+j.created+')':'')):('Error: '+(j.detail||'failed')));}catch(e){setMsg('cfMsg',false,'Error: '+e);}};
+var rsb=document.getElementById('rmSave');if(rsb)rsb.onclick=async function(){var b={name:document.getElementById('rmName').value,host:document.getElementById('rmHost').value,sftp_user:document.getElementById('rmUser').value,port:document.getElementById('rmPort').value,key_file:document.getElementById('rmKey').value,use_crypt:document.getElementById('rmCrypt').checked,password:document.getElementById('rmPw').value,password2:document.getElementById('rmPw2').value,remote_path:'lxc'};try{var r=await fetch('/api/config/remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',r.ok,r.ok?('Saved remote "'+j.remote+'" — click Test connection'):('Error: '+(j.detail||'failed')));}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
+var rtb=document.getElementById('rmTest');if(rtb)rtb.onclick=async function(){setMsg('rmMsg',true,'Testing…');try{var r=await fetch('/api/config/test',{method:'POST'});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',j.ok,j.msg);}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
 async function doLogin(){var u=document.getElementById('lu').value+'@'+document.getElementById('lr').value;var p=document.getElementById('lp').value;var err=document.getElementById('lerr');err.textContent='';var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){document.getElementById('loginscrim').hidden=true;var j=await r.json().catch(function(){return{};});var mu=document.getElementById('mhUser');if(mu&&j.user)mu.innerHTML='<span class="u">'+j.user[0].toUpperCase()+'</span>'+j.user;hydrate();}else{err.textContent='Login failed — check user, realm and password.';}}
 var lbtn=document.getElementById('lbtn');if(lbtn){lbtn.onclick=doLogin;document.getElementById('lp').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});}
 /* init */

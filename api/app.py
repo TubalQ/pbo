@@ -138,6 +138,45 @@ def write_backup_order(order):
     os.chmod(tmp, 0o600)
     os.replace(tmp, CONFIG)
 
+def set_config(updates: dict):
+    """Skriv/uppdatera KEY=VALUE i configen (bevarar resten), atomiskt, 0600."""
+    lines = open(CONFIG).readlines() if os.path.exists(CONFIG) else []
+    done = set()
+    for i, l in enumerate(lines):
+        st = l.strip()
+        if st and not st.startswith("#") and "=" in st:
+            k = st.split("=", 1)[0].strip()
+            if k in updates:
+                lines[i] = f"{k}={updates[k]}\n"; done.add(k)
+    for k, v in updates.items():
+        if k not in done:
+            lines.append(f"{k}={v}\n")
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("".join(lines))
+    os.chmod(tmp, 0o600); os.replace(tmp, CONFIG)
+
+def rclone_env():
+    cfg = read_config()
+    return dict(os.environ, RCLONE_CONFIG=cfg.get("RCLONE_CONFIG_FILE", "/etc/lxc-offsite/rclone.conf"))
+
+def parse_rclone_conf():
+    """Läs rclone.conf → {section: {key: val}} men UTAN password-fälten."""
+    path = read_config().get("RCLONE_CONFIG_FILE", "/etc/lxc-offsite/rclone.conf")
+    out, cur = {}, None
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                cur = line[1:-1]; out[cur] = {}
+            elif cur and "=" in line and not line.startswith("#"):
+                k, v = [x.strip() for x in line.split("=", 1)]
+                if "password" not in k.lower():
+                    out[cur][k] = v
+    except OSError:
+        pass
+    return out
+
 def cluster_guests():
     guests = {}
     try:
@@ -287,6 +326,90 @@ def api_restore(user: str = Depends(current_user), vmid: str = Body(...), ts: st
     unit = launch(user, ["restore", vmid, ts, "--to", target, "--storage", storage, "--yes"],
                   f"restore-{target}")
     return {"ok": True, "unit": unit}
+
+# ---- onboarding: cache + remote direkt i UI:t ----
+_NAME = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
+_PATH = re.compile(r"^/[\w./\-]{1,200}$")
+
+@app.get("/api/config")
+def get_config(user: str = Depends(current_user)):
+    cfg = read_config(); rc = parse_rclone_conf()
+    sftp = {}
+    for name, sec in rc.items():
+        if sec.get("type") == "sftp":
+            sftp = {"name": name, "host": sec.get("host"), "user": sec.get("user"),
+                    "port": sec.get("port", "23"), "key_file": sec.get("key_file", "")}
+            break
+    return {"cache_dir": cfg.get("CACHE_DIR"), "remote": cfg.get("RCLONE_REMOTE"),
+            "remote_path": cfg.get("REMOTE_PATH"), "offsite_enabled": cfg.get("OFFSITE_ENABLED", "true"),
+            "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values())}
+
+@app.post("/api/config/cache")
+def cfg_cache(user: str = Depends(current_user), path: str = Body(...),
+              create_dataset: bool = Body(default=False), pool: str = Body(default=""),
+              quota_gb: int = Body(default=0)):
+    if not _PATH.match(path):
+        raise HTTPException(400, "invalid path")
+    created = None
+    if create_dataset:
+        if not _NAME.match(pool) or int(quota_gb) <= 0:
+            raise HTTPException(400, "invalid pool/quota")
+        ds = f"{pool}/lxc-offsite-cache"
+        subprocess.run(["zfs", "create", "-o", f"mountpoint={path}", "-o", f"quota={int(quota_gb)}G", ds],
+                       check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(["pvesm", "add", "dir", "lxc-offsite-cache", "--path", path, "--content",
+                        "backup", "--is_mountpoint", "1"], capture_output=True, text=True, timeout=30)
+        created = ds
+    else:
+        os.makedirs(path, exist_ok=True)
+    set_config({"CACHE_DIR": path}); audit(user, f"config-cache path={path} dataset={created}")
+    return {"ok": True, "cache_dir": path, "created": created}
+
+@app.post("/api/config/remote")
+def cfg_remote(user: str = Depends(current_user), name: str = Body(...), host: str = Body(...),
+               sftp_user: str = Body(...), port: str = Body(default="23"),
+               key_file: str = Body(default=""), use_crypt: bool = Body(default=True),
+               password: str = Body(default=""), password2: str = Body(default=""),
+               remote_path: str = Body(default="lxc")):
+    if not _NAME.match(name) or not host or not sftp_user:
+        raise HTTPException(400, "invalid name/host/user")
+    env = rclone_env()
+    args = [name, "sftp", f"host={host}", f"user={sftp_user}", f"port={port}", "shell_type=unix",
+            "md5sum_command=md5sum", "sha1sum_command=sha1sum"]
+    if key_file:
+        if not _PATH.match(key_file):
+            raise HTTPException(400, "invalid key_file")
+        args.append(f"key_file={key_file}")
+    subprocess.run(["rclone", "config", "create", *args], env=env, check=True,
+                   capture_output=True, text=True, timeout=30)
+    remote_name = name
+    if use_crypt:
+        cname = f"{name}-crypt"
+        cargs = [cname, "crypt", f"remote={name}:lxc-offsite", "filename_encryption=standard",
+                 "directory_name_encryption=true"]
+        if password:
+            cargs.append(f"password={password}")
+        if password2:
+            cargs.append(f"password2={password2}")
+        subprocess.run(["rclone", "config", "create", "--obscure", *cargs], env=env, check=True,
+                       capture_output=True, text=True, timeout=30)
+        remote_name = cname
+    set_config({"RCLONE_REMOTE": remote_name, "REMOTE_PATH": remote_path,
+                "RCLONE_CONFIG_FILE": env["RCLONE_CONFIG"]})
+    audit(user, f"config-remote name={remote_name} host={host}")
+    return {"ok": True, "remote": remote_name}
+
+@app.post("/api/config/test")
+def cfg_test(user: str = Depends(current_user)):
+    cfg = read_config(); env = rclone_env()
+    tgt = f"{cfg.get('RCLONE_REMOTE','')}:{cfg.get('REMOTE_PATH','')}"
+    try:
+        m = subprocess.run(["rclone", "mkdir", tgt], env=env, capture_output=True, text=True, timeout=30)
+        if m.returncode == 0:
+            return {"ok": True, "msg": f"Reachable · {tgt}"}
+        return {"ok": False, "msg": (m.stderr or "unreachable").strip()[:200]}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "msg": str(e)[:200]}
 
 # ---- DR-nyckel (rclone.conf) — auth + audit ----
 @app.get("/api/export-key")
