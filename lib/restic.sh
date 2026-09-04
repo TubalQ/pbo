@@ -307,6 +307,29 @@ rdo_prune() {
     return "$EX_OK"
 }
 
+# usage — repo-storlek/dedup ur `restic stats` (för Metrics-fliken/dashboarden).
+rdo_usage() {
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för usage"
+    local repo raw rest
+    repo="$(_restic_read_repo)"
+    raw="$(_restic "$repo" stats --mode raw-data --json 2>/dev/null || echo '{}')"
+    rest="$(_restic "$repo" stats --mode restore-size --json 2>/dev/null || echo '{}')"
+    [[ "$raw" == \{* ]] || raw='{}'; [[ "$rest" == \{* ]] || rest='{}'
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        jq -cn --argjson raw "$raw" --argjson rest "$rest" --arg repo "$repo" '
+          {command:"usage",status:"ok",ok:true,dry_run:false,repo:$repo,
+           physical_bytes:($raw.total_size//0),
+           logical_bytes:($rest.total_size//0),
+           uncompressed_bytes:($raw.total_uncompressed_size//0),
+           compression_ratio:(($raw.compression_ratio//1)*1000|floor/1000),
+           snapshots:($raw.snapshots_count//0),
+           files:($rest.total_file_count//0)}'
+    else
+        log_info "usage: fysiskt $(jq -r '.total_size//0' <<<"$raw") B, logiskt $(jq -r '.total_size//0' <<<"$rest") B, snapshots $(jq -r '.snapshots_count//0' <<<"$raw")"
+    fi
+    return "$EX_OK"
+}
+
 # verify — restic check (light) el. --read-data (djup) via VERIFY_READ_DATA=1.
 rdo_verify() {
     local repo; repo="$(_restic_read_repo)"

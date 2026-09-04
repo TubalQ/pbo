@@ -195,6 +195,7 @@ cmd_tui() {
     tui_main
 }
 cmd_list()         { do_list "${1:-}"; }
+cmd_usage()        { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_usage; else not_implemented; fi; }
 cmd_verify()       { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_verify; else require_vmid "${1:-}"; not_implemented; fi; }
 cmd_prune()        { do_prune; }
 cmd_test_restore() { require_vmid "${1:-}"; acquire_vmid_lock "$1"; do_test_restore "$1"; }
@@ -221,6 +222,7 @@ main() {
         run-schedule)  cmd_run_schedule "$@" ;;
         status)        cmd_status "$@" ;;
         list)          cmd_list "$@" ;;
+        usage)         cmd_usage "$@" ;;
         fetch)         cmd_fetch "$@" ;;
         restore)       cmd_restore "$@" ;;
         verify)        cmd_verify "$@" ;;

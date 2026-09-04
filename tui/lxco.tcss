@@ -27,6 +27,12 @@ TabPane { padding: 1 2; }
     height: auto;
     margin-bottom: 1;
 }
+#mcards {
+    grid-size: 4;
+    grid-gutter: 1 2;
+    grid-rows: 5;
+    height: auto;
+}
 .card {
     border: round $primary 40%;
     background: $panel;

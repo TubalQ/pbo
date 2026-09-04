@@ -79,6 +79,52 @@ def human(b):
 TS_RE = __import__("re").compile(r"(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})")
 
 
+def usage():
+    u = cli_json("usage")
+    return u if isinstance(u, dict) else {}
+
+
+def protected_set():
+    order = read_cfg().get("BACKUP_ORDER", "")
+    return {x for x in order.replace(" ", "").split(",") if x}
+
+
+def host_metrics():
+    m = {"load": ["-", "-", "-"], "uptime": 0, "mem_total": 0, "mem_used": 0}
+    try:
+        m["load"] = open("/proc/loadavg").read().split()[:3]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        m["uptime"] = float(open("/proc/uptime").read().split()[0])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        mem = {}
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            mem[k] = int(v.split()[0]) * 1024
+        m["mem_total"] = mem.get("MemTotal", 0)
+        m["mem_used"] = m["mem_total"] - mem.get("MemAvailable", 0)
+    except Exception:  # noqa: BLE001
+        pass
+    return m
+
+
+def cpu_raw():
+    try:
+        v = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+        return sum(v), v[3] + v[4]  # total, idle+iowait
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def fmt_uptime(s):
+    s = int(s or 0)
+    d, h, mi = s // 86400, (s % 86400) // 3600, (s % 3600) // 60
+    return (f"{d}d " if d else "") + f"{h}h {mi}m"
+
+
 # ----------------------------- modaler -----------------------------
 class LogScreen(ModalScreen):
     """Live-logg för en körande åtgärd (streamar CLI-output)."""
@@ -182,7 +228,8 @@ class LxcoTUI(App):
                 with Horizontal(classes="toolbar"):
                     yield Button("Backa upp vald", id="bk-one", classes="-primary")
                     yield Button("Backa upp alla", id="bk-all")
-                    yield Button("Test-restore vald", id="tr-one")
+                    yield Button("Skydda/avskydda", id="pr-one")
+                    yield Button("Test-restore", id="tr-one")
                 yield DataTable(id="gtable")
             with TabPane("Återställ", id="tab-restore"):
                 yield Static("Välj en snapshot och tryck Återställ.", classes="help")
@@ -191,6 +238,9 @@ class LxcoTUI(App):
                 yield DataTable(id="rtable")
             with TabPane("Setup", id="tab-setup"):
                 yield from self._setup_form()
+            with TabPane("Metrics", id="tab-metrics"):
+                yield Static("Host & repo", classes="section-title")
+                yield Grid(id="mcards")
             with TabPane("Underhåll", id="tab-maint"):
                 with Vertical(classes="toolbar"):
                     yield Button("Prune — torrkörning", id="mt-prune-dry")
@@ -227,17 +277,21 @@ class LxcoTUI(App):
                 yield Input(value="", password=True, id="f-pass", placeholder="lämna tomt = generera")
             with Horizontal(classes="toolbar"):
                 yield Button("Spara & init", id="setup-save", classes="-primary")
+                yield Button("Testa anslutning", id="setup-test")
                 yield Button("Generera lösen", id="setup-gen")
 
     # -------------------- livscykel --------------------
+    _cpu_prev = None
+
     def on_mount(self):
         for tid, cols in [("dstable", ("Namn", "Typ", "Storlek", "Snapshots")),
-                          ("gtable", ("VMID", "Namn", "Typ", "Nod", "Status", "Snaps")),
+                          ("gtable", ("VMID", "Namn", "Typ", "Nod", "Status", "Skyddad", "Snaps")),
                           ("rtable", ("VMID", "Namn", "Tidsstämpel", "Storlek", "Snapshot"))]:
             t = self.query_one(f"#{tid}", DataTable)
             t.cursor_type = "row"
             t.add_columns(*cols)
         self.refresh_data()
+        self.set_interval(6, self.refresh_metrics)   # live host/repo-metrics
 
     def action_refresh(self):
         self.refresh_data()
@@ -288,10 +342,12 @@ class LxcoTUI(App):
         # gäst-tabell
         gt = self.query_one("#gtable", DataTable)
         gt.clear()
+        prot = protected_set()
         for g in gs:
             vid = str(g.get("vmid"))
             gt.add_row(vid, g.get("name", "-"), g.get("type", "-"), g.get("node", "-"),
-                       g.get("status", "-"), str(snaps_by.get(vid, 0)))
+                       g.get("status", "-"), "✓ ja" if vid in prot else "—",
+                       str(snaps_by.get(vid, 0)))
 
         # restore-tabell
         rt = self.query_one("#rtable", DataTable)
@@ -308,6 +364,67 @@ class LxcoTUI(App):
         c = Static(classes=f"card {cls}".strip())
         c.update(f"[dim]{k}[/dim]\n[b]{v}[/b]")
         return c
+
+    # -------------------- metrics (auto-uppdaterad) --------------------
+    def on_tabbed_content_tab_activated(self, event):
+        self.refresh_metrics()
+
+    @work(thread=True, exclusive=True, group="metrics")
+    def refresh_metrics(self):
+        cur = cpu_raw()
+        cpu = None
+        if cur and self._cpu_prev:
+            dt, di = cur[0] - self._cpu_prev[0], cur[1] - self._cpu_prev[1]
+            cpu = round((1 - di / dt) * 100) if dt > 0 else 0
+        if cur:
+            self._cpu_prev = cur
+        hm = host_metrics()
+        try:
+            active = self.query_one(TabbedContent).active == "tab-metrics"
+        except Exception:  # noqa: BLE001
+            active = False
+        u = usage() if active else {}
+        self.call_from_thread(self._render_metrics, cpu, hm, u, active)
+
+    def _render_metrics(self, cpu, hm, u, active):
+        if not active:
+            return
+        try:
+            mc = self.query_one("#mcards", Grid)
+        except Exception:  # noqa: BLE001
+            return
+        mc.remove_children()
+        mt = hm.get("mem_total", 0)
+        mpct = round(hm.get("mem_used", 0) / mt * 100) if mt else 0
+        ratio = u.get("compression_ratio")
+        mc.mount(
+            self._card("CPU", f"{cpu}%" if cpu is not None else "—", "warn" if (cpu or 0) > 85 else ""),
+            self._card("RAM", f"{mpct}%  ({human(hm.get('mem_used', 0))} / {human(mt)})", "warn" if mpct > 90 else ""),
+            self._card("Uptime", fmt_uptime(hm.get("uptime")), ""),
+            self._card("Load", "  ".join(hm.get("load", [])), ""),
+            self._card("Offsite fysiskt", human(u.get("physical_bytes", 0)), "accent"),
+            self._card("Logiskt (odedup.)", human(u.get("logical_bytes", 0)), ""),
+            self._card("Dedup / kompr.", f"{ratio}×" if ratio else "—", "good"),
+            self._card("Snapshots", str(u.get("snapshots", 0)), ""),
+        )
+
+    def _toggle_protect(self, vmid):
+        order = [x for x in read_cfg().get("BACKUP_ORDER", "").replace(" ", "").split(",") if x]
+        order.remove(vmid) if vmid in order else order.append(vmid)
+        self._write_cfg({"BACKUP_ORDER": ",".join(order)})
+        self.refresh_data()
+
+    def _setup_test(self):
+        g = lambda i: self.query_one(f"#{i}").value  # noqa: E731
+        host, user, port, key = g("f-host"), g("f-user"), g("f-port") or "23", g("f-key")
+        if not host or not user:
+            self.run_action("Testa anslutning", ["sh", "-c", "echo 'Fyll i SFTP-host + user först.'"])
+            return
+        probe = (f'printf "pwd\\nquit\\n" | sftp -P {port} -i {key} -oBatchMode=yes '
+                 f'-oStrictHostKeyChecking=accept-new -oConnectTimeout=8 {user}@{host} '
+                 f'&& echo "✓ KLART: SFTP nåbart och autentiserat" '
+                 f'|| echo "✗ FEL: kunde ej nå eller autentisera mot {host}"')
+        self.run_action("Testa anslutning (SFTP)", ["sh", "-c", probe])
 
     # -------------------- åtgärder --------------------
     def _sel(self, table_id, col=0):
@@ -330,6 +447,12 @@ class LxcoTUI(App):
             v = self._sel("gtable")
             if v and v.isdigit():
                 self.run_action(f"Test-restore {v}", [BIN, "test-restore", v])
+        elif bid == "pr-one":
+            v = self._sel("gtable")
+            if v and v.isdigit():
+                self._toggle_protect(v)
+        elif bid == "setup-test":
+            self._setup_test()
         elif bid == "rs-one":
             self._restore_selected()
         elif bid == "mt-prune-dry":
