@@ -423,13 +423,13 @@ class LxcoTUI(App):
         g = lambda i: self.query_one(f"#{i}").value  # noqa: E731
         host, user, port, key = g("f-host"), g("f-user"), g("f-port") or "23", g("f-key")
         if not host or not user:
-            self.run_action("Testa anslutning", ["sh", "-c", "echo 'Fyll i SFTP-host + user först.'"])
+            self.run_cli("Testa anslutning", ["sh", "-c", "echo 'Fyll i SFTP-host + user först.'"])
             return
         probe = (f'printf "pwd\\nquit\\n" | sftp -P {port} -i {key} -oBatchMode=yes '
                  f'-oStrictHostKeyChecking=accept-new -oConnectTimeout=8 {user}@{host} '
                  f'&& echo "✓ KLART: SFTP nåbart och autentiserat" '
                  f'|| echo "✗ FEL: kunde ej nå eller autentisera mot {host}"')
-        self.run_action("Testa anslutning (SFTP)", ["sh", "-c", probe])
+        self.run_cli("Testa anslutning (SFTP)", ["sh", "-c", probe])
 
     # -------------------- åtgärder --------------------
     def _sel(self, table_id, col=0):
@@ -447,11 +447,11 @@ class LxcoTUI(App):
         elif bid == "bk-one":
             v = self._sel("gtable")
             if v and v.isdigit():
-                self.run_action(f"Backup {v}", [BIN, "backup", v])
+                self.run_cli(f"Backup {v}", [BIN, "backup", v])
         elif bid == "tr-one":
             v = self._sel("gtable")
             if v and v.isdigit():
-                self.run_action(f"Test-restore {v}", [BIN, "test-restore", v])
+                self.run_cli(f"Test-restore {v}", [BIN, "test-restore", v])
         elif bid == "pr-one":
             v = self._sel("gtable")
             if v and v.isdigit():
@@ -461,11 +461,11 @@ class LxcoTUI(App):
         elif bid == "rs-one":
             self._restore_selected()
         elif bid == "mt-prune-dry":
-            self.run_action("Prune (torrkörning)", [BIN, "--dry-run", "prune"])
+            self.run_cli("Prune (torrkörning)", [BIN, "--dry-run", "prune"])
         elif bid == "mt-prune":
-            self.run_action("Prune (skarpt)", [BIN, "prune"])
+            self.run_cli("Prune (skarpt)", [BIN, "prune"])
         elif bid == "mt-verify":
-            self.run_action("Verifiera", [BIN, "verify"])
+            self.run_cli("Verifiera", [BIN, "verify"])
         elif bid in ("mt-export",):
             self.action_export()
         elif bid == "setup-gen":
@@ -474,7 +474,7 @@ class LxcoTUI(App):
             self._setup_save()
 
     def action_backup_all(self):
-        self.run_action("Backup — alla skyddade", [BIN, "run-schedule"])
+        self.run_cli("Backup — alla skyddade", [BIN, "run-schedule"])
 
     def _restore_selected(self):
         rt = self.query_one("#rtable", DataTable)
@@ -488,7 +488,7 @@ class LxcoTUI(App):
 
         def done(res):
             if res:
-                self.run_action(f"Restore {vmid}", [BIN, *res])
+                self.run_cli(f"Restore {vmid}", [BIN, *res])
         self.push_screen(RestoreModal(vmid, ts, name), done)
 
     def action_export(self):
@@ -502,14 +502,14 @@ class LxcoTUI(App):
                 f'echo ENGINE=restic; echo "RESTIC_OFFSITE_REPO={cfg.get("RESTIC_OFFSITE_REPO","")}"; '
                 f'echo "RESTIC_SFTP_COMMAND=\\"{cfg.get("RESTIC_SFTP_COMMAND","")}\\""; '
                 f'echo "RESTIC_PASSWORD={pw}"']
-        self.run_action("DR-nyckel (HEMLIG — förvara offline)", argv)
+        self.run_cli("DR-nyckel (HEMLIG — förvara offline)", argv)
 
     def _setup_save(self):
         g = lambda i: self.query_one(f"#{i}").value
         eng = g("f-engine")
         if eng != "restic":
             self._write_cfg({"ENGINE": "tar"})
-            self.run_action("Setup", ["sh", "-c", "echo ENGINE=tar satt."])
+            self.run_cli("Setup", ["sh", "-c", "echo ENGINE=tar satt."])
             return
         pw = (g("f-pass") or secrets.token_urlsafe(18)).strip()
         passfile = "/etc/lxc-offsite/restic-pass"
@@ -517,7 +517,7 @@ class LxcoTUI(App):
             fd = os.open(passfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             os.write(fd, (pw + "\n").encode()); os.close(fd)
         except OSError as e:  # noqa: BLE001
-            self.run_action("Setup — FEL", ["sh", "-c", f"echo 'kan ej skriva {passfile}: {e}'"])
+            self.run_cli("Setup — FEL", ["sh", "-c", f"echo 'kan ej skriva {passfile}: {e}'"])
             return
         sftp = (f'ssh {g("f-user")}@{g("f-host")} -p {g("f-port")} -i {g("f-key")} '
                 f'-o StrictHostKeyChecking=accept-new -s sftp')
@@ -529,7 +529,7 @@ class LxcoTUI(App):
             "RESTIC_PASSWORD_FILE": passfile,
             "RESTIC_SFTP_COMMAND": sftp,
         })
-        self.run_action("Setup — skapar repo (init)", [BIN, "init"])
+        self.run_cli("Setup — skapar repo (init)", [BIN, "init"])
 
     def _write_cfg(self, updates):
         lines = []
@@ -554,7 +554,7 @@ class LxcoTUI(App):
             fh.write("\n".join(lines) + "\n")
         os.chmod(tmp, 0o600); os.replace(tmp, CFG_PATH)
 
-    def run_action(self, title, argv):
+    def run_cli(self, title, argv):
         def after(_):
             self.refresh_data()
         self.push_screen(LogScreen(title, argv), after)
