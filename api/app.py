@@ -344,6 +344,21 @@ def get_config(user: str = Depends(current_user)):
             "remote_path": cfg.get("REMOTE_PATH"), "offsite_enabled": cfg.get("OFFSITE_ENABLED", "true"),
             "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values())}
 
+@app.get("/api/resources")
+def resources(user: str = Depends(current_user)):
+    node = os.uname().nodename.split(".")[0]
+    try:
+        p = subprocess.run(["pvesh", "get", f"/nodes/{node}/status", "--output-format", "json"],
+                           capture_output=True, text=True, timeout=10)
+        d = json.loads(p.stdout)
+        ci = d.get("cpuinfo", {})
+        return {"node": node, "cpu": d.get("cpu"), "cpus": ci.get("cpus"),
+                "cpu_model": ci.get("model"), "memory": d.get("memory"), "swap": d.get("swap"),
+                "loadavg": d.get("loadavg"), "uptime": d.get("uptime"),
+                "rootfs": d.get("rootfs"), "kversion": d.get("kversion")}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
 @app.get("/api/storages")
 def storages(user: str = Depends(current_user)):
     pools = []
