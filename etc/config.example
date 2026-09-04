@@ -1,0 +1,38 @@
+# /etc/lxc-offsite/config — KEY=VALUE. chmod 600, root:root.
+# Detta är exempel/mall. Kopieras av install.sh; innehåller inga hemligheter
+# (rclone-credentials bor i rclone.conf, se PLAN.md §4).
+
+# --- sökvägar ---
+CACHE_DIR=/var/cache/lxc-offsite
+LOG_DIR=/var/log/lxc-offsite
+STATE_DIR=/var/lib/lxc-offsite
+LOCK_DIR=/var/lock
+
+# --- rclone / offsite ---
+RCLONE_REMOTE=hetzner-crypt
+REMOTE_PATH=lxc
+RCLONE_TRANSFERS=4
+RCLONE_CHECKERS=4          # transfers+checkers < 10 (Hetzner-anslutningsgräns)
+RCLONE_BWLIMIT=            # t.ex. 40M nattetid
+
+# --- vzdump ---
+VZDUMP_MODE=snapshot
+VZDUMP_COMPRESS=zstd
+VZDUMP_ZSTD_THREADS=4
+
+# --- schema ---
+BACKUP_ORDER=              # kommaseparerad vmid-ordning för run-schedule
+GLOBAL_LOCK_TIMEOUT=7200   # sekunder en schemalagd körning väntar i kön
+
+# --- retention ---
+KEEP_LOCAL=2
+KEEP_OFFSITE_DAILY=7
+KEEP_OFFSITE_WEEKLY=4
+KEEP_OFFSITE_MONTHLY=6
+
+# --- notiser ---
+NTFY_URL=
+NTFY_ON_SUCCESS=false      # larma på fel, tyst vid framgång
+
+# --- dashboard ---
+MAX_AGE_WARN=172800        # 48h — röd rad om senaste push är äldre

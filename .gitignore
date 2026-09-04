@@ -1,0 +1,19 @@
+# Dev-runtime (isolerad config.dev skriver hit) — aldrig i git.
+/run/
+run/
+
+# Secrets — bor i rclone.conf / Vaultwarden, aldrig i repot.
+etc/rclone.conf
+etc/config
+etc/api.env
+*.env
+id_ed25519*
+*.key
+
+# Skräp
+*.log
+*.tmp
+__pycache__/
+*.pyc
+.venv/
+venv/

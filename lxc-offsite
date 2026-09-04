@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# lxc-offsite — offsite-backup av Proxmox-LXC:er till Hetzner Storage Box.
+# Copyright (C) 2026  ai-pvet440
+# Licens: AGPL-3.0-or-later (se LICENSE).
+#
+# Steg 1: skelett — subkommandon, config, logging, tvånivålås, --dry-run/--json.
+# Inga riktiga operationer ännu; allt svarar "not_implemented".
+#
+# Kör på Proxmox-HOSTEN (kräver pct/vzdump). Se PLAN.md för helheten.
+
+set -Eeuo pipefail
+
+# Hitta den egna katalogen så lib/ funkar både i repo och installerat.
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SELF_DIR}/lib/common.sh"
+# shellcheck source=lib/lock.sh
+source "${SELF_DIR}/lib/lock.sh"
+
+readonly VERSION="0.1.0-dev"
+
+# ---------------------------------------------------------------------------
+# Globala flaggor (före subkommandot). --json och --dry-run är globala och
+# måste finnas från början — GUI:t konsumerar ENBART --json-output.
+# ---------------------------------------------------------------------------
+JSON_OUTPUT=0
+DRY_RUN=0
+LXCO_COMMAND=""
+
+usage() {
+    cat <<'EOF'
+lxc-offsite — offsite-backup av Proxmox-LXC:er till Hetzner Storage Box.
+
+Användning:
+  lxc-offsite [globala flaggor] <kommando> [argument]
+
+Globala flaggor:
+  --json              maskinläsbar utdata på stdout (GUI:t använder denna)
+  --dry-run           visa vad som skulle göras, ändra ingenting
+  -h, --help          denna hjälp
+  -V, --version       versionsnummer
+
+Kommandon:
+  backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
+  run-schedule                backup för varje vmid i BACKUP_ORDER, sekventiellt (köar)
+  status                      pågående jobb, kölängd, vem som håller globala låset
+  list [vmid]                 lista offsite-arkiv (storlek, datum)
+  fetch <vmid> <ts>           hämta ett arkiv till cache, verifiera (inget globalt lås)
+  restore <vmid> <ts> --to N  fetch + pct restore till nytt vmid (inget globalt lås)
+  verify <vmid>               jämför lokala och offsite-hashar
+  prune                       städa cache och offsite enligt policy
+  test-restore <vmid>         full restore till engångs-vmid, boot, destroy
+
+Exit-koder: 0 ok · 64 användningsfel · 75 lås upptaget/kö · 78 configfel.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Parsa globala flaggor fram till första icke-flagg-argumentet (kommandot).
+# ---------------------------------------------------------------------------
+parse_global_flags() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)     JSON_OUTPUT=1; shift ;;
+            --dry-run)  DRY_RUN=1; shift ;;
+            -h|--help)  usage; exit "$EX_OK" ;;
+            -V|--version) printf 'lxc-offsite %s\n' "$VERSION"; exit "$EX_OK" ;;
+            --) shift; break ;;
+            -*) printf 'okänd global flagga: %s\n' "$1" >&2; usage >&2; exit "$EX_USAGE" ;;
+            *)  break ;;
+        esac
+    done
+    REMAINING_ARGS=("$@")
+}
+
+# ---------------------------------------------------------------------------
+# Subkommando-hanterare. Steg 1: låsen wire:as korrekt så att de bevisligen
+# sitter rätt, men själva operationen svarar not_implemented.
+# ---------------------------------------------------------------------------
+
+# backup [--queue] <vmid>
+# Manuellt (default): "now"-läge — avslutar direkt om globala låset är upptaget.
+# --queue: schemaläget — köar på globala låset (används internt av run-schedule).
+cmd_backup() {
+    local mode="now"
+    while [[ "${1:-}" == -* ]]; do
+        case "$1" in
+            --queue) mode="queue"; shift ;;
+            --now)   mode="now"; shift ;;
+            *) die "$EX_USAGE" "okänd backup-flagga: $1" ;;
+        esac
+    done
+    require_vmid "${1:-}"
+    local vmid="$1"
+    acquire_vmid_lock "$vmid"
+    acquire_global_lock "$mode" "backup" "$vmid"
+    # --- här kommer preflight/dump/upload/verify/prune i steg 2–4 ---
+    not_implemented
+}
+
+# run-schedule — schemalagd: köar på globala låset per container, sekventiellt.
+cmd_run_schedule() {
+    if [[ -z "${BACKUP_ORDER:-}" ]]; then
+        die "$EX_CONFIG" "BACKUP_ORDER är tom — inget att schemalägga."
+    fi
+    log_info "run-schedule: ordning = ${BACKUP_ORDER}"
+    # I steg 9 loopar detta över BACKUP_ORDER och tar globalt lås i "queue"-läge
+    # per container. Skelett nu:
+    not_implemented
+}
+
+# status — läsoperation, inget lås.
+cmd_status() {
+    local holder; holder="$(read_global_holder)"
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_result "ok" "true" "global_lock_holder" "${holder:-none}"
+    else
+        log_info "Globalt lås: ${holder:-ledigt}"
+        log_info "(kö- och jobbvy implementeras i steg 9)"
+    fi
+}
+
+# fetch/restore — tar ALDRIG globalt lås (skriver inte från poolen).
+cmd_fetch() {
+    require_vmid "${1:-}"
+    [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch kräver <vmid> <timestamp>"
+    acquire_vmid_lock "$1"
+    not_implemented
+}
+
+cmd_restore() {
+    require_vmid "${1:-}"
+    acquire_vmid_lock "$1"
+    not_implemented
+}
+
+cmd_list()         { not_implemented; }
+cmd_verify()       { require_vmid "${1:-}"; not_implemented; }
+cmd_prune()        { not_implemented; }
+cmd_test_restore() { require_vmid "${1:-}"; not_implemented; }
+
+# ---------------------------------------------------------------------------
+# Main.
+# ---------------------------------------------------------------------------
+main() {
+    parse_global_flags "$@"
+    set -- "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+
+    LXCO_COMMAND="${1:-}"
+    [[ -n "$LXCO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
+    shift || true
+
+    load_config
+    trap cleanup_locks EXIT
+
+    case "$LXCO_COMMAND" in
+        backup)        cmd_backup "$@" ;;
+        run-schedule)  cmd_run_schedule "$@" ;;
+        status)        cmd_status "$@" ;;
+        list)          cmd_list "$@" ;;
+        fetch)         cmd_fetch "$@" ;;
+        restore)       cmd_restore "$@" ;;
+        verify)        cmd_verify "$@" ;;
+        prune)         cmd_prune "$@" ;;
+        test-restore)  cmd_test_restore "$@" ;;
+        help)          usage ;;
+        *) printf 'okänt kommando: %s\n' "$LXCO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,18 @@
+# etc/config.dev — ISOLERAD dev-config. Pekar alla sökvägar till repo-lokal
+# ./run/ så inget rör host-systemet. Används via:
+#   LXCO_CONFIG=$PWD/etc/config.dev ./lxc-offsite <kommando>
+# Riktiga operationer (vzdump/pct/rclone) körs ALDRIG härifrån — enbart
+# skelett-, lås- och config-logik testas. Integrationstest sker mot temporära
+# LXC:er och den befintliga test-boxen u546749-sub5 (steg 4+).
+
+CACHE_DIR=./run/cache
+LOG_DIR=./run/log
+STATE_DIR=./run/state
+LOCK_DIR=./run/lock
+
+RCLONE_REMOTE=dev-mock
+REMOTE_PATH=lxc
+BACKUP_ORDER=9001,9002,9003
+GLOBAL_LOCK_TIMEOUT=5
+NTFY_URL=
+NTFY_ON_SUCCESS=false
