@@ -462,19 +462,15 @@ password2 = <span class="mask">•••••••••• (click “Reveal�
 <div id="toast" style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:9px 16px;border-radius:4px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:60;opacity:0;transition:opacity .2s;pointer-events:none"></div>
 
 <script>
-const groups=[
- {g:'ct/9003',name:'lxco-e2e',cmt:'test run (real)',snaps:[{ts:'2026-09-04 11:34:04',size:'160 MB',where:'both',bind:true,prot:true}]},
- {g:'ct/113',name:'nextcloud-lxc',cmt:'',snaps:[{ts:'2026-09-04 03:41:55',size:'6.6 GB',where:'offsite'},{ts:'2026-09-03 03:41:12',size:'6.6 GB',where:'offsite'}]},
- {g:'ct/122',name:'euro-office',cmt:'fuse → stop',snaps:[{ts:'2026-09-04 03:47:10',size:'3.7 GB',where:'offsite'}]},
- {g:'ct/110',name:'postgres-db',cmt:'',snaps:[{ts:'2026-09-04 03:31:04',size:'495 MB',where:'offsite'}]},
- {g:'vm/101',name:'game-fedora-cloud',cmt:'VM support coming',vm:true,snaps:[]},
-];
+const groups=[];       // filled live from /api/state (see hydrate) — no example data
+let contentLoaded=false;
 const locPill=w=>w==='both'?'<span class="chip-loc">local</span> <span class="chip-off">offsite</span>':w==='offsite'?'<span class="chip-off">offsite</span>':'<span class="chip-loc">local</span>';
 const ib=(t,svg,on)=>`<button class="iconbtn${on?' on':''}" title="${t}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${svg}</svg></button>`;
 const ICO={restore:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',verify:'<path d="M20 6 9 17l-5-5"/>',prot:'<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',prune:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>'};
 const cr=document.getElementById('contentRows');
 let flat=[];
 function renderContent(){cr.innerHTML='';flat=[];
+ if(!groups.length){cr.insertAdjacentHTML('beforeend',`<tr><td colspan="6" style="color:var(--muted);padding:14px 10px">${contentLoaded?'No offsite snapshots yet — run a backup to create one.':'Loading snapshots…'}</td></tr>`);return;}
  groups.forEach((grp,gi)=>{
   const cnt=grp.snaps.length;
   cr.insertAdjacentHTML('beforeend',`<tr class="grow open" data-g="${gi}"><td colspan="6"><span class="chev">▶</span> <span class="grpname">${grp.g}</span> <span class="vmid">${grp.name}</span> ${cnt?`<span class="tag">${cnt}</span>`:''} ${grp.cmt?`<span style="color:var(--muted);font-weight:400">— ${grp.cmt}</span>`:''}</td></tr>`);
@@ -498,7 +494,7 @@ document.getElementById('guestRows').innerHTML=groups.map(grp=>grp.vm
 const rscrim=document.getElementById('rscrim');
 function openRestore(item){window._rest=item;const p=item.s,grp=item.grp;
  document.getElementById('rsummary').innerHTML=`Source: <b>${grp.g}</b> ${grp.name} · ${p.ts} · ${p.size} · ${locPill(p.where)}`;
- const set=()=>document.getElementById('rcmd').textContent=`pct restore ${document.getElementById('rnew').value} ${grp.g.replace('/','-')}-${p.ts.replace(/[ :]/g,'_')}.tar.zst --storage ${document.getElementById('rstore').value} --unprivileged 1`;
+ const set=()=>document.getElementById('rcmd').textContent=`lxc-offsite restore ${grp.g.split('/')[1]} ${p.tskey||'?'} --to ${document.getElementById('rnew').value} --storage ${document.getElementById('rstore').value}`;
  document.getElementById('rnew').oninput=set;document.getElementById('rstore').onchange=set;set();
  document.getElementById('rbind').hidden=!p.bind;rscrim.hidden=false;}
 document.querySelectorAll('[data-close-r]').forEach(b=>b.onclick=()=>rscrim.hidden=true);
@@ -548,8 +544,16 @@ const guestRowLive=g=>{const vm=g.type==='qemu';const prot=!!g.protected;
 function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();return null;}return r.json();}).then(s=>{
  if(!s||!Array.isArray(s.guests)||!s.guests.length)return;
  groups.length=0;
- s.guests.filter(g=>g.protected).forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite',tskey:(String(a.archive).match(/(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})/)||[])[1]||''}));const vm=g.type==='qemu';
-   groups.push({g:(vm?'vm/':'ct/')+g.vmid,name:g.name||g.vmid,cmt:vm?'VM support coming':'',vm:vm,snaps:arr});});
+ const byId={};(s.guests||[]).forEach(g=>{byId[g.vmid]=g;});
+ // Content mirrors the CLI `list`: one group per vmid that has real offsite archives, newest first.
+ Object.keys(s.snapshots||{}).sort((a,b)=>(+a)-(+b)).forEach(vmid=>{
+   const g=byId[vmid]||{vmid:vmid,name:vmid,type:'lxc',protected:false};
+   const vm=g.type==='qemu';
+   const arr=(s.snapshots[vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite',tskey:(String(a.archive).match(/(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})/)||[])[1]||''}));
+   arr.sort((x,y)=>x.tskey<y.tskey?1:(x.tskey>y.tskey?-1:0));
+   groups.push({g:(vm?'vm/':'ct/')+vmid,name:g.name||vmid,cmt:g.protected?'':'not protected',vm:vm,snaps:arr});
+ });
+ contentLoaded=true;
  renderContent();
  const gr=document.getElementById('guestRows');if(gr){gr.innerHTML=s.guests.map(guestRowLive).join('');
    gr.querySelectorAll('.tg[data-vmid]').forEach(t=>{t.onclick=function(){var on=t.getAttribute('aria-pressed')==='true';act(on?'DELETE':'POST','/api/guests/'+t.dataset.vmid,null,(on?'Stopped backing up ':'Now backing up ')+'guest '+t.dataset.vmid);};});
@@ -638,6 +642,7 @@ window.curTask=null;
 function loadTaskLog(name){window.curTask=name;var lt=document.getElementById('logtitle');if(lt)lt.textContent=name;
  fetch('/api/tasks/'+encodeURIComponent(name)).then(function(r){return r.ok?r.text():'';}).then(function(txt){var lb=document.getElementById('logbody');if(!lb)return;var atBottom=lb.scrollTop+lb.clientHeight>=lb.scrollHeight-40;lb.innerHTML=txt.split('\n').filter(Boolean).map(function(l){return '<div class="l">'+l.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>';}).join('');if(atBottom)lb.scrollTop=lb.scrollHeight;});}
 loadRes();setInterval(loadRes,4000);
+setInterval(function(){if(!document.getElementById('loginscrim')||document.getElementById('loginscrim').hidden)hydrate();},30000);
 setInterval(function(){if(window.curTask)loadTaskLog(window.curTask);},3000);
 async function doLogin(){var u=document.getElementById('lu').value+'@'+document.getElementById('lr').value;var p=document.getElementById('lp').value;var err=document.getElementById('lerr');err.textContent='';var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){document.getElementById('loginscrim').hidden=true;var j=await r.json().catch(function(){return{};});var mu=document.getElementById('mhUser');if(mu&&j.user)mu.innerHTML='<span class="u">'+j.user[0].toUpperCase()+'</span>'+j.user;hydrate();}else{err.textContent='Login failed — check user, realm and password.';}}
 var lbtn=document.getElementById('lbtn');if(lbtn){lbtn.onclick=doLogin;document.getElementById('lp').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});}
