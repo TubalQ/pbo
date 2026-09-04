@@ -247,6 +247,25 @@ class LxcoTUI(App):
     def action_quit(self) -> None:
         self.exit()
 
+    def _handle_exception(self, error: Exception) -> None:
+        """Fånga ALLA ohanterade undantag → logga + notis, avsluta ALDRIG.
+        Textuals default avslutar appen (krasch → CLI); en drift-TUI får inte det.
+        Loggen (/tmp/lxco-tui-crash.log) visar exakt vad som felade."""
+        import traceback as _tb
+        from datetime import datetime as _dt
+        try:
+            with open("/tmp/lxco-tui-crash.log", "a") as fh:
+                fh.write(f"\n=== {_dt.now().isoformat()} ===\n")
+                fh.write("".join(_tb.format_exception(type(error), error, error.__traceback__)))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.notify(f"Internt fel fångat: {type(error).__name__} "
+                        f"(loggat i /tmp/lxco-tui-crash.log)", severity="error", timeout=8)
+        except Exception:  # noqa: BLE001
+            pass
+        # medvetet: ingen super()/panic/exit → appen lever vidare
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(id="statusbar")
