@@ -214,8 +214,9 @@ def launch(user, args, tag):
 # ---- jobbstatus (task-färg + dashboard-verifiering) ----
 # Jobben skriver ingen egen slutmarkör i loggen — vi läser kommandots egen
 # utdata (vzdump/rclone) och härleder ok/failed/running heuristiskt.
-_FAIL_RE = re.compile(r"\b(ERROR|FAILED|FAILADE|misslyckades|Permission denied|No such file)\b", re.I)
-_OK_RE = re.compile(r"finished successfully|differences found|sha256|KLART|verifierad|restored", re.I)
+_FAIL_RE = re.compile(r"\b(ERROR|FAILED|FAILADE|misslyckades|Permission denied|No such file)\b|Fatal:", re.I)
+_OK_RE = re.compile(r"finished successfully|differences found|sha256|KLART|verifierad|restored"
+                    r"|Added to the repository|snapshot [0-9a-f]+ saved|no errors were found", re.I)
 def _job_status(path):
     try:
         txt = open(path, errors="replace").read()[-8000:]

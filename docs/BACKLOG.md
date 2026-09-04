@@ -20,5 +20,14 @@
   (typ-gren `pct`/`qm`; kluster = agent-per-nod + delat offsite-repo +
   pmxcfs-config). Fas 1 = VM lokalt, Fas 2 = kluster.
 
+## Gränssnitt — omtanke (2026-09-04)
+- **TUI i stället för/utöver web-GUI:t?** Användaren funderar på en terminal-UI
+  (TUI) i stället för web-konsolen. INTE beslutat, ingen energi lagd än — bara
+  antecknat. Konsekvens: den tunga **web-onboarding-omskrivningen (restic-läge:
+  repo-URL/sftp-command/repo-lösen + cache/offsite-läges-växel) är PAUSAD** tills
+  GUI-vs-TUI är avgjort. Motor-agnostiska bitar gjordes ändå: `_job_status`
+  känner nu igen restics `Fatal:`/success-markörer (gäller även en TUI).
+  Restic-list/prune/restore-envelopen är redan UI-oberoende (CLI --json).
+
 ## Övrigt
 - (fyll på)
