@@ -20,7 +20,7 @@ Under uppbyggnad, steg för steg enligt `docs/IMPLEMENTATION-PROMPT.md`.
 | 3 | backup: vzdump + sha256 + strukturkontroll + meta.json | ✅ |
 | 3b | realtidslogg av subprocess-output | ✅ |
 | 4 | uppladdning + verifiering (crypt→cryptcheck) | ✅ |
-| 5 | list + fetch | ⏳ |
+| 5 | list + fetch | ✅ |
 | 6 | restore (nytt vmid, unprivileged-flagga) | ⏳ |
 | 7 | prune (cache+offsite, skyddar senaste) | ⏳ |
 | 8 | test-restore + ntfy-notiser | ⏳ |

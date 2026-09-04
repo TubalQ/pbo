@@ -40,11 +40,11 @@ out="$($BIN --json status 2>/dev/null)"
 [[ "$out" == '{'*'}' ]] && ok "status --json ger ett JSON-objekt" || bad "status --json ($out)"
 grep -q '"status":"ok"' <<<"$out" && ok "status --json innehåller status:ok" || bad "status json-fält"
 
-# list har ingen preflight → lämpligt för att testa json-envelopen isolerat.
-out="$($BIN --json list 2>/dev/null)"
-grep -q '"status":"not_implemented"' <<<"$out" && ok "list svarar not_implemented (json)" || bad "list json ($out)"
+# prune är ännu ej implementerat och saknar preflight → testar json-envelopen isolerat.
+out="$($BIN --json prune 2>/dev/null)"
+grep -q '"status":"not_implemented"' <<<"$out" && ok "prune svarar not_implemented (json)" || bad "prune json ($out)"
 grep -q '"dry_run":false' <<<"$out" && ok "dry_run-fält finns" || bad "dry_run-fält"
-out="$($BIN --json --dry-run list 2>/dev/null)"
+out="$($BIN --json --dry-run prune 2>/dev/null)"
 grep -q '"dry_run":true' <<<"$out" && ok "--dry-run reflekteras i json" || bad "dry_run true"
 
 # --- vmid-validering ---
@@ -76,9 +76,10 @@ flock -u "$V"; exec {V}>&-
 
 # --- fetch/restore tar INTE globalt lås (går under pågående backup) ---
 exec {H}>"$GLOBAL_LOCK"; flock -n "$H"
-out="$($BIN --json fetch 9005 2026_09_04-00_00_00 2>/dev/null)"; got=$?
-grep -q 'not_implemented' <<<"$out" && [[ "$got" == 0 ]] \
-    && ok "fetch ignorerar globalt lås (kör under backup)" || bad "fetch globalt lås ($got: $out)"
+# fetch tar inte globalt lås → kör vidare förbi låset och faller på arkiv-lookup
+# (dev-mock-remoten har inget arkiv) med EX_DATAERR, inte EX_TEMPFAIL(lås).
+$BIN fetch 9005 2026_09_04-00_00_00 >/dev/null 2>&1; got=$?
+[[ "$got" == 65 ]] && ok "fetch ignorerar globalt lås (kör vidare, faller på lookup)" || bad "fetch globalt lås ($got)"
 flock -u "$H"; exec {H}>&-
 
 # --- config: osäkra rättigheter vägras ---

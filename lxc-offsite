@@ -22,6 +22,8 @@ source "${SELF_DIR}/lib/preflight.sh"
 source "${SELF_DIR}/lib/backup.sh"
 # shellcheck source=lib/upload.sh
 source "${SELF_DIR}/lib/upload.sh"
+# shellcheck source=lib/list.sh
+source "${SELF_DIR}/lib/list.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -150,7 +152,7 @@ cmd_fetch() {
     require_vmid "${1:-}"
     [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch kräver <vmid> <timestamp>"
     acquire_vmid_lock "$1"
-    not_implemented
+    do_fetch "$1" "$2"
 }
 
 cmd_restore() {
@@ -159,7 +161,7 @@ cmd_restore() {
     not_implemented
 }
 
-cmd_list()         { not_implemented; }
+cmd_list()         { do_list "${1:-}"; }
 cmd_verify()       { require_vmid "${1:-}"; not_implemented; }
 cmd_prune()        { not_implemented; }
 cmd_test_restore() { require_vmid "${1:-}"; not_implemented; }

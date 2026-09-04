@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
 # mock rclone: styrs av MOCK_*-env. Loggar anrop till $MOCK_LOG om satt.
-#   MOCK_RCLONE_OK   (lsd/about)         default 1
-#   MOCK_UPLOAD_OK   (copy)              default 1
+#   MOCK_RCLONE_OK   (lsd/about/mkdir)   default 1
+#   MOCK_UPLOAD_OK   (copy, om ej fixtur) default 1
 #   MOCK_VERIFY_OK   (check/cryptcheck)  default 1
 #   MOCK_REMOTE_TYPE (config show)       default sftp
+#   MOCK_LSJSON_FILE (lsjson)            fil med JSON-array
+#   MOCK_LSF_DIRS / MOCK_LSF_FILES       filer med rader för lsf
+#   MOCK_OFFSITE_DIR (copy-fetch)        <dir>/<vmid>/ = simulerat offsite
 cmd="${1:-}"; shift || true
 [ -n "${MOCK_LOG:-}" ] && echo "$cmd $*" >> "$MOCK_LOG"
 case "$cmd" in
-  lsd|about|mkdir)        [ "${MOCK_RCLONE_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
-  copy)             [ "${MOCK_UPLOAD_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
-  check|cryptcheck) [ "${MOCK_VERIFY_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  lsd|about|mkdir)  [ "${MOCK_RCLONE_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  cryptcheck|check) [ "${MOCK_VERIFY_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
   delete)           exit 0 ;;
   config)           echo "[${2:-remote}]"; echo "type = ${MOCK_REMOTE_TYPE:-sftp}"; exit 0 ;;
+  lsjson)           cat "${MOCK_LSJSON_FILE:-/dev/null}" 2>/dev/null || echo "[]"; exit 0 ;;
+  lsf)
+        dirs=0; for a in "$@"; do [ "$a" = "--dirs-only" ] && dirs=1; done
+        if [ "$dirs" = 1 ]; then cat "${MOCK_LSF_DIRS:-/dev/null}" 2>/dev/null
+        else cat "${MOCK_LSF_FILES:-/dev/null}" 2>/dev/null; fi
+        exit 0 ;;
+  copy)
+        if [ -n "${MOCK_OFFSITE_DIR:-}" ]; then
+            src="$1"; dest="$2"; inc="*"
+            while [ $# -gt 0 ]; do [ "$1" = "--include" ] && inc="$2"; shift || break; done
+            seg="${src##*/}"; mkdir -p "$dest"
+            for f in "$MOCK_OFFSITE_DIR/$seg"/$inc; do [ -e "$f" ] && cp "$f" "$dest/"; done
+            exit 0
+        fi
+        [ "${MOCK_UPLOAD_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
   *)                exit 0 ;;
 esac
