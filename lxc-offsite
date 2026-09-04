@@ -183,13 +183,15 @@ cmd_tui() {
         --simple)   tui_main; return ;;   # whiptail-fallback (noll-beroende)
     esac
     # Primärt: Textual-appen (snygg). Faller tillbaka på whiptail om venv saknas.
-    local py
+    # Scriptet ligger bredvid venven (dev: SELF_DIR/tui, installerat: /opt/lxc-offsite/tui).
+    local py tuidir
     for py in "${SELF_DIR}/tui/.venv/bin/python" /opt/lxc-offsite/tui/venv/bin/python; do
-        if [[ -x "$py" ]]; then
-            LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}" \
-            LXCO_CONFIG="${LXCO_CONFIG:-/etc/lxc-offsite/config}" \
-                exec "$py" "${SELF_DIR}/tui/lxco_tui.py"
-        fi
+        [[ -x "$py" ]] || continue
+        tuidir="$(cd "$(dirname "$py")/../.." && pwd)"      # …/tui
+        [[ -f "$tuidir/lxco_tui.py" ]] || continue
+        LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}" \
+        LXCO_CONFIG="${LXCO_CONFIG:-/etc/lxc-offsite/config}" \
+            exec "$py" "$tuidir/lxco_tui.py"
     done
     log_warn "Textual-TUI saknas (venv ej byggd) → whiptail-fallback (kör 'install.sh' eller 'tui --simple')"
     tui_main
