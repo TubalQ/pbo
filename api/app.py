@@ -115,6 +115,29 @@ def read_config():
         pass
     return cfg
 
+def get_order():
+    cfg = read_config()
+    return [x for x in cfg.get("BACKUP_ORDER", "").replace(" ", "").split(",") if x]
+
+def write_backup_order(order):
+    """Skriv om BACKUP_ORDER-raden i configen (bevarar resten), atomiskt, 0600."""
+    try:
+        lines = open(CONFIG).readlines()
+    except OSError:
+        lines = []
+    newline = "BACKUP_ORDER=" + ",".join(order) + "\n"
+    for i, l in enumerate(lines):
+        if l.strip().startswith("BACKUP_ORDER="):
+            lines[i] = newline
+            break
+    else:
+        lines.append(newline)
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("".join(lines))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONFIG)
+
 def cluster_guests():
     guests = {}
     try:
@@ -176,15 +199,24 @@ def health():
 @app.get("/api/state")
 def state(user: str = Depends(current_user)):
     cfg = read_config()
-    order = [x for x in cfg.get("BACKUP_ORDER", "").replace(" ", "").split(",") if x]
+    order = get_order()
     allg = cluster_guests()
     listing = _cached("list", 30, lambda: cli("list"))
     snaps = {}
     for a in listing.get("archives", []):
         snaps.setdefault(a["vmid"], []).append(a)
-    guests = [{"vmid": v, "name": allg.get(v, {}).get("name", v),
-               "type": allg.get(v, {}).get("type", "lxc"), "node": allg.get(v, {}).get("node"),
-               "snapshots": len(snaps.get(v, []))} for v in order]
+    # Alla klustergäster, skyddade (i BACKUP_ORDER) först i ordning, sedan resten
+    # (= nya/oskyddade LXC/VM som kan klickas in). Nya gäster upptäcks automatiskt.
+    guests, seen = [], set()
+    for v in order:
+        g = allg.get(v, {}); seen.add(v)
+        guests.append({"vmid": v, "name": g.get("name", v), "type": g.get("type", "lxc"),
+                       "node": g.get("node"), "protected": True, "snapshots": len(snaps.get(v, []))})
+    for v, g in sorted(allg.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0):
+        if v in seen:
+            continue
+        guests.append({"vmid": v, "name": g.get("name"), "type": g.get("type"),
+                       "node": g.get("node"), "protected": False, "snapshots": len(snaps.get(v, []))})
     tasks = [{"name": os.path.basename(f)[:-4], "mtime": int(os.path.getmtime(f))}
              for f in sorted(glob.glob(JOBS + "/*.log"), key=os.path.getmtime, reverse=True)[:10]]
     total = sum(a.get("size_bytes", 0) for arr in snaps.values() for a in arr)
@@ -199,6 +231,27 @@ def task_log(name: str, user: str = Depends(current_user)):
     if os.path.exists(p):
         return PlainTextResponse(open(p).read()[-40000:])
     return PlainTextResponse("not found", status_code=404)
+
+# ---- skydd på/av (klicka i/ur gäster → BACKUP_ORDER) ----
+@app.post("/api/guests/{vmid}")
+def protect_add(vmid: str, user: str = Depends(current_user)):
+    vmid = _vmid(vmid)
+    if vmid not in cluster_guests():
+        raise HTTPException(404, "guest not found in cluster")
+    order = get_order()
+    if vmid not in order:
+        order.append(vmid)
+        write_backup_order(order)
+        audit(user, f"protect-add vmid={vmid}")
+    return {"ok": True, "protected": True, "order": order}
+
+@app.delete("/api/guests/{vmid}")
+def protect_remove(vmid: str, user: str = Depends(current_user)):
+    vmid = _vmid(vmid)
+    order = [x for x in get_order() if x != vmid]
+    write_backup_order(order)
+    audit(user, f"protect-remove vmid={vmid}")
+    return {"ok": True, "protected": False, "order": order}
 
 # ---- skriv-endpoints (skarpa åtgärder) ----
 @app.post("/api/backup/{vmid}")
@@ -234,6 +287,18 @@ def api_restore(user: str = Depends(current_user), vmid: str = Body(...), ts: st
     unit = launch(user, ["restore", vmid, ts, "--to", target, "--storage", storage, "--yes"],
                   f"restore-{target}")
     return {"ok": True, "unit": unit}
+
+# ---- DR-nyckel (rclone.conf) — auth + audit ----
+@app.get("/api/export-key")
+def export_key(user: str = Depends(current_user)):
+    audit(user, "export-key")
+    try:
+        cfg = read_config()
+        path = cfg.get("RCLONE_CONFIG_FILE", "/etc/lxc-offsite/rclone.conf")
+        return PlainTextResponse(open(path).read())
+    except OSError:
+        raise HTTPException(404, "rclone.conf not found")
+
 
 # ---- frontend ----
 @app.get("/", response_class=HTMLResponse)

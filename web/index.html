@@ -202,7 +202,7 @@ td.num{text-align:right}
     <span class="mh-title">lxc-offsite</span><span class="mh-ver">0.1.0</span>
     <div class="mh-sp"></div>
     <button class="mh-btn" id="themeBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>Theme</button>
-    <button class="mh-btn">Documentation</button>
+    <button class="mh-btn" id="docBtn">Documentation</button>
     <button class="mh-btn" id="logoutBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>Logout</button>
     <div class="mh-user" id="mhUser"><span class="u">R</span>root@pam</div>
   </div>
@@ -282,7 +282,7 @@ td.num{text-align:right}
         <div class="cbody">
           <!-- Content tab: grouped snapshots -->
           <div class="dtab" data-tab="content">
-            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up now</button><button class="btn">Verify all</button><button class="btn">Prune</button></div>
+            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up now</button><button class="btn" data-goto="prune">Prune…</button></div>
             <div class="grid"><table>
               <thead><tr><th style="width:34%">Backup Group / Snapshot</th><th>Backup Time</th><th class="num">Size</th><th>Location</th><th>Verify</th><th style="width:150px">Actions</th></tr></thead>
               <tbody id="contentRows"></tbody>
@@ -304,8 +304,8 @@ td.num{text-align:right}
           </div>
           <!-- Guests -->
           <div class="dtab" data-tab="guests" hidden>
-            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add guest</button></div>
-            <div class="grid"><table><thead><tr><th>Guest</th><th>Type · mode</th><th>Retention</th><th>Last offsite</th><th style="text-align:center">Protect</th></tr></thead><tbody id="guestRows"></tbody></table></div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Toggle a guest to add or remove it from backups. New guests appear here automatically.</div>
+            <div class="grid"><table><thead><tr><th>Guest</th><th>Type</th><th>Retention</th><th>Snapshots</th><th style="text-align:center">Protect</th></tr></thead><tbody id="guestRows"></tbody></table></div>
             <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><div><b>Fuse guests use stop mode automatically.</b><p>Podman/fuse containers deadlock snapshot — the tool runs <span class="mono">--mode stop</span> (brief downtime), no config needed.</p></div></div>
           </div>
           <!-- Prune -->
@@ -325,8 +325,7 @@ td.num{text-align:right}
               <div class="kvr"><span class="lbl">Method (offsite)</span><span class="val">rclone cryptcheck</span></div>
               <div class="kvr"><span class="lbl">Method (local)</span><span class="val">sha256 + zstd -t</span></div>
               <div class="kvr"><span class="lbl">Last result</span><span class="val st good">14/14 passed</span></div>
-              <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Test-restore boots a snapshot on a throwaway VMID to prove it restores — the strongest check.</p>
-              <div style="margin-top:8px"><button class="btn">Verify now</button> <button class="btn">Test-restore latest</button></div>
+              <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Verification runs automatically on every backup (cryptcheck offsite + sha256 local). Test-restore (which boots a snapshot on a throwaway VMID) is available from the CLI: <span class="mono">lxc-offsite test-restore &lt;vmid&gt;</span>.</p>
             </div></div>
           </div>
           <!-- Options -->
@@ -383,7 +382,7 @@ td.num{text-align:right}
         <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg><h1>Schedule &amp; Retention</h1></div>
         <div class="cbody"><div class="cols">
           <div class="box"><h3>Schedule</h3><div class="bd">
-            <div class="field"><label>Frequency</label><div class="ftabs"><button aria-pressed="true">Daily</button><button aria-pressed="false">Weekly</button><button aria-pressed="false">Custom</button></div></div>
+            <div class="field"><label>Frequency</label><input value="Daily (systemd timer)" readonly></div>
             <div class="row2"><div class="field"><label>Time</label><input value="03:30" readonly></div><div class="field"><label>Next run</label><input value="tomorrow 03:30" readonly></div></div>
             <div class="field"><label>Order (critical first)</label><input class="mono" value="110,115,116,112,111,113,122,121,100,108,114,120" readonly></div>
             <p style="margin:0;font-size:12px;color:var(--muted)">One guest at a time · ~23 min for the fleet.</p>
@@ -421,16 +420,16 @@ td.num{text-align:right}
     <div class="field"><label>Command to run</label><div class="cmd" id="rcmd">pct restore …</div></div>
     <div id="rbind" class="callout" hidden style="margin-top:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><div><b>Bind mounts must be recreated manually.</b><p>Not in the archive — shown in the config sidecar.</p></div></div>
   </div>
-  <div class="mfoot"><button class="btn" data-close-r>Cancel</button><button class="btn">Dry run</button><button class="btn pri">Restore to new VMID</button></div>
+  <div class="mfoot"><button class="btn" data-close-r>Cancel</button><button class="btn pri">Restore to new VMID</button></div>
 </div></div>
 <!-- Export modal -->
 <div class="scrim" id="escrim" hidden><div class="modal" role="dialog" aria-modal="true">
   <div class="mh2">Export key — for a new host<button class="x" data-close-e aria-label="Close">×</button></div>
   <div class="mb"><span class="dtag">⚠ This IS the key — treat as a secret</span>
     <p>Install lxc-offsite on the new host, paste into rclone, run <span class="mono">list</span> → <span class="mono">restore</span>.</p>
-    <div class="keybox">[hetzner]
+    <div class="keybox" id="keybox">[hetzner]
 type = sftp
-host = u546749-sub5.your-storagebox.de
+host = ••••••••••
 port = 23
 key_file = /etc/lxc-offsite/id_ed25519
 
@@ -438,9 +437,9 @@ key_file = /etc/lxc-offsite/id_ed25519
 type = crypt
 remote = hetzner:lxc-offsite
 filename_encryption = standard
-password = <span class="mask">•••••••••• (masked)</span>
-password2 = <span class="mask">•••••••••• (masked)</span></div></div>
-  <div class="mfoot"><button class="btn" data-close-e>Cancel</button><button class="btn pri">Copy to clipboard</button></div>
+password = <span class="mask">•••••••••• (click “Reveal”)</span>
+password2 = <span class="mask">•••••••••• (click “Reveal”)</span></div></div>
+  <div class="mfoot"><button class="btn" data-close-e>Cancel</button><button class="btn" id="revealKeyBtn">Reveal &amp; show config</button><button class="btn pri" id="copyKeyBtn">Copy to clipboard</button></div>
 </div></div>
 
 <!-- Login overlay -->
@@ -476,7 +475,7 @@ function renderContent(){cr.innerHTML='';flat=[];
   cr.insertAdjacentHTML('beforeend',`<tr class="grow open" data-g="${gi}"><td colspan="6"><span class="chev">▶</span> <span class="grpname">${grp.g}</span> <span class="vmid">${grp.name}</span> ${cnt?`<span class="tag">${cnt}</span>`:''} ${grp.cmt?`<span style="color:var(--muted);font-weight:400">— ${grp.cmt}</span>`:''}</td></tr>`);
   if(grp.vm){cr.insertAdjacentHTML('beforeend',`<tr class="srow" data-gp="${gi}"><td colspan="6" style="color:var(--muted);font-style:italic;padding-left:30px">No snapshots — VM support coming</td></tr>`);}
   grp.snaps.forEach((s,si)=>{const idx=flat.length;flat.push({grp,s});
-   cr.insertAdjacentHTML('beforeend',`<tr class="srow" data-gp="${gi}"><td>${s.ts.split(' ')[1]} <span class="vmid">snapshot</span></td><td class="mono">${s.ts}</td><td class="num mono">${s.size}</td><td>${locPill(s.where)}</td><td><span class="st good"><span class="dot"></span>OK</span></td><td><div class="actions">${ib('Restore',ICO.restore)}${ib('Verify',ICO.verify)}${ib('Protected',ICO.prot,s.prot)}${ib('Prune',ICO.prune)}<span data-ri="${idx}" style="display:none"></span></div></td></tr>`);
+   cr.insertAdjacentHTML('beforeend',`<tr class="srow" data-gp="${gi}"><td>${s.ts.split(' ')[1]} <span class="vmid">snapshot</span></td><td class="mono">${s.ts}</td><td class="num mono">${s.size}</td><td>${locPill(s.where)}</td><td><span class="st good"><span class="dot"></span>OK</span></td><td><div class="actions">${ib('Restore',ICO.restore)}<span data-ri="${idx}" style="display:none"></span></div></td></tr>`);
   });
  });
  // wire restore buttons
@@ -519,7 +518,7 @@ function selectTab(t){document.querySelectorAll('.ctab').forEach(x=>x.setAttribu
 document.querySelectorAll('.ctab').forEach(b=>b.addEventListener('click',()=>selectTab(b.dataset.t)));
 
 // toggles + segmented
-document.addEventListener('click',e=>{const tg=e.target.closest('.tg');if(tg)tg.setAttribute('aria-pressed',tg.getAttribute('aria-pressed')!=='true');
+document.addEventListener('click',e=>{const tg=e.target.closest('.tg');if(tg&&!tg.dataset.vmid)tg.setAttribute('aria-pressed',tg.getAttribute('aria-pressed')!=='true');
  const seg=e.target.closest('.ftabs button');if(seg){seg.parentElement.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b===seg));}});
 // theme
 const root=document.documentElement;
@@ -538,17 +537,18 @@ renderLog('j0'); selectTab('content');
 /* --- live hydration from the API (falls back to example data offline) --- */
 const human=b=>{b=+b||0;const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return (b<10&&i>0?b.toFixed(1):Math.round(b))+' '+u[i];};
 const fmtTs=s=>{try{return String(s).replace('T',' ').slice(0,19);}catch(e){return s;}};
-const guestRow=grp=>grp.vm
- ?`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">coming</span></td></tr>`
- :`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">LXC</span></td><td class="mono">2 · 7/4/6</td><td class="mono">${grp.snaps[0]?grp.snaps[0].ts.split(' ')[1]:'—'}</td><td style="text-align:center"><button class="tg" aria-pressed="true"></button></td></tr>`;
+const guestRowLive=g=>{const vm=g.type==='qemu';const prot=!!g.protected;
+ if(vm)return `<tr><td><span class="grpname">${g.name||g.vmid}</span> <span class="vmid">vm/${g.vmid}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">VM support coming</span></td></tr>`;
+ return `<tr><td><span class="grpname">${g.name||g.vmid}</span> <span class="vmid">ct/${g.vmid}</span>${prot?'':' <span class="tag">new</span>'}</td><td><span class="tag">LXC</span></td><td class="mono">${prot?'2 · 7/4/6':'—'}</td><td class="mono">${g.snapshots?g.snapshots+' snap':'—'}</td><td style="text-align:center"><button class="tg" data-vmid="${g.vmid}" aria-pressed="${prot}" title="${prot?'Protected — click to stop backing up':'Not protected — click to back up'}"></button></td></tr>`;};
 function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();return null;}return r.json();}).then(s=>{
  if(!s||!Array.isArray(s.guests)||!s.guests.length)return;
  groups.length=0;
- s.guests.forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite',tskey:(String(a.archive).match(/(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})/)||[])[1]||''}));const vm=g.type==='qemu';
+ s.guests.filter(g=>g.protected).forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite',tskey:(String(a.archive).match(/(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})/)||[])[1]||''}));const vm=g.type==='qemu';
    groups.push({g:(vm?'vm/':'ct/')+g.vmid,name:g.name||g.vmid,cmt:vm?'VM support coming':'',vm:vm,snaps:arr});});
  renderContent();
- const gr=document.getElementById('guestRows');if(gr)gr.innerHTML=groups.map(guestRow).join('');
- const n=s.guests.filter(g=>g.type!=='qemu').length;
+ const gr=document.getElementById('guestRows');if(gr){gr.innerHTML=s.guests.map(guestRowLive).join('');
+   gr.querySelectorAll('.tg[data-vmid]').forEach(t=>{t.onclick=function(){var on=t.getAttribute('aria-pressed')==='true';act(on?'DELETE':'POST','/api/guests/'+t.dataset.vmid,null,(on?'Stopped backing up ':'Now backing up ')+'guest '+t.dataset.vmid);};});}
+ const n=s.guests.filter(g=>g.protected).length;
  const kg=document.getElementById('kGuests');if(kg)kg.textContent=n+' / '+n+' OK';
  const ko=document.getElementById('kOffsite');if(ko)ko.textContent=human(s.offsite_bytes);
  const tl=document.querySelector('.tasklist');
@@ -572,6 +572,11 @@ byText('Dry run prune').forEach(function(b){b.onclick=function(){act('POST','/ap
 byText('Run prune').forEach(function(b){b.onclick=function(){if(confirm('Run prune now? This deletes snapshots outside the policy.'))act('POST','/api/prune',{dry_run:false},'Prune started');};});
 var rpri=document.querySelector('#rscrim .btn.pri');if(rpri)rpri.onclick=function(){var it=window._rest;if(!it)return;var tgt=document.getElementById('rnew').value;act('POST','/api/restore',{vmid:it.grp.g.split('/')[1],ts:it.s.tskey||'',target:tgt,storage:document.getElementById('rstore').value},'Restore started → new VMID '+tgt);document.getElementById('rscrim').hidden=true;};
 var lb=document.getElementById('logoutBtn');if(lb)lb.onclick=async function(){await fetch('/api/logout',{method:'POST'});showLogin();};
+document.querySelectorAll('[data-goto]').forEach(function(b){b.onclick=function(){selectTab(b.dataset.goto);};});
+var db=document.getElementById('docBtn');if(db)db.onclick=function(){window.open('https://git.midvault.se/ai-pvet440/lxc-offsite','_blank');};
+async function fetchKey(){var r=await fetch('/api/export-key');if(r.status===401){showLogin();throw 'auth';}return r.text();}
+var rk=document.getElementById('revealKeyBtn');if(rk)rk.onclick=async function(){try{var t=await fetchKey();var kb=document.getElementById('keybox');if(kb)kb.textContent=t;toast('Config revealed — treat as a secret');}catch(e){if(e!=='auth')toast('Failed — '+e);}};
+var ck=document.getElementById('copyKeyBtn');if(ck)ck.onclick=async function(){try{var t=await fetchKey();await navigator.clipboard.writeText(t);toast('DR config copied to clipboard');}catch(e){if(e!=='auth')toast('Copy failed — '+e);}};
 async function doLogin(){var u=document.getElementById('lu').value+'@'+document.getElementById('lr').value;var p=document.getElementById('lp').value;var err=document.getElementById('lerr');err.textContent='';var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){document.getElementById('loginscrim').hidden=true;var j=await r.json().catch(function(){return{};});var mu=document.getElementById('mhUser');if(mu&&j.user)mu.innerHTML='<span class="u">'+j.user[0].toUpperCase()+'</span>'+j.user;hydrate();}else{err.textContent='Login failed — check user, realm and password.';}}
 var lbtn=document.getElementById('lbtn');if(lbtn){lbtn.onclick=doLogin;document.getElementById('lp').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});}
 /* init */
