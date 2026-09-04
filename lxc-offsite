@@ -10,8 +10,9 @@
 
 set -Eeuo pipefail
 
-# Hitta den egna katalogen så lib/ funkar både i repo och installerat.
-SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Hitta den egna katalogen så lib/ funkar både i repo och installerat (följ
+# symlänken /usr/local/sbin/lxc-offsite → /usr/local/lib/lxc-offsite/lxc-offsite).
+SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
 # shellcheck source=lib/notify.sh  (ersätter notify-stubbarna i common.sh)
