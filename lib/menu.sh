@@ -29,7 +29,8 @@ _cfg_set() {
     if grep -qE "^${k}=" "$cfg"; then sed "s|^${k}=.*|${k}=${v}|" "$cfg" > "$tmp"
     else { cat "$cfg"; printf '%s=%s\n' "$k" "$v"; } > "$tmp"; fi
     chmod 600 "$tmp"; mv "$tmp" "$cfg"
-    [[ "$k" == "BACKUP_ORDER" ]] && BACKUP_ORDER="$v"
+    if [[ "$k" == "BACKUP_ORDER" ]]; then BACKUP_ORDER="$v"; fi
+    return 0
 }
 
 # Klustergäster som TSV: vmid \t name \t type \t node \t status
@@ -120,9 +121,110 @@ menu_status() {
     echo; _pause
 }
 
+# --- 1. SETUP / onboarding (restic-wizard) ---
+menu_setup() {
+    _menu_header
+    printf '%s Setup / onboarding (restic)%s\n\n' "$C_B" "$C_0"
+    local eng; eng="$(_ask "Motor (restic/tar)" "restic")"
+    if [[ "$eng" != "restic" ]]; then _cfg_set ENGINE tar; echo "  ${C_G}ENGINE=tar satt.${C_0}"; _pause; return; fi
+    local mode host user port key repo pass
+    mode="$(_ask "Läge (cached=lokal+offsite / offsite=bara offsite)" "offsite")"
+    host="$(_ask "SFTP-host (t.ex. uXXXXX-subN.your-storagebox.de)")"
+    [[ -n "$host" ]] || { echo "  ${C_R}SFTP-host krävs — avbryter.${C_0}"; _pause; return; }
+    user="$(_ask "SFTP-user" "$host")"
+    port="$(_ask "Port" "23")"
+    key="$(_ask "SSH-nyckelfil på hosten" "/root/.ssh/id_rsa")"
+    repo="$(_ask "Repo-path (RELATIV — Storage Box chroot)" "lxc-restic")"
+    if _yn "Generera repo-lösen automatiskt?" j; then
+        pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
+        echo "  ${C_D}lösen genererat (visas via meny 4 Export).${C_0}"
+    else pass="$(_askpw "Repo-lösen (DR-nyckel!)")"; fi
+    local passfile="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"
+    ( umask 077; printf '%s\n' "$pass" > "$passfile" )
+    _cfg_set ENGINE restic
+    _cfg_set LOCAL_REPO "$([[ "$mode" == cached ]] && echo true || echo false)"
+    _cfg_set OFFSITE_ENABLED true
+    _cfg_set RESTIC_OFFSITE_REPO "sftp:hetzner:${repo}"
+    _cfg_set RESTIC_PASSWORD_FILE "$passfile"
+    _cfg_set RESTIC_SFTP_COMMAND "\"ssh ${user}@${host} -p ${port} -i ${key} -o StrictHostKeyChecking=accept-new -s sftp\""
+    echo; echo "  Config skriven. Skapar/verifierar repo…"
+    "$LXCO_BIN" init
+    echo "  ${C_G}Setup klar.${C_0} VIKTIGT: exportera DR-nyckeln (meny 4) → Vaultwarden + offline."
+    _pause
+}
+
+# --- 4. EXPORTERA DR-NYCKEL ---
+menu_export() {
+    _menu_header
+    printf '%s Exportera DR-nyckel%s\n\n' "$C_B" "$C_0"
+    _yn "Detta visar HEMLIGHETER (repo-lösen på skärmen). Fortsätt?" n || return
+    local pf="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}" pw
+    pw="$(cat "$pf" 2>/dev/null || echo '<ingen lösenfil>')"
+    echo; echo "  ${C_Y}# PBO DR-nyckel — HEMLIG. Ny host: installera PBO, klistra in, list→restore${C_0}"
+    echo "  ENGINE=restic"
+    echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<ej satt>}"
+    echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<ej satt>}"
+    echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"
+    echo
+    if _yn "Spara kopia till /root/pbo-dr-key.txt (0600)?" n; then
+        ( umask 077; { echo "ENGINE=restic"; echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
+          echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
+        echo "  ${C_G}sparad: /root/pbo-dr-key.txt${C_0} — flytta offline och radera från hosten."
+    fi
+    _pause
+}
+
+# --- 6. ÅTERSTÄLL ---
+menu_restore() {
+    _menu_header
+    printf '%s Återställ%s\n\n' "$C_B" "$C_0"
+    echo "  Hämtar offsite-arkiv…"
+    local listing; listing="$("$LXCO_BIN" --json list 2>/dev/null)"
+    local vmids; vmids="$(jq -r '[.archives[].vmid]|unique|.[]' <<<"$listing" 2>/dev/null)"
+    [[ -n "$vmids" ]] || { echo "  Inga offsite-arkiv."; _pause; return; }
+    echo "  Gäster med backup: ${C_C}$(echo $vmids | tr '\n' ' ')${C_0}"
+    local src; src="$(_ask "VMID att återställa")"
+    [[ "$src" =~ ^[0-9]+$ ]] || return
+    local tss; tss="$(jq -r --arg v "$src" '.archives[]|select(.vmid==$v)|.archive' <<<"$listing" | grep -oE '[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}' | sort -r)"
+    [[ -n "$tss" ]] || { echo "  ${C_R}Inga snapshots för $src.${C_0}"; _pause; return; }
+    echo "  Snapshots (nyast först):"; echo "$tss" | sed 's/^/    /'
+    local ts; ts="$(_ask "Tidsstämpel" "$(echo "$tss" | head -1)")"
+    local used free=9100
+    used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"
+    while grep -qx "$free" <<<"$used"; do free=$((free+1)); done
+    local newid; newid="$(_ask "Nytt VMID (aldrig överskrivning)" "$free")"
+    local stores; stores="$(pvesh get /storage --output-format json 2>/dev/null | jq -r '.[]|select((.content//"")|test("rootdir"))|.storage')"
+    echo "  Storage: ${C_C}$(echo $stores | tr '\n' ' ')${C_0}"
+    local storage; storage="$(_ask "Storage" "$(echo "$stores" | head -1)")"
+    _yn "Återställ $src ($ts) → NYTT vmid $newid på $storage?" j || return
+    "$LXCO_BIN" restore "$src" "$ts" --to "$newid" --storage "$storage" --yes
+    _pause
+}
+
+# --- 7. UNDERHÅLL ---
+menu_maint() {
+    _menu_header
+    printf '%s Underhåll%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s Prune (torrkörning)     %s[2]%s Prune (skarpt)\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[3]%s Verifiera (restic check) %s[4]%s Test-restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[0]%s tillbaka\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "Val")"
+    case "$c" in
+        1) "$LXCO_BIN" --dry-run prune; _pause ;;
+        2) _yn "Kör SKARP prune (raderar snapshots utanför policyn)?" n && { "$LXCO_BIN" prune; _pause; } ;;
+        3) echo "  Verifierar (kan ta en stund)…"; "$LXCO_BIN" verify; _pause ;;
+        4) local id; id="$(_ask "VMID för test-restore")"
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (hämta→boota→destroy engångskopia)?" j && { "$LXCO_BIN" test-restore "$id"; _pause; } ;;
+        *) : ;;
+    esac
+}
+
 # --- huvudmeny ---
 menu_main() {
-    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq krävs för menyn (apt install jq)"
+    # Interaktivt: read/grep/[[ ]] returnerar ofta !=0 — dispatcherns set -Eeuo får
+    # INTE fälla menyn. (CLI-åtgärderna körs som egna subprocesser med egen set -e.)
+    set +e +u
+    command -v jq >/dev/null 2>&1 || { printf 'jq krävs för menyn (apt install jq)\n' >&2; return 1; }
     while true; do
         _menu_header
         printf '\n'
@@ -132,13 +234,13 @@ menu_main() {
         printf '  %s[7]%s Underhåll (prune/verify)  %s[0]%s Avsluta\n\n' "$C_B" "$C_0" "$C_B" "$C_0"
         local c; c="$(_ask "Val")"
         case "$c" in
-            1) printf '  (Setup-wizard kommer i nästa bit.)\n'; _pause ;;
+            1) menu_setup ;;
             2) menu_guests ;;
             3) menu_backup ;;
-            4) printf '  (Export-nyckel kommer i nästa bit — tills dess: cat %s)\n' "${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"; _pause ;;
+            4) menu_export ;;
             5) menu_status ;;
-            6) printf '  (Återställ kommer i nästa bit.)\n'; _pause ;;
-            7) printf '  (Underhåll kommer i nästa bit.)\n'; _pause ;;
+            6) menu_restore ;;
+            7) menu_maint ;;
             0|q|"") clear 2>/dev/null || true; return "$EX_OK" ;;
             *) : ;;
         esac
