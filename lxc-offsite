@@ -26,6 +26,8 @@ source "${SELF_DIR}/lib/upload.sh"
 source "${SELF_DIR}/lib/list.sh"
 # shellcheck source=lib/restore.sh
 source "${SELF_DIR}/lib/restore.sh"
+# shellcheck source=lib/prune.sh
+source "${SELF_DIR}/lib/prune.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -179,7 +181,7 @@ cmd_restore() {
 
 cmd_list()         { do_list "${1:-}"; }
 cmd_verify()       { require_vmid "${1:-}"; not_implemented; }
-cmd_prune()        { not_implemented; }
+cmd_prune()        { do_prune; }
 cmd_test_restore() { require_vmid "${1:-}"; not_implemented; }
 
 # ---------------------------------------------------------------------------

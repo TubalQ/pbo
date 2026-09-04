@@ -40,11 +40,13 @@ out="$($BIN --json status 2>/dev/null)"
 [[ "$out" == '{'*'}' ]] && ok "status --json ger ett JSON-objekt" || bad "status --json ($out)"
 grep -q '"status":"ok"' <<<"$out" && ok "status --json innehåller status:ok" || bad "status json-fält"
 
-# prune är ännu ej implementerat och saknar preflight → testar json-envelopen isolerat.
-out="$($BIN --json prune 2>/dev/null)"
-grep -q '"status":"not_implemented"' <<<"$out" && ok "prune svarar not_implemented (json)" || bad "prune json ($out)"
-grep -q '"dry_run":false' <<<"$out" && ok "dry_run-fält finns" || bad "dry_run-fält"
-out="$($BIN --json --dry-run prune 2>/dev/null)"
+# verify är ännu ej implementerat → testar not_implemented-envelopen.
+out="$($BIN --json verify 9001 2>/dev/null)"
+grep -q '"status":"not_implemented"' <<<"$out" && ok "verify svarar not_implemented (json)" || bad "verify json ($out)"
+# dry_run-fältet testas via status (stabilt, implementerat).
+out="$($BIN --json status 2>/dev/null)"
+grep -q '"dry_run":false' <<<"$out" && ok "dry_run-fält finns (false)" || bad "dry_run-fält"
+out="$($BIN --json --dry-run status 2>/dev/null)"
 grep -q '"dry_run":true' <<<"$out" && ok "--dry-run reflekteras i json" || bad "dry_run true"
 
 # --- vmid-validering ---
