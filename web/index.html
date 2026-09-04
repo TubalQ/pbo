@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lxc-offsite Console</title>
+<meta name="description" content="Lightweight Proxmox Backup Server alternative — back up guests locally and encrypted offsite, no dedicated backup box.">
+<style>
+:root{
+  --font:helvetica,arial,verdana,sans-serif; --mono:"SFMono-Regular",Menlo,Consolas,monospace;
+  --masthead:#2b2b2b; --masthead-ink:#e8e8e8; --masthead-line:#454545;
+  --ground:#f5f5f5; --panel:#ffffff; --sidebar:#fafafa;
+  --ink:#151515; --muted:#5a5a5a; --faint:#888; --line:#dcdcdc; --line-2:#e8e8e8;
+  --blue:#0060a4; --blue-ink:#fff; --sel:#dbeaf7; --hover:#ededed;
+  --good:#1a9c3e; --good-bg:#e6f4ea; --warn:#b7791f; --warn-bg:#fbf0d6; --crit:#c0392b; --crit-bg:#fbe4e1;
+  --btn-face:linear-gradient(#fff,#ececec); --btn-line:#b7b7b7;
+}
+:root[data-theme="dark"]{
+  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --sidebar:#212121;
+  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#3a3a3a; --line-2:#333;
+  --blue:#3f9fe0; --blue-ink:#08243a; --sel:#123a5c; --hover:#2f2f2f;
+  --good:#3ec27f; --good-bg:#15321f; --warn:#e0a53a; --warn-bg:#33280f; --crit:#e5695a; --crit-bg:#3a1c18;
+  --btn-face:linear-gradient(#333,#2a2a2a); --btn-line:#4a4a4a;
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --sidebar:#212121;
+  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#3a3a3a; --line-2:#333;
+  --blue:#3f9fe0; --blue-ink:#08243a; --sel:#123a5c; --hover:#2f2f2f;
+  --good:#3ec27f; --good-bg:#15321f; --warn:#e0a53a; --warn-bg:#33280f; --crit:#e5695a; --crit-bg:#3a1c18;
+  --btn-face:linear-gradient(#333,#2a2a2a); --btn-line:#4a4a4a;
+}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--font);font-size:13px;line-height:1.45}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+button{font-family:inherit;cursor:pointer}
+
+.app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.masthead{height:40px;flex:none;background:var(--masthead);color:var(--masthead-ink);display:flex;align-items:center;gap:11px;padding:0 12px;border-bottom:1px solid var(--masthead-line)}
+.mh-logo{width:24px;height:24px;border-radius:3px;flex:none;display:grid;place-items:center;background:linear-gradient(150deg,#e57000,#c05a00);color:#fff}
+.mh-logo svg{width:15px;height:15px}
+.mh-title{font-size:14px;font-weight:700}.mh-ver{font-size:11px;color:#9a9a9a;font-family:var(--mono)}
+.mh-sp{flex:1}
+.mh-btn{background:transparent;border:1px solid transparent;color:var(--masthead-ink);font-size:12px;height:26px;padding:0 9px;border-radius:3px;display:inline-flex;align-items:center;gap:6px}
+.mh-btn:hover{background:#ffffff1a;border-color:#ffffff2e}
+.mh-user{font-size:12px;color:#cfcfcf;padding-left:9px;border-left:1px solid var(--masthead-line);display:flex;align-items:center;gap:6px}
+.mh-user .u{width:20px;height:20px;border-radius:50%;background:#4a4a4a;display:grid;place-items:center;font-size:10px;color:#ddd}
+.previewnote{font-size:11.5px;color:var(--faint);padding:7px 14px;background:var(--ground);border-bottom:1px solid var(--line)}
+.previewnote b{color:var(--muted)}
+
+.main{flex:1;display:flex;min-height:0}
+.sidebar{width:236px;flex:none;background:var(--sidebar);border-right:1px solid var(--line);overflow-y:auto;padding:5px 0}
+/* tree */
+.tnode{display:flex;align-items:center;gap:7px;width:100%;text-align:left;border:0;background:none;color:var(--ink);font-size:13px;padding:5px 10px 5px 8px;border-left:3px solid transparent}
+.tnode:hover{background:var(--hover)}
+.tnode[aria-current="true"]{background:var(--blue);border-left-color:var(--blue);color:#fff;font-weight:600}
+.tnode[aria-current="true"] .ico{opacity:1;color:#fff}
+.tnode .chev{width:12px;height:12px;flex:none;transition:transform .12s;opacity:.55;order:3;margin-left:auto}
+.tnode .chev.hidden{visibility:hidden}
+.tnode.open .chev{transform:rotate(90deg)}
+.tnode .ico{width:15px;height:15px;flex:none;opacity:.85}
+.tnode.lvl2{padding-left:30px;font-size:12.5px}
+.tnode.dstore .ico{color:var(--blue);opacity:1}
+.tsep{height:1px;background:var(--line);margin:6px 10px}
+.tgrp{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:9px 12px 3px;font-weight:700}
+.children[hidden]{display:none}
+
+.content{flex:1;overflow-y:auto;min-width:0;display:flex;flex-direction:column}
+.ctitle{display:flex;align-items:center;gap:8px;padding:9px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.ctitle .ci{width:17px;height:17px;color:var(--blue)}
+.ctitle h1{margin:0;font-size:14.5px;font-weight:600}
+.ctitle .path{font-size:12px;color:var(--muted);font-family:var(--mono)}
+/* content tabs (datastore) */
+.ctabs{display:flex;gap:0;background:var(--panel);border-bottom:1px solid var(--line);padding:0 10px;overflow-x:auto}
+.ctab{border:0;background:none;color:var(--muted);font-size:12.5px;padding:8px 13px;border-bottom:2px solid transparent;white-space:nowrap}
+.ctab:hover{color:var(--ink)}
+.ctab[aria-selected="true"]{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.cbody{padding:14px 16px;flex:1}
+.panel[hidden]{display:none}.dtab[hidden]{display:none}
+
+.toolbar{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-bottom:0;padding:6px 8px;flex-wrap:wrap}
+.btn{background:var(--btn-face);border:1px solid var(--btn-line);border-radius:3px;color:var(--ink);font-size:12px;height:25px;padding:0 9px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.btn:hover{border-color:var(--blue)}.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:var(--blue-ink);font-weight:600}
+.btn svg{width:13px;height:13px}
+
+.grid{background:var(--panel);border:1px solid var(--line);overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px}
+th{text-align:left;font-size:11.5px;font-weight:600;color:var(--muted);padding:6px 11px;border-bottom:1px solid var(--line);background:var(--ground);white-space:nowrap}
+td{padding:5px 11px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--hover)}
+tbody tr.sel{background:var(--sel)}
+td.num{text-align:right}
+.vmid{font-family:var(--mono);color:var(--muted)}
+.grpname{font-weight:600}
+
+/* grouped snapshot rows */
+.grow td{background:var(--ground);font-weight:600;cursor:pointer}
+.grow .chev{display:inline-block;width:11px;transition:transform .12s;color:var(--muted)}
+.grow.open .chev{transform:rotate(90deg)}
+.srow td:first-child{padding-left:30px}
+.srow[hidden]{display:none}
+.actions{display:flex;gap:3px}
+.iconbtn{width:24px;height:22px;border:1px solid transparent;background:none;border-radius:3px;color:var(--muted);display:grid;place-items:center}
+.iconbtn:hover{border-color:var(--btn-line);background:var(--btn-face);color:var(--blue)}
+.iconbtn svg{width:13px;height:13px}
+.iconbtn.on{color:var(--good)}
+
+.st{display:inline-flex;align-items:center;gap:5px;font-weight:600}
+.st.good{color:var(--good)}.st.warn{color:var(--warn)}.st.crit{color:var(--crit)}.st.info{color:var(--blue)}
+.st .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.tag{font-size:10.5px;font-weight:600;padding:1px 5px;border-radius:2px;background:var(--ground);border:1px solid var(--line);color:var(--muted)}
+.chip-loc{font-size:11px;padding:1px 6px;border-radius:2px;border:1px solid var(--line);color:var(--muted);background:var(--ground)}
+.chip-off{font-size:11px;padding:1px 6px;border-radius:2px;color:var(--blue);border:1px solid var(--blue);font-weight:600}
+.soon{color:var(--muted);font-style:italic}
+
+/* dashboard panels — stacked full-width like PBS */
+.dstack{display:flex;flex-direction:column;gap:12px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:3px}
+.box h3{margin:0;font-size:12.5px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--ground);display:flex;align-items:center;gap:7px}
+.box h3 svg{width:14px;height:14px;color:var(--blue)}
+.box h3 .hbtn{margin-left:auto}
+/* PBS-style resource stat grid */
+.res{display:grid;grid-template-columns:1fr 1fr;gap:0 26px}
+@media(max-width:700px){.res{grid-template-columns:1fr}}
+.resitem{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.resitem svg{width:15px;height:15px;color:var(--muted);flex:none}
+.resitem .rl{color:var(--muted);font-size:12.5px}
+.resitem .rv{margin-left:auto;font-family:var(--mono);font-size:12.5px}
+.resitem .rbar{flex-basis:100%;height:4px;background:var(--ground);border-radius:2px;overflow:hidden;margin-top:2px}
+.resitem .rbar i{display:block;height:100%;background:var(--blue)}
+.resitem .rbar i.g{background:var(--good)}
+.taskline{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid var(--line-2);font-size:12.5px}
+.taskline:last-child{border-bottom:0}
+.taskline .tn{flex:1}.taskline .td{font-family:var(--mono);color:var(--muted)}
+.taskline .tc{color:var(--faint)}
+.box .bd{padding:11px 13px}
+.usage{margin-bottom:12px}
+.usage .top{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}
+.usage .top .l{color:var(--muted)}
+.bar{height:14px;background:var(--ground);border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--blue)}
+.bar i.g{background:var(--good)}
+.kvr{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-2);font-size:12.5px}
+.kvr:last-child{border-bottom:0}.kvr .lbl{color:var(--muted)}.kvr .val{font-family:var(--mono)}
+.matrix{width:100%;font-size:12px}
+.matrix th,.matrix td{text-align:center;padding:6px 4px}.matrix td:first-child,.matrix th:first-child{text-align:left}
+.mcount{font-weight:700;font-family:var(--mono)}
+.statrow{display:flex;gap:14px;flex-wrap:wrap}
+.stat{flex:1;min-width:110px}.stat .n{font-size:22px;font-weight:600}.stat .c{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+
+.cl{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-2)}
+.cl:last-child{border-bottom:0}
+.cl .mk{width:20px;height:20px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12px;font-weight:700}
+.cl.done .mk{background:var(--good);color:#fff}.cl.todo .mk{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn)}
+.cl .t b{font-size:12.5px;display:block;font-weight:600}.cl .t span{font-size:11.5px;color:var(--muted)}
+.callout{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border-radius:3px;background:var(--warn-bg);border:1px solid color-mix(in oklab,var(--warn) 40%,transparent);margin-top:12px}
+.callout svg{width:15px;height:15px;flex:none;color:var(--warn);margin-top:1px}
+.callout b{color:var(--ink)}.callout p{margin:2px 0 0;font-size:12px;color:var(--muted)}
+
+.tasks{display:grid;grid-template-columns:280px 1fr;gap:12px}
+@media(max-width:760px){.tasks{grid-template-columns:1fr}}
+.tasklist{background:var(--panel);border:1px solid var(--line);border-radius:3px;overflow:hidden}
+.taskrow{display:flex;gap:8px;align-items:center;width:100%;text-align:left;border:0;background:none;color:var(--ink);font-size:12px;padding:7px 10px;border-bottom:1px solid var(--line-2)}
+.taskrow:hover{background:var(--hover)}.taskrow[aria-selected="true"]{background:var(--sel)}
+.taskrow .ti{flex:1;min-width:0}.taskrow .ti b{display:block;font-weight:600}.taskrow .ti span{color:var(--muted);font-family:var(--mono);font-size:11px}
+.logpane{background:#101418;border:1px solid var(--line);border-radius:3px;display:flex;flex-direction:column;min-height:290px}
+.logpane .lh{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid #2a2f36;color:#cdd6e0;font-size:12px}
+.logbody{padding:10px 11px;overflow:auto;font-family:var(--mono);font-size:11.5px;line-height:1.65;color:#c3cdda;flex:1}
+.logbody .l{white-space:pre-wrap;word-break:break-word}.logbody .t{color:#5f6b7d}.logbody .ok{color:#5fd39a}.logbody .em{color:#f0b357}.logbody .in{color:#7fb0e6}
+
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:820px){.cols{grid-template-columns:1fr}}
+.field{margin-bottom:10px}
+.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--faint);font-weight:700;margin-bottom:4px}
+.field input,.field select{width:100%;height:29px;padding:0 9px;border:1px solid var(--btn-line);border-radius:3px;background:var(--panel);color:var(--ink);font-family:var(--mono);font-size:12.5px}
+.ftabs{display:inline-flex;border:1px solid var(--btn-line);border-radius:3px;overflow:hidden}
+.ftabs button{border:0;background:var(--panel);color:var(--muted);font-size:12px;padding:6px 12px;border-right:1px solid var(--line)}
+.ftabs button:last-child{border-right:0}
+.ftabs button[aria-pressed="true"]{background:var(--blue);color:var(--blue-ink);font-weight:600}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;padding:20px;z-index:40}
+.scrim[hidden]{display:none}
+.modal{width:min(560px,100%);background:var(--panel);border:1px solid var(--btn-line);border-radius:3px;box-shadow:0 12px 40px rgba(0,0,0,.4);display:flex;flex-direction:column;max-height:90vh}
+.modal .mh2{display:flex;align-items:center;gap:8px;padding:10px 13px;background:var(--masthead);color:var(--masthead-ink);font-size:13px;font-weight:600}
+.modal .mh2 .x{margin-left:auto;background:none;border:0;color:#cfcfcf;font-size:16px}
+.modal .mb{padding:13px;overflow:auto}.modal .mb p{margin:0 0 10px;font-size:12.5px;color:var(--muted)}
+.cmd{background:#101418;color:#c3cdda;border-radius:3px;padding:9px 11px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.keybox{background:var(--ground);border:1px solid var(--line);border-radius:3px;padding:10px;font-family:var(--mono);font-size:11px;white-space:pre;overflow-x:auto;line-height:1.6}
+.keybox .mask{color:var(--faint)}
+.dtag{display:inline-flex;gap:5px;font-size:11px;font-weight:700;color:var(--crit);background:var(--crit-bg);padding:2px 8px;border-radius:2px;margin-bottom:9px}
+.mfoot{display:flex;gap:6px;justify-content:flex-end;padding:10px 13px;border-top:1px solid var(--line)}
+:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+</style>
+
+</head>
+<body>
+<div class="app">
+  <div class="masthead">
+    <div class="mh-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7c0-1.6 3.6-3 8-3s8 1.4 8 3-3.6 3-8 3-8-1.4-8-3Z"/><path d="M4 7v10c0 1.6 3.6 3 8 3s8-1.4 8-3V7"/><path d="M4 12c0 1.6 3.6 3 8 3s8-1.4 8-3"/></svg></div>
+    <span class="mh-title">lxc-offsite</span><span class="mh-ver">0.1.0</span>
+    <div class="mh-sp"></div>
+    <button class="mh-btn" id="themeBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>Theme</button>
+    <button class="mh-btn">Documentation</button>
+    <div class="mh-user"><span class="u">R</span>root@pam</div>
+  </div>
+  <div class="previewnote"><b>Design preview.</b> Snapshot <span class="mono">ct/9003</span> is a real verified run; other rows are example data. VM rows show planned <b>VM support</b> (coming). Secrets masked.</div>
+
+  <div class="main">
+    <nav class="sidebar">
+      <button class="tnode" aria-current="true" data-nav="dashboard"><svg class="chev hidden" viewBox="0 0 24 24"></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</button>
+      <button class="tnode" data-nav="tasks"><svg class="chev hidden" viewBox="0 0 24 24"></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Tasks</button>
+
+      <button class="tnode" data-tree="cfg"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 .1-3l1.8-1.4-2-3.4-2 .9a7 7 0 0 0-2.6-1.5L14.4 3h-4l-.3 2.6a7 7 0 0 0-2.6 1.5l-2-.9-2 3.4L5.3 12a7 7 0 0 0 0 3l-1.8 1.4 2 3.4 2-.9a7 7 0 0 0 2.6 1.5l.3 2.6h4l.3-2.6a7 7 0 0 0 2.6-1.5l2 .9 2-3.4Z"/></svg>Configuration</button>
+      <div class="children" data-children="cfg" hidden>
+        <button class="tnode lvl2" data-nav="cfgtarget">Backup Target</button>
+        <button class="tnode lvl2" data-nav="schedule">Schedule &amp; Retention</button>
+        <button class="tnode lvl2" data-nav="access">Access &amp; Key</button>
+      </div>
+
+      <div class="tsep"></div>
+      <div class="tgrp">Datastore</div>
+      <button class="tnode dstore open" data-tree="ds" data-nav="datastore"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.6 3.6 3 8 3s8-1.4 8-3V6M4 12v6c0 1.6 3.6 3 8 3s8-1.4 8-3v-6"/></svg>lxc-offsite-cache</button>
+      <div class="children" data-children="ds">
+        <button class="tnode lvl2" data-nav="datastore" data-tab="summary">Summary</button>
+        <button class="tnode lvl2" data-nav="datastore" data-tab="content">Content</button>
+        <button class="tnode lvl2" data-nav="datastore" data-tab="guests">Guests</button>
+        <button class="tnode lvl2" data-nav="datastore" data-tab="prune">Prune &amp; GC</button>
+        <button class="tnode lvl2" data-nav="datastore" data-tab="verify">Verify</button>
+        <button class="tnode lvl2" data-nav="datastore" data-tab="options">Options</button>
+      </div>
+    </nav>
+
+    <div class="content">
+      <!-- DASHBOARD -->
+      <div class="panel" id="dashboard">
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg><h1>Dashboard</h1></div>
+        <div class="cbody">
+          <div class="dstack">
+            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg>lxc-offsite (protected · last run 32 min ago)<button class="btn pri hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up now</button></h3><div class="bd">
+              <div class="res">
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/></svg><span class="rl">Guests protected</span><span class="rv st good" id="kGuests">12 / 12 OK</span><span class="rbar"><i class="g" style="width:100%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg><span class="rl">Verified offsite</span><span class="rv">100 %</span><span class="rbar"><i style="width:100%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg><span class="rl">Offsite used (encrypted)</span><span class="rv" id="kOffsite">17.6 GiB</span><span class="rbar"><i style="width:18%"></i></span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg><span class="rl">Next scheduled run</span><span class="rv">daily 03:30</span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span class="rl">Encryption</span><span class="rv st good">on · crypt</span></div>
+                <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="rl">Restore tested</span><span class="rv st good">122 booted</span></div>
+              </div>
+              <div style="margin-top:10px;font-size:12px;color:var(--muted)">Sign-in: root@pam (Proxmox ticket auth) · Notifications: ntfy on failure · 1 VM awaiting VM support</div>
+            </div></div>
+
+            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg>Datastore Usage</h3><div class="bd" style="padding:0">
+              <div class="grid" style="border:0"><table><thead><tr><th>Name</th><th>Type</th><th class="num">Size</th><th class="num">Used</th><th class="num">Available</th><th>Usage</th></tr></thead><tbody>
+                <tr><td class="mono">lxc-offsite-cache</td><td>local cache</td><td class="num mono">50 GB</td><td class="num mono">481 MB</td><td class="num mono">49.5 GB</td><td style="min-width:120px"><span class="bar" style="display:inline-block;width:100px;vertical-align:middle"><i class="g" style="width:3%"></i></span> 1%</td></tr>
+                <tr><td class="mono">hetzner-crypt</td><td>offsite (sftp+crypt)</td><td class="num mono">—</td><td class="num mono">17.6 GiB</td><td class="num mono">—</td><td style="color:var(--muted)">14 snapshots</td></tr>
+              </tbody></table></div>
+            </div></div>
+
+            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Recent Tasks</h3><div class="bd">
+              <div class="taskline"><span class="tn">run-schedule <span class="tc">— 12/12 guests</span></span><span class="td">23 min</span><span class="st good"><span class="dot"></span>OK</span></div>
+              <div class="taskline"><span class="tn">backup ct/9003 <span class="tc">— upload + cryptcheck</span></span><span class="td">16 s</span><span class="st good"><span class="dot"></span>OK</span></div>
+              <div class="taskline"><span class="tn">test-restore ct/122 <span class="tc">— boot + cleanup</span></span><span class="td">6 min</span><span class="st good"><span class="dot"></span>OK</span></div>
+              <div class="taskline"><span class="tn">verify ct/113 <span class="tc">— cryptcheck</span></span><span class="td">4 s</span><span class="st good"><span class="dot"></span>OK</span></div>
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DATASTORE (with tabs) -->
+      <div class="panel" id="datastore" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg><h1>Datastore</h1><span class="path">lxc-offsite-cache</span></div>
+        <div class="ctabs" role="tablist">
+          <button class="ctab" role="tab" data-t="summary">Summary</button>
+          <button class="ctab" role="tab" aria-selected="true" data-t="content">Content</button>
+          <button class="ctab" role="tab" data-t="guests">Guests</button>
+          <button class="ctab" role="tab" data-t="prune">Prune &amp; GC</button>
+          <button class="ctab" role="tab" data-t="verify">Verify</button>
+          <button class="ctab" role="tab" data-t="options">Options</button>
+        </div>
+        <div class="cbody">
+          <!-- Content tab: grouped snapshots -->
+          <div class="dtab" data-tab="content">
+            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Back up now</button><button class="btn">Verify all</button><button class="btn">Prune</button></div>
+            <div class="grid"><table>
+              <thead><tr><th style="width:34%">Backup Group / Snapshot</th><th>Backup Time</th><th class="num">Size</th><th>Location</th><th>Verify</th><th style="width:150px">Actions</th></tr></thead>
+              <tbody id="contentRows"></tbody>
+            </table></div>
+            <p style="font-size:11.5px;color:var(--muted);margin-top:9px">Grouped by guest, like PBS. Restore always targets a new VMID; local snapshots also appear in the Proxmox backup view.</p>
+          </div>
+          <!-- Summary -->
+          <div class="dtab" data-tab="summary" hidden>
+            <div class="cols"><div class="box"><h3>Usage</h3><div class="bd">
+              <div class="usage"><div class="top"><span class="l">Offsite</span><span>17.6 GiB</span></div><div class="bar"><i style="width:18%"></i></div></div>
+              <div class="usage"><div class="top"><span class="l">Local cache</span><span>481 MB / 50 GB</span></div><div class="bar"><i class="g" style="width:3%"></i></div></div>
+            </div></div>
+            <div class="box"><h3>Stats</h3><div class="bd">
+              <div class="kvr"><span class="lbl">Backup groups</span><span class="val">12 · 1 VM pending</span></div>
+              <div class="kvr"><span class="lbl">Snapshots offsite</span><span class="val">14</span></div>
+              <div class="kvr"><span class="lbl">Last backup</span><span class="val">today 11:34</span></div>
+              <div class="kvr"><span class="lbl">Last verify</span><span class="val st good">all passed</span></div>
+            </div></div></div>
+          </div>
+          <!-- Guests -->
+          <div class="dtab" data-tab="guests" hidden>
+            <div class="toolbar"><button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add guest</button></div>
+            <div class="grid"><table><thead><tr><th>Guest</th><th>Type · mode</th><th>Retention</th><th>Last offsite</th><th style="text-align:center">Protect</th></tr></thead><tbody id="guestRows"></tbody></table></div>
+            <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><div><b>Fuse guests use stop mode automatically.</b><p>Podman/fuse containers deadlock snapshot — the tool runs <span class="mono">--mode stop</span> (brief downtime), no config needed.</p></div></div>
+          </div>
+          <!-- Prune -->
+          <div class="dtab" data-tab="prune" hidden>
+            <div class="cols"><div class="box"><h3>Retention (GFS)</h3><div class="bd">
+              <div class="kvr"><span class="lbl">Local (cache)</span><span class="val">2 latest / guest</span></div>
+              <div class="kvr"><span class="lbl">Offsite daily / weekly / monthly</span><span class="val">7 / 4 / 6</span></div>
+              <div class="kvr"><span class="lbl">Latest snapshot</span><span class="val">never pruned</span></div>
+            </div></div><div class="box"><h3>Run</h3><div class="bd">
+              <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">Prune removes snapshots outside the policy. Dry run shows exactly what would be removed.</p>
+              <button class="btn">Dry run prune</button> <button class="btn pri">Run prune</button>
+            </div></div></div>
+          </div>
+          <!-- Verify -->
+          <div class="dtab" data-tab="verify" hidden>
+            <div class="box"><h3>Verification</h3><div class="bd">
+              <div class="kvr"><span class="lbl">Method (offsite)</span><span class="val">rclone cryptcheck</span></div>
+              <div class="kvr"><span class="lbl">Method (local)</span><span class="val">sha256 + zstd -t</span></div>
+              <div class="kvr"><span class="lbl">Last result</span><span class="val st good">14/14 passed</span></div>
+              <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Test-restore boots a snapshot on a throwaway VMID to prove it restores — the strongest check.</p>
+              <div style="margin-top:8px"><button class="btn">Verify now</button> <button class="btn">Test-restore latest</button></div>
+            </div></div>
+          </div>
+          <!-- Options -->
+          <div class="dtab" data-tab="options" hidden>
+            <div class="grid"><table><tbody>
+              <tr><td style="color:var(--muted)">Local cache path</td><td class="mono">/var/cache/lxc-offsite</td></tr>
+              <tr><td style="color:var(--muted)">Cache quota</td><td class="mono">50 GB</td></tr>
+              <tr><td style="color:var(--muted)">Offsite remote</td><td class="mono">hetzner-crypt (sftp + crypt)</td></tr>
+              <tr><td style="color:var(--muted)">Backup mode</td><td class="mono">snapshot (fuse → stop)</td></tr>
+              <tr><td style="color:var(--muted)">Compression</td><td class="mono">zstd</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TASKS -->
+      <div class="panel" id="tasks" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><h1>Tasks</h1></div>
+        <div class="cbody"><div class="tasks">
+          <div class="tasklist">
+            <button class="taskrow" aria-selected="true" data-j="j0"><span class="st good"><span class="dot"></span></span><span class="ti"><b>run-schedule</b><span>12/12 OK · 23 min</span></span></button>
+            <button class="taskrow" data-j="j1"><span class="st good"><span class="dot"></span></span><span class="ti"><b>backup ct/9003</b><span>11:34 · uploaded</span></span></button>
+            <button class="taskrow" data-j="j2"><span class="st good"><span class="dot"></span></span><span class="ti"><b>test-restore ct/122</b><span>boot ok · cleaned</span></span></button>
+          </div>
+          <div class="logpane"><div class="lh"><span class="st good"><span class="dot"></span></span><b class="mono" id="logtitle">run-schedule</b><span style="margin-left:auto;color:#5fd39a" id="logstat">12/12 OK</span></div><div class="logbody" id="logbody"></div></div>
+        </div></div>
+      </div>
+
+      <!-- CONFIG: Target -->
+      <div class="panel" id="cfgtarget" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/></svg><h1>Backup Target</h1></div>
+        <div class="cbody">
+          <div class="box"><h3>Getting started · 4 of 5</h3><div class="bd">
+            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Backup target configured</b><span>Local cache (ZFS, 50 GB) + offsite remote</span></div></div>
+            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Offsite reachable and encrypted</b><span>rclone crypt over sftp — cryptcheck verifies</span></div></div>
+            <div class="cl done"><span class="mk">✓</span><div class="t"><b>First backup complete</b><span>12/12 guests, 17.6 GiB offsite</span></div></div>
+            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Restore tested</b><span>test-restore of 122 booted from offsite</span></div></div>
+            <div class="cl todo"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
+          </div></div>
+          <div class="cols" style="margin-top:12px"><div class="box"><h3>Local cache</h3><div class="bd">
+            <div class="kvr"><span class="lbl">Path</span><span class="val">/var/cache/lxc-offsite</span></div>
+            <div class="kvr"><span class="lbl">Quota</span><span class="val">50 GB (0.9% used)</span></div>
+            <div class="kvr"><span class="lbl">PVE storage</span><span class="val">lxc-offsite-cache</span></div>
+          </div></div><div class="box"><h3>Offsite remote</h3><div class="bd">
+            <div class="kvr"><span class="lbl">Remote</span><span class="val">hetzner-crypt</span></div>
+            <div class="kvr"><span class="lbl">Transport</span><span class="val">sftp:23 · crypt</span></div>
+            <div class="kvr"><span class="lbl">Encryption</span><span class="val">filenames + content</span></div>
+          </div></div></div>
+        </div>
+      </div>
+
+      <!-- CONFIG: Schedule -->
+      <div class="panel" id="schedule" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg><h1>Schedule &amp; Retention</h1></div>
+        <div class="cbody"><div class="cols">
+          <div class="box"><h3>Schedule</h3><div class="bd">
+            <div class="field"><label>Frequency</label><div class="ftabs"><button aria-pressed="true">Daily</button><button aria-pressed="false">Weekly</button><button aria-pressed="false">Custom</button></div></div>
+            <div class="row2"><div class="field"><label>Time</label><input value="03:30" readonly></div><div class="field"><label>Next run</label><input value="tomorrow 03:30" readonly></div></div>
+            <div class="field"><label>Order (critical first)</label><input class="mono" value="110,115,116,112,111,113,122,121,100,108,114,120" readonly></div>
+            <p style="margin:0;font-size:12px;color:var(--muted)">One guest at a time · ~23 min for the fleet.</p>
+          </div></div>
+          <div class="box"><h3>Retention</h3><div class="bd">
+            <div class="kvr"><span class="lbl">Local</span><span class="val">2 / guest</span></div>
+            <div class="kvr"><span class="lbl">Daily / Weekly / Monthly</span><span class="val">7 / 4 / 6</span></div>
+            <div class="kvr"><span class="lbl">Latest</span><span class="val">never pruned</span></div>
+          </div></div>
+        </div>
+        <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/></svg><div><b>Timer not enabled yet.</b><p>Enable with <span class="mono">systemctl enable --now lxc-offsite.timer</span> — or a button here. Failures alert via ntfy.</p></div></div>
+        </div>
+      </div>
+
+      <!-- CONFIG: Access -->
+      <div class="panel" id="access" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><h1>Access &amp; Key</h1></div>
+        <div class="cbody"><div class="box"><h3>Access</h3><div class="bd">
+          <div class="kvr"><span class="lbl">Sign-in</span><span class="val">Proxmox ticket auth</span></div>
+          <div class="kvr"><span class="lbl">Destructive actions</span><span class="val">audit-logged</span></div>
+          <div class="kvr"><span class="lbl">Notifications</span><span class="val">ntfy · on failure</span></div>
+          <div class="kvr"><span class="lbl">DR key export</span><span><button class="btn" id="exportBtn2">Export key</button></span></div>
+          <p style="margin:9px 0 0;font-size:12px;color:var(--muted)">The key is needed to restore on a new host. Keep it offline (Vaultwarden + USB).</p>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Restore modal -->
+<div class="scrim" id="rscrim" hidden><div class="modal" role="dialog" aria-modal="true">
+  <div class="mh2">Restore<button class="x" data-close-r aria-label="Close">×</button></div>
+  <div class="mb"><p id="rsummary">Source: —</p>
+    <div class="row2"><div class="field"><label>New VMID</label><input id="rnew" value="9101"></div><div class="field"><label>Storage</label><select id="rstore"><option>nvmepool</option><option>newbulk</option><option>local-lvm</option></select></div></div>
+    <div class="field"><label>Command to run</label><div class="cmd" id="rcmd">pct restore …</div></div>
+    <div id="rbind" class="callout" hidden style="margin-top:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><div><b>Bind mounts must be recreated manually.</b><p>Not in the archive — shown in the config sidecar.</p></div></div>
+  </div>
+  <div class="mfoot"><button class="btn" data-close-r>Cancel</button><button class="btn">Dry run</button><button class="btn pri">Restore to new VMID</button></div>
+</div></div>
+<!-- Export modal -->
+<div class="scrim" id="escrim" hidden><div class="modal" role="dialog" aria-modal="true">
+  <div class="mh2">Export key — for a new host<button class="x" data-close-e aria-label="Close">×</button></div>
+  <div class="mb"><span class="dtag">⚠ This IS the key — treat as a secret</span>
+    <p>Install lxc-offsite on the new host, paste into rclone, run <span class="mono">list</span> → <span class="mono">restore</span>.</p>
+    <div class="keybox">[hetzner]
+type = sftp
+host = u546749-sub5.your-storagebox.de
+port = 23
+key_file = /etc/lxc-offsite/id_ed25519
+
+[hetzner-crypt]
+type = crypt
+remote = hetzner:lxc-offsite
+filename_encryption = standard
+password = <span class="mask">•••••••••• (masked)</span>
+password2 = <span class="mask">•••••••••• (masked)</span></div></div>
+  <div class="mfoot"><button class="btn" data-close-e>Cancel</button><button class="btn pri">Copy to clipboard</button></div>
+</div></div>
+
+<script>
+const groups=[
+ {g:'ct/9003',name:'lxco-e2e',cmt:'test run (real)',snaps:[{ts:'2026-09-04 11:34:04',size:'160 MB',where:'both',bind:true,prot:true}]},
+ {g:'ct/113',name:'nextcloud-lxc',cmt:'',snaps:[{ts:'2026-09-04 03:41:55',size:'6.6 GB',where:'offsite'},{ts:'2026-09-03 03:41:12',size:'6.6 GB',where:'offsite'}]},
+ {g:'ct/122',name:'euro-office',cmt:'fuse → stop',snaps:[{ts:'2026-09-04 03:47:10',size:'3.7 GB',where:'offsite'}]},
+ {g:'ct/110',name:'postgres-db',cmt:'',snaps:[{ts:'2026-09-04 03:31:04',size:'495 MB',where:'offsite'}]},
+ {g:'vm/101',name:'game-fedora-cloud',cmt:'VM support coming',vm:true,snaps:[]},
+];
+const locPill=w=>w==='both'?'<span class="chip-loc">local</span> <span class="chip-off">offsite</span>':w==='offsite'?'<span class="chip-off">offsite</span>':'<span class="chip-loc">local</span>';
+const ib=(t,svg,on)=>`<button class="iconbtn${on?' on':''}" title="${t}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${svg}</svg></button>`;
+const ICO={restore:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',verify:'<path d="M20 6 9 17l-5-5"/>',prot:'<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',prune:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>'};
+const cr=document.getElementById('contentRows');
+let flat=[];
+function renderContent(){cr.innerHTML='';flat=[];
+ groups.forEach((grp,gi)=>{
+  const cnt=grp.snaps.length;
+  cr.insertAdjacentHTML('beforeend',`<tr class="grow open" data-g="${gi}"><td colspan="6"><span class="chev">▶</span> <span class="grpname">${grp.g}</span> <span class="vmid">${grp.name}</span> ${cnt?`<span class="tag">${cnt}</span>`:''} ${grp.cmt?`<span style="color:var(--muted);font-weight:400">— ${grp.cmt}</span>`:''}</td></tr>`);
+  if(grp.vm){cr.insertAdjacentHTML('beforeend',`<tr class="srow" data-gp="${gi}"><td colspan="6" style="color:var(--muted);font-style:italic;padding-left:30px">No snapshots — VM support coming</td></tr>`);}
+  grp.snaps.forEach((s,si)=>{const idx=flat.length;flat.push({grp,s});
+   cr.insertAdjacentHTML('beforeend',`<tr class="srow" data-gp="${gi}"><td>${s.ts.split(' ')[1]} <span class="vmid">snapshot</span></td><td class="mono">${s.ts}</td><td class="num mono">${s.size}</td><td>${locPill(s.where)}</td><td><span class="st good"><span class="dot"></span>OK</span></td><td><div class="actions">${ib('Restore',ICO.restore)}${ib('Verify',ICO.verify)}${ib('Protected',ICO.prot,s.prot)}${ib('Prune',ICO.prune)}<span data-ri="${idx}" style="display:none"></span></div></td></tr>`);
+  });
+ });
+ // wire restore buttons
+ cr.querySelectorAll('.grow').forEach(r=>r.addEventListener('click',()=>{r.classList.toggle('open');const gi=r.dataset.g;cr.querySelectorAll(`.srow[data-gp="${gi}"]`).forEach(x=>x.hidden=!r.classList.contains('open'));r.querySelector('.chev').textContent=r.classList.contains('open')?'▶':'▶';}));
+ let i=0;cr.querySelectorAll('.srow').forEach(row=>{const rb=row.querySelector('.iconbtn[title="Restore"]');if(rb){const item=flat[i++];rb.addEventListener('click',e=>{e.stopPropagation();openRestore(item);});}});
+ cr.querySelectorAll('.grow').forEach(r=>{r.querySelector('.chev').textContent='▶';});
+}
+renderContent();
+
+document.getElementById('guestRows').innerHTML=groups.map(grp=>grp.vm
+ ?`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">coming</span></td></tr>`
+ :`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">LXC</span> <span class="tag">${grp.cmt.includes('stop')?'stop':'snapshot'}</span></td><td class="mono">2 · 7/4/6</td><td class="mono">${grp.snaps[0]?grp.snaps[0].ts.split(' ')[1]:'—'}</td><td style="text-align:center"><button class="tg" aria-pressed="true"></button></td></tr>`
+).join('');
+
+const rscrim=document.getElementById('rscrim');
+function openRestore(item){const p=item.s,grp=item.grp;
+ document.getElementById('rsummary').innerHTML=`Source: <b>${grp.g}</b> ${grp.name} · ${p.ts} · ${p.size} · ${locPill(p.where)}`;
+ const set=()=>document.getElementById('rcmd').textContent=`pct restore ${document.getElementById('rnew').value} ${grp.g.replace('/','-')}-${p.ts.replace(/[ :]/g,'_')}.tar.zst --storage ${document.getElementById('rstore').value} --unprivileged 1`;
+ document.getElementById('rnew').oninput=set;document.getElementById('rstore').onchange=set;set();
+ document.getElementById('rbind').hidden=!p.bind;rscrim.hidden=false;}
+document.querySelectorAll('[data-close-r]').forEach(b=>b.onclick=()=>rscrim.hidden=true);
+rscrim.addEventListener('click',e=>{if(e.target===rscrim)rscrim.hidden=true;});
+const escrim=document.getElementById('escrim');
+document.getElementById('exportBtn2').onclick=()=>escrim.hidden=false;
+document.querySelectorAll('[data-close-e]').forEach(b=>b.onclick=()=>escrim.hidden=true);
+escrim.addEventListener('click',e=>{if(e.target===escrim)escrim.hidden=true;});
+addEventListener('keydown',e=>{if(e.key==='Escape'){rscrim.hidden=true;escrim.hidden=true;}});
+
+// nav (tree)
+function showPanel(id,tab){['dashboard','datastore','tasks','cfgtarget','schedule','access'].forEach(p=>document.getElementById(p).hidden=(p!==id));
+ document.querySelector('.content').scrollTop=0; if(id==='datastore'&&tab)selectTab(tab);}
+document.querySelectorAll('.tnode[data-nav]').forEach(n=>n.addEventListener('click',()=>{
+ document.querySelectorAll('.tnode').forEach(x=>x.setAttribute('aria-current','false'));
+ n.setAttribute('aria-current','true'); showPanel(n.dataset.nav,n.dataset.tab);}));
+document.querySelectorAll('.tnode[data-tree]').forEach(n=>n.addEventListener('click',()=>{
+ const c=document.querySelector(`.children[data-children="${n.dataset.tree}"]`); if(c){const open=n.classList.toggle('open');c.hidden=!open;}}));
+// content tabs
+function selectTab(t){document.querySelectorAll('.ctab').forEach(x=>x.setAttribute('aria-selected',x.dataset.t===t));
+ document.querySelectorAll('.dtab').forEach(x=>x.hidden=(x.dataset.tab!==t));}
+document.querySelectorAll('.ctab').forEach(b=>b.addEventListener('click',()=>selectTab(b.dataset.t)));
+
+// toggles + segmented
+document.addEventListener('click',e=>{const tg=e.target.closest('.tg');if(tg)tg.setAttribute('aria-pressed',tg.getAttribute('aria-pressed')!=='true');
+ const seg=e.target.closest('.ftabs button');if(seg){seg.parentElement.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b===seg));}});
+// theme
+const root=document.documentElement;
+document.getElementById('themeBtn').onclick=()=>{const cur=root.getAttribute('data-theme');const sys=matchMedia('(prefers-color-scheme:dark)').matches;const now=cur||(sys?'dark':'light');root.setAttribute('data-theme',now==='dark'?'light':'dark');};
+
+// tasks
+const T=s=>`<span class="t">${s}</span>`;
+const logs={j0:{title:'run-schedule',stat:'12/12 OK',lines:[[T('12:45'),'<span class="in">run-schedule: 12 guests, one at a time</span>'],[T('12:45'),'<span class="ok">✓ ct/110 postgres-db — uploaded + cryptcheck</span>'],[T('12:46'),'<span class="em">ct/116 vaultwarden — fuse → --mode stop</span>'],[T('12:46'),'<span class="ok">✓ ct/116 — back up and running, verified</span>'],[T('12:55'),'ct/113 nextcloud — 6.6 GB (heaviest)'],[T('13:08'),'<span class="ok">done — 12 ok, 0 failed, 23 min</span>']]},
+ j1:{title:'backup-ct/9003',stat:'uploaded',lines:[[T('11:34'),'excluding mp0 (backup=0) · bind mp1 (not a volume)'],[T('11:34'),'<span class="ok">archive 159MB · sha256 ok · structure ok</span>'],[T('11:34'),'<span class="ok">cryptcheck: 0 differences · 4 matching files ✓</span>']]},
+ j2:{title:'test-restore-ct/122',stat:'boot ok',lines:[[T('13:15'),'<span class="in">test-restore 122 → throwaway 9099</span>'],[T('13:17'),'<span class="ok">fetch: sha256 verified ✓</span>'],[T('13:21'),'pct restore + start → responded'],[T('13:21'),'<span class="ok">✓ booted from offsite, throwaway cleaned</span>']]}};
+const body=document.getElementById('logbody'),lt=document.getElementById('logtitle'),ls=document.getElementById('logstat');
+function renderLog(j){const d=logs[j];lt.textContent=d.title;ls.textContent=d.stat;body.innerHTML=d.lines.map(l=>`<div class="l">${l[0]} ${l[1]}</div>`).join('');}
+document.querySelectorAll('.taskrow').forEach(b=>b.onclick=()=>{document.querySelectorAll('.taskrow').forEach(x=>x.setAttribute('aria-selected',x===b));renderLog(b.dataset.j);});
+renderLog('j0'); selectTab('content');
+
+/* --- live hydration from the API (falls back to example data offline) --- */
+const human=b=>{b=+b||0;const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return (b<10&&i>0?b.toFixed(1):Math.round(b))+' '+u[i];};
+const fmtTs=s=>{try{return String(s).replace('T',' ').slice(0,19);}catch(e){return s;}};
+const guestRow=grp=>grp.vm
+ ?`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">coming</span></td></tr>`
+ :`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">LXC</span></td><td class="mono">2 · 7/4/6</td><td class="mono">${grp.snaps[0]?grp.snaps[0].ts.split(' ')[1]:'—'}</td><td style="text-align:center"><button class="tg" aria-pressed="true"></button></td></tr>`;
+fetch('/api/state').then(r=>r.json()).then(s=>{
+ if(!Array.isArray(s.guests)||!s.guests.length)return;
+ groups.length=0;
+ s.guests.forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite'}));const vm=g.type==='qemu';
+   groups.push({g:(vm?'vm/':'ct/')+g.vmid,name:g.name||g.vmid,cmt:vm?'VM support coming':'',vm:vm,snaps:arr});});
+ renderContent();
+ const gr=document.getElementById('guestRows');if(gr)gr.innerHTML=groups.map(guestRow).join('');
+ const n=s.guests.filter(g=>g.type!=='qemu').length;
+ const kg=document.getElementById('kGuests');if(kg)kg.textContent=n+' / '+n+' OK';
+ const ko=document.getElementById('kOffsite');if(ko)ko.textContent=human(s.offsite_bytes);
+ const tl=document.querySelector('.tasklist');
+ if(tl&&Array.isArray(s.tasks)&&s.tasks.length){
+   tl.innerHTML=s.tasks.map((t,i)=>`<button class="taskrow"${i===0?' aria-selected="true"':''} data-live="${t.name}"><span class="st good"><span class="dot"></span></span><span class="ti"><b>${t.name.split('-')[0]}</b><span>${t.name}</span></span></button>`).join('');
+   const loadLog=name=>{document.getElementById('logtitle').textContent=name;document.getElementById('logstat').textContent='';
+     fetch('/api/tasks/'+encodeURIComponent(name)).then(r=>r.text()).then(txt=>{document.getElementById('logbody').innerHTML=txt.split('\n').filter(Boolean).map(l=>`<div class="l">${l.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div>`).join('');});};
+   tl.querySelectorAll('[data-live]').forEach(b=>b.addEventListener('click',()=>{tl.querySelectorAll('.taskrow').forEach(x=>x.setAttribute('aria-selected',x===b));loadLog(b.dataset.live);}));
+   loadLog(s.tasks[0].name);
+ }
+ const v=document.querySelector('.mh-ver');if(v)v.textContent='0.1.0 · live';
+}).catch(()=>{});
+</script>
+</body>
+</html>

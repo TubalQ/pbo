@@ -46,9 +46,20 @@ fi
 [[ -f "$CFGDIR/rclone.conf" ]] && echo "    $CFGDIR/rclone.conf finns." \
     || echo "    OBS: $CFGDIR/rclone.conf saknas — lägg dit din rclone-nyckel (0600)."
 
+echo "==> Web console (FastAPI)"
+apt-get install -y -qq python3-venv >/dev/null 2>&1 || echo "    (kunde ej apt-installera python3-venv — antar att venv finns)"
+install -d -m 0755 /opt/lxc-offsite/api /opt/lxc-offsite/web
+install -m 0644 "$SRC"/api/app.py "$SRC"/api/requirements.txt /opt/lxc-offsite/api/
+install -m 0644 "$SRC"/web/index.html /opt/lxc-offsite/web/index.html
+[[ -d /opt/lxc-offsite/api/venv ]] || python3 -m venv /opt/lxc-offsite/api/venv
+/opt/lxc-offsite/api/venv/bin/pip install -q --upgrade pip >/dev/null 2>&1 || true
+/opt/lxc-offsite/api/venv/bin/pip install -q -r /opt/lxc-offsite/api/requirements.txt
+echo "    console → /opt/lxc-offsite/{api,web}"
+
 echo "==> systemd-units (installeras, enablas EJ)"
 install -m 0644 "$SRC/systemd/lxc-offsite.service" "$UNITDIR/lxc-offsite.service"
 install -m 0644 "$SRC/systemd/lxc-offsite.timer"   "$UNITDIR/lxc-offsite.timer"
+install -m 0644 "$SRC/systemd/lxc-offsite-api.service" "$UNITDIR/lxc-offsite-api.service"
 systemctl daemon-reload
 
 cat <<EOF
@@ -65,6 +76,9 @@ Nästa steg (manuellt):
   5. Enabla schemat när du är redo:
        systemctl enable --now lxc-offsite.timer
        systemctl list-timers lxc-offsite.timer
+  6. Web-konsol (PBS-lik):
+       systemctl enable --now lxc-offsite-api.service
+       → http://<host>:8087   (v1: läs-endpoints, ingen auth än — håll på LAN/bakom traefik)
 
 Avinstallera: ta bort $LIBDIR, $BIN, units i $UNITDIR. Config/creds i $CFGDIR lämnas.
 EOF
