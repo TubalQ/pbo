@@ -108,6 +108,7 @@ prune_offsite() {
 }
 
 do_prune() {
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_prune; return $?; fi
     PRUNE_CACHE_DELETED=(); PRUNE_OFFSITE_DELETED=()
     prune_cache
     [[ "${OFFSITE_ENABLED:-true}" == "true" ]] && prune_offsite || log_info "prune: OFFSITE_ENABLED=false → hoppar offsite."

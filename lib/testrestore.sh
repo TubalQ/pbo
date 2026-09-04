@@ -36,6 +36,7 @@ _tr_pick_target() {
 # do_test_restore <vmid>
 do_test_restore() {
     local vmid="$1"
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_test_restore "$vmid"; return $?; fi
     local remote="${RCLONE_REMOTE}:${REMOTE_PATH}/${vmid}"
 
     # Senaste offsite-arkivet för vmid:en.

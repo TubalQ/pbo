@@ -23,6 +23,7 @@ _list_vmids() {
 # do_list [vmid]
 do_list() {
     local only_vmid="${1:-}"
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_list "$only_vmid"; return $?; fi
     _have_jq || die "$EX_UNAVAILABLE" "jq krävs för 'list' men saknas (apt install jq)"
 
     local rows=() vmids

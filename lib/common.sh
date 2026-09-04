@@ -54,6 +54,16 @@ set_defaults() {
     : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # bekräfta att Hetzner-snapshots är på
     : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard varnar om senaste push är äldre
 
+    # --- motor (ADR 0001): tar (nuvarande) | restic (nytt spår) ---
+    : "${ENGINE:=tar}"                                    # tar | restic
+    : "${RESTIC_BIN:=restic}"                             # override i test (scratch-binär)
+    : "${LOCAL_REPO:=true}"                               # true=cached (lokalt repo+copy), false=offsite-only
+    : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # lokalt restic-repo (cache-tier)
+    : "${RESTIC_OFFSITE_REPO:=}"                          # sftp:user@host:port/path (native) el. lokal dir (test)
+    : "${RESTIC_PASSWORD_FILE:=/etc/lxc-offsite/restic-pass}"  # repo-lösen (DR-nyckel), 0600
+    : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restics egen metadata-cache
+    : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # lokalt repo: behåll N senaste per gäst
+
     # Härledda sökvägar.
     LOG_FILE="${LOG_DIR}/lxc-offsite.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"

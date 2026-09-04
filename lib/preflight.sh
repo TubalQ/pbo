@@ -140,8 +140,20 @@ _pf_check_cache() {
     fi
 }
 
-# rclone-remote svarar.
+# restic-repo svarar (ENGINE=restic) ELLER rclone-remote svarar (ENGINE=tar).
 _pf_check_rclone() {
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then
+        if [[ "${OFFSITE_ENABLED:-true}" != "true" || -z "${RESTIC_OFFSITE_REPO:-}" ]]; then
+            _pf_add_check "restic_repo" "true" "offsite avstängt — hoppar repo-koll"
+            return
+        fi
+        if _restic "$(_restic_read_repo)" cat config >/dev/null 2>&1; then
+            _pf_add_check "restic_repo" "true" "repo '$(_restic_read_repo)' nåbart"
+        else
+            _pf_add_check "restic_repo" "false" "repo '$(_restic_read_repo)' svarar inte / ej init:at"
+        fi
+        return
+    fi
     if ! command -v rclone >/dev/null 2>&1; then
         _pf_add_check "rclone_remote" "false" "rclone ej installerat (krävs på hosten)"
         return

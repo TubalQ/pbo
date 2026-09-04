@@ -13,6 +13,7 @@
 # do_restore <src_vmid> <ts> <new_vmid> <storage|""> <yes:0|1>
 do_restore() {
     local src="$1" ts="$2" newid="$3" storage="$4" yes="$5"
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_restore "$src" "$ts" "$newid" "$storage" "$yes"; return $?; fi
 
     # Mål-vmid får inte finnas.
     if pct config "$newid" >/dev/null 2>&1; then

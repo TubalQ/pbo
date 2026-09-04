@@ -109,6 +109,7 @@ META
 # ---------------------------------------------------------------------------
 do_backup() {
     local vmid="$1"
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_backup "$vmid"; return $?; fi
     local dumpdir="${CACHE_DIR}/${vmid}"
     local host; host="$(get_ct_hostname "$vmid")"
     local mode; mode="$(_effective_mode "$vmid")"
