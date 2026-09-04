@@ -43,6 +43,8 @@ set_defaults() {
     : "${KEEP_OFFSITE_MONTHLY:=6}"
     : "${NTFY_URL:=}"
     : "${NTFY_ON_SUCCESS:=false}"
+    : "${OFFSITE_ENABLED:=true}"       # false = dumpa+verifiera lokalt, hoppa upload
+    : "${RCLONE_CONFIG_FILE:=}"        # egen rclone.conf (annars rclones default)
     : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard varnar om senaste push är äldre
 
     # Härledda sökvägar.
@@ -76,6 +78,8 @@ load_config() {
         LXCO_CONFIG_LOADED=""
     fi
     set_defaults
+    # Peka rclone på vår egen config om angiven (rclone läser RCLONE_CONFIG-env).
+    [[ -n "${RCLONE_CONFIG_FILE:-}" ]] && export RCLONE_CONFIG="$RCLONE_CONFIG_FILE"
     ensure_dirs
 }
 

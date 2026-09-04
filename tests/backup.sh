@@ -26,7 +26,7 @@ mp1: /srv/host-katalog,mp=/bind
 mp2: newbulk:subvol-8002-disk-2,mp=/scratch,backup=0
 unprivileged: 1
 C
-mkcfg() { local f="$1"; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/run/log"; echo "STATE_DIR=$ROOT/run/state"; echo "LOCK_DIR=$ROOT/run/lock"; echo "RCLONE_REMOTE=dev-mock"; } > "$f"; chmod 600 "$f"; }
+mkcfg() { local f="$1"; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/run/log"; echo "STATE_DIR=$ROOT/run/state"; echo "LOCK_DIR=$ROOT/run/lock"; echo "RCLONE_REMOTE=dev-mock"; echo "OFFSITE_ENABLED=false"; } > "$f"; chmod 600 "$f"; }
 mkcfg "$ROOT/run/cfg"
 export LXCO_CONFIG="$ROOT/run/cfg"
 

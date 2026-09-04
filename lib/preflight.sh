@@ -130,10 +130,14 @@ _pf_check_rclone() {
         _pf_add_check "rclone_remote" "false" "rclone ej installerat (krävs på hosten)"
         return
     fi
-    if rclone about "${RCLONE_REMOTE}:" >/dev/null 2>&1; then
-        _pf_add_check "rclone_remote" "true" "remote '${RCLONE_REMOTE}:' svarar"
+    # `rclone mkdir` på målkatalogen i stället för `about`/`lsd`:
+    #   - about: Storage Box:ens begränsade skal saknar ofta df → falskt fel.
+    #   - lsd: failar på FÖRSTA backupen (crypt-basdir finns ej än → "not found").
+    # mkdir är idempotent, bevisar nåbarhet + skrivrätt, och förbereder målet.
+    if rclone mkdir "${RCLONE_REMOTE}:${REMOTE_PATH}" >/dev/null 2>&1; then
+        _pf_add_check "rclone_remote" "true" "remote '${RCLONE_REMOTE}:${REMOTE_PATH}' nåbart + skrivbart"
     else
-        _pf_add_check "rclone_remote" "false" "remote '${RCLONE_REMOTE}:' svarar inte"
+        _pf_add_check "rclone_remote" "false" "remote '${RCLONE_REMOTE}:${REMOTE_PATH}' svarar inte / ej skrivbart"
     fi
 }
 

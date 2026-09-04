@@ -19,7 +19,7 @@ Under uppbyggnad, steg för steg enligt `docs/IMPLEMENTATION-PROMPT.md`.
 | 2 | Preflight (vmid, ZFS-utrymme, rclone, bind-mount-detektering) | ✅ |
 | 3 | backup: vzdump + sha256 + strukturkontroll + meta.json | ✅ |
 | 3b | realtidslogg av subprocess-output | ✅ |
-| 4 | uppladdning + `rclone check --checksum` | ⏳ |
+| 4 | uppladdning + verifiering (crypt→cryptcheck) | ✅ |
 | 5 | list + fetch | ⏳ |
 | 6 | restore (nytt vmid, unprivileged-flagga) | ⏳ |
 | 7 | prune (cache+offsite, skyddar senaste) | ⏳ |

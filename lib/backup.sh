@@ -144,13 +144,26 @@ do_backup() {
     pct config "$vmid" > "${archive}.conf" 2>/dev/null || true
     log_info "backup $vmid: meta.json + config-sidecar skrivna"
 
-    # --- resultat (uppladdning sker i steg 4) ---
-    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        json_result "dumped" "true" \
+    # --- 5. uppladdning + offsite-verifiering (steg 4) ---
+    if [[ "${OFFSITE_ENABLED:-true}" != "true" ]]; then
+        log_info "backup $vmid: OFFSITE_ENABLED=false → hoppar uppladdning (endast lokalt)."
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dumped" "true" \
             "vmid" "$vmid" "archive" "$archive" "size_bytes" "$size" \
             "sha256" "$sha" "verified" "local" "job" "$jobfile"
+        return "$EX_OK"
+    fi
+
+    do_upload "$vmid" "$archive" "$jobfile"
+    verify_offsite "$vmid" "$archive" "$jobfile"
+
+    # --- resultat (prune sker i steg 7) ---
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_result "uploaded" "true" \
+            "vmid" "$vmid" "archive" "$archive" "size_bytes" "$size" \
+            "sha256" "$sha" "verified" "offsite" \
+            "offsite" "$(_remote_dest "$vmid")/$base" "job" "$jobfile"
     else
-        log_info "backup $vmid: KLART lokalt (verifierat). Uppladdning implementeras i steg 4."
+        log_info "backup $vmid: KLART — uppladdat och verifierat offsite."
     fi
     return "$EX_OK"
 }

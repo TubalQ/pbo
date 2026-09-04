@@ -1,3 +1,16 @@
 #!/usr/bin/env bash
-# mock: rclone about remote:  → styrs av MOCK_RCLONE_OK (default 1)
-[ "${MOCK_RCLONE_OK:-1}" = 1 ] && exit 0 || exit 1
+# mock rclone: styrs av MOCK_*-env. Loggar anrop till $MOCK_LOG om satt.
+#   MOCK_RCLONE_OK   (lsd/about)         default 1
+#   MOCK_UPLOAD_OK   (copy)              default 1
+#   MOCK_VERIFY_OK   (check/cryptcheck)  default 1
+#   MOCK_REMOTE_TYPE (config show)       default sftp
+cmd="${1:-}"; shift || true
+[ -n "${MOCK_LOG:-}" ] && echo "$cmd $*" >> "$MOCK_LOG"
+case "$cmd" in
+  lsd|about|mkdir)        [ "${MOCK_RCLONE_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  copy)             [ "${MOCK_UPLOAD_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  check|cryptcheck) [ "${MOCK_VERIFY_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  delete)           exit 0 ;;
+  config)           echo "[${2:-remote}]"; echo "type = ${MOCK_REMOTE_TYPE:-sftp}"; exit 0 ;;
+  *)                exit 0 ;;
+esac

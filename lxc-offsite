@@ -20,6 +20,8 @@ source "${SELF_DIR}/lib/lock.sh"
 source "${SELF_DIR}/lib/preflight.sh"
 # shellcheck source=lib/backup.sh
 source "${SELF_DIR}/lib/backup.sh"
+# shellcheck source=lib/upload.sh
+source "${SELF_DIR}/lib/upload.sh"
 
 readonly VERSION="0.1.0-dev"
 
