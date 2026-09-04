@@ -18,6 +18,8 @@ source "${SELF_DIR}/lib/common.sh"
 source "${SELF_DIR}/lib/lock.sh"
 # shellcheck source=lib/preflight.sh
 source "${SELF_DIR}/lib/preflight.sh"
+# shellcheck source=lib/backup.sh
+source "${SELF_DIR}/lib/backup.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -106,8 +108,8 @@ cmd_backup() {
         die "$EX_UNAVAILABLE" "preflight underkänd för vmid $vmid — backup avbruten."
     fi
 
-    # --- här kommer dump/upload/verify/prune i steg 3–4 ---
-    not_implemented
+    # Steg 3: dump + lokal verifiering + meta. Steg 4 lägger till uppladdning.
+    do_backup "$vmid"
 }
 
 # preflight <vmid> — kör enbart förkontrollerna (även intern del av backup).
