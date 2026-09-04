@@ -1,0 +1,16 @@
+[Unit]
+Description=lxc-offsite — offsite-backup av LXC:er (run-schedule)
+Documentation=https://git.midvault.se/ai-pvet440/lxc-offsite
+After=network-online.target pve-cluster.service pveproxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/lxc-offsite/lxc-offsite run-schedule
+# Backup + rclone kan ta lång tid — låt den gå klart.
+TimeoutStartSec=infinity
+# Snäll mot körande containrar (I/O på raidz2).
+Nice=10
+IOSchedulingClass=idle
+# run-schedule larmar själv via ntfy; detta fångar total krasch.
+# OnFailure kan pekas mot en notify-unit vid behov.

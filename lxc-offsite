@@ -32,6 +32,8 @@ source "${SELF_DIR}/lib/restore.sh"
 source "${SELF_DIR}/lib/prune.sh"
 # shellcheck source=lib/testrestore.sh
 source "${SELF_DIR}/lib/testrestore.sh"
+# shellcheck source=lib/schedule.sh
+source "${SELF_DIR}/lib/schedule.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -134,26 +136,10 @@ cmd_preflight() {
 }
 
 # run-schedule — schemalagd: köar på globala låset per container, sekventiellt.
-cmd_run_schedule() {
-    if [[ -z "${BACKUP_ORDER:-}" ]]; then
-        die "$EX_CONFIG" "BACKUP_ORDER är tom — inget att schemalägga."
-    fi
-    log_info "run-schedule: ordning = ${BACKUP_ORDER}"
-    # I steg 9 loopar detta över BACKUP_ORDER och tar globalt lås i "queue"-läge
-    # per container. Skelett nu:
-    not_implemented
-}
+cmd_run_schedule() { do_run_schedule; }
 
 # status — läsoperation, inget lås.
-cmd_status() {
-    local holder; holder="$(read_global_holder)"
-    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        json_result "ok" "true" "global_lock_holder" "${holder:-none}"
-    else
-        log_info "Globalt lås: ${holder:-ledigt}"
-        log_info "(kö- och jobbvy implementeras i steg 9)"
-    fi
-}
+cmd_status() { do_status; }
 
 # fetch/restore — tar ALDRIG globalt lås (skriver inte från poolen).
 cmd_fetch() {
