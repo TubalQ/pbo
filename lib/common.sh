@@ -64,6 +64,7 @@ set_defaults() {
     : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restics egen metadata-cache
     : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # lokalt repo: behåll N senaste per gäst
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh-kommando för native sftp (port/nyckel); tom=restic default
+    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallella sftp-anslutningar (Storage Box ~10 max) — snabbar upp restore rejält
 
     # Härledda sökvägar.
     LOG_FILE="${LOG_DIR}/lxc-offsite.log"

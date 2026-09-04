@@ -48,6 +48,7 @@ ENGINE=tar                                     # tar | restic
 #RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp — RELATIV path (Storage Box chroot!)
 # Storage Box kräver port/nyckel i ssh-kommandot (repo-URL:ens värdlabel blir bara ett namn):
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
+#RESTIC_SFTP_CONNECTIONS=8                     # parallella sftp-anslutningar (snabbare restore)
 #RESTIC_PASSWORD_FILE=/etc/lxc-offsite/restic-pass   # repo-lösen (DR-nyckel), 0600
 #RESTIC_CACHE_DIR=/var/lib/lxc-offsite/restic-cache  # restics egen metadata-cache
 #TR_STORAGE=nvmepool                           # engångs-storage för test-restore

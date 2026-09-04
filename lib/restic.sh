@@ -19,6 +19,7 @@
 _restic() {                    # _restic <repo> <args...>
     local opts=()
     [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
+    [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && opts+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}")
     RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
