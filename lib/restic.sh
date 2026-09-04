@@ -13,12 +13,16 @@
 # behåll-per-gäst. ts läggs som TAGG (ts=YYYY_MM_DD-HH_MM_SS) för urval, vmid som
 # tagg för migrations-säkerhet. Sidecaren (.conf) följer med i snapshoten.
 
-# --- restic-wrapper: repo + lösen + egen metadata-cache ---
+# --- restic-wrapper: repo + lösen + egen metadata-cache + ev. native-sftp-kommando ---
+# Används av ALLA restic-anrop (även via run_stream) så sftp.command sätts på ETT
+# ställe. Kör som funktion i run_streams subshell (funktioner ärvs).
 _restic() {                    # _restic <repo> <args...>
+    local opts=()
+    [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
     RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
-        "$RESTIC_BIN" -r "$1" "${@:2}"
+        "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
 }
 
 # Primärt LÄS-repo (list/restore/prune): offsite om aktiverat, annars cache.
@@ -99,8 +103,7 @@ rdo_backup() {
     local wrepo; wrepo="$(_restic_write_repo)"
     log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts)"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
-            env RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
-            "$RESTIC_BIN" -r "$wrepo" backup "$dumpdir" \
+            _restic "$wrepo" backup "$dumpdir" \
                 --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(hostname -s)"; then
         die "$EX_SOFTWARE" "restic backup misslyckades för $base (se $jobfile)"
     fi
@@ -109,8 +112,7 @@ rdo_backup() {
     if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         log_info "backup $vmid: restic copy cache → offsite"
         if ! run_stream "$jobfile" "restic-copy[$vmid]" -- \
-                env RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
-                "$RESTIC_BIN" -r "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$vmid,ts=$ts"; then
+                _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$vmid,ts=$ts"; then
             die "$EX_UNAVAILABLE" "restic copy → offsite misslyckades för vmid $vmid"
         fi
     fi

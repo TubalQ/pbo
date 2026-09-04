@@ -63,6 +63,7 @@ set_defaults() {
     : "${RESTIC_PASSWORD_FILE:=/etc/lxc-offsite/restic-pass}"  # repo-lösen (DR-nyckel), 0600
     : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restics egen metadata-cache
     : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # lokalt repo: behåll N senaste per gäst
+    : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh-kommando för native sftp (port/nyckel); tom=restic default
 
     # Härledda sökvägar.
     LOG_FILE="${LOG_DIR}/lxc-offsite.log"
