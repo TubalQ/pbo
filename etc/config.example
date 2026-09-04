@@ -42,6 +42,7 @@ MAX_AGE_WARN=172800        # 48h — röd rad om senaste push är äldre
 # Se docs/adr/0001-restic-as-backup-engine.md. Onboarding: skapa lösenfil (0600)
 # + kör `lxc-offsite init` en gång innan första backup.
 ENGINE=tar                                     # tar | restic
+BACKUP_MODE=stream                            # stream (1-och-1) | batch (dumpa alla→ladda upp), samma repo
 #RESTIC_BIN=restic                             # override i test (scratch-binär)
 #LOCAL_REPO=true                               # true=cached (repo+copy), false=offsite-only
 #RESTIC_CACHE_REPO=/var/cache/lxc-offsite/repo # lokalt restic-repo (cache-tier)

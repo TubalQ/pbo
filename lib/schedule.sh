@@ -15,6 +15,13 @@ do_run_schedule() {
     local self="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}"
     local ids=(); IFS=', ' read -ra ids <<<"$BACKUP_ORDER"
 
+    # BATCH-läge (restic): dumpa alla → ladda upp alla, SAMMA repo. Fallback→stream vid platsbrist.
+    if [[ "${ENGINE:-tar}" == "restic" && "${BACKUP_MODE:-stream}" == "batch" ]]; then
+        local brc=0; rdo_run_batch "${ids[@]}" || brc=$?
+        (( brc == 2 )) || return "$brc"   # 2 = rymdes ej → fortsätt med stream nedan
+        log_info "run-schedule: batch rymdes ej i cachen → kör stream (1-och-1) i stället"
+    fi
+
     local start okc=0 failc=0; start="$(date +%s)"
     local failed=() id
     for id in "${ids[@]}"; do

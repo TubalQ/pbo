@@ -232,6 +232,29 @@ class ConfirmScreen(ModalScreen):
         self.dismiss(False)
 
 
+class StrategyScreen(ModalScreen):
+    """Väljare för backup-alla: stream (1-och-1) eller batch (allt direkt). Samma repo."""
+    BINDINGS = [("escape", "cancel", "Avbryt")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="formbox"):
+            yield Static("Backa upp ALLA skyddade gäster — hur?", classes="mtitle")
+            yield Static("En i taget = låg diskanvändning (dumpa→ladda upp→nästa).\n"
+                         "Allt direkt = dumpa alla till cache först, ladda upp sen "
+                         "(kräver plats; nertid klumpas i början). Båda → SAMMA repo.",
+                         classes="help")
+            with Horizontal(classes="toolbar"):
+                yield Button("En i taget", id="stream", classes="-primary")
+                yield Button("Allt direkt", id="batch")
+                yield Button("Avbryt", id="cancel")
+
+    def on_button_pressed(self, e):
+        self.dismiss(e.button.id if e.button.id in ("stream", "batch") else None)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
 # ----------------------------- huvudapp -----------------------------
 class LxcoTUI(App):
     CSS_PATH = "lxco.tcss"
@@ -601,8 +624,11 @@ class LxcoTUI(App):
             self.notify("Inga skyddade gäster (BACKUP_ORDER tom) — skydda några i Gäster.",
                         severity="warning")
             return
-        self.confirm("Backa upp ALLA skyddade gäster nu (sekventiellt)?",
-                     lambda: self.run_cli("Backup — alla skyddade", [BIN, "run-schedule"]))
+
+        def done(mode):
+            if mode:
+                self.run_cli(f"Backup — alla ({mode})", [BIN, "run-schedule", f"--{mode}"])
+        self.push_screen(StrategyScreen(), done)
 
     def _restore_selected(self):
         rt = self.query_one("#rtable", DataTable)

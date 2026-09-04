@@ -56,6 +56,7 @@ set_defaults() {
 
     # --- motor (ADR 0001): tar (nuvarande) | restic (nytt spår) ---
     : "${ENGINE:=tar}"                                    # tar | restic
+    : "${BACKUP_MODE:=stream}"                            # stream (1-och-1) | batch (dumpa alla→ladda upp), SAMMA repo
     : "${RESTIC_BIN:=restic}"                             # override i test (scratch-binär)
     : "${LOCAL_REPO:=true}"                               # true=cached (lokalt repo+copy), false=offsite-only
     : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # lokalt restic-repo (cache-tier)

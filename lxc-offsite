@@ -68,7 +68,9 @@ Kommandon:
   init                        (restic) skapa/verifiera repo(s)
   backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
   preflight <vmid>            kör enbart förkontrollerna (finns/utrymme/cache/rclone)
-  run-schedule                backup för varje vmid i BACKUP_ORDER, sekventiellt (köar)
+  run-schedule [--stream|--batch]  backa upp alla i BACKUP_ORDER → SAMMA repo
+                              --stream: dumpa→ladda upp en i taget (låg disk, default)
+                              --batch:  dumpa alla till cache→ladda upp (om plats finns)
   status                      pågående jobb, kölängd, vem som håller globala låset
   list [vmid]                 lista offsite-arkiv (storlek, datum)
   fetch <vmid> <ts>           hämta ett arkiv till cache, verifiera (inget globalt lås)
@@ -142,8 +144,17 @@ cmd_preflight() {
     return "$rc"
 }
 
-# run-schedule — schemalagd: köar på globala låset per container, sekventiellt.
-cmd_run_schedule() { do_run_schedule; }
+# run-schedule — schemalagd backup av alla i BACKUP_ORDER. --stream (1-och-1, default)
+# eller --batch (dumpa alla→ladda upp), alltid till SAMMA repo.
+cmd_run_schedule() {
+    case "${1:-}" in
+        --batch)  BACKUP_MODE=batch ;;
+        --stream) BACKUP_MODE=stream ;;
+        "" ) : ;;
+        *) die "$EX_USAGE" "okänd run-schedule-flagga: $1 (använd --stream|--batch)" ;;
+    esac
+    do_run_schedule
+}
 
 # status — läsoperation, inget lås.
 cmd_status() { do_status; }

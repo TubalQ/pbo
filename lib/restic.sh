@@ -348,3 +348,98 @@ rdo_verify() {
     [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "repo" "$repo"
     die "$EX_DATAERR" "restic check FAILADE för $repo"
 }
+
+# ---------------------------------------------------------------------------
+# BATCH-läge: dumpa ALLA gäster till cache först, ladda sen upp alla → SAMMA repo.
+# (BACKUP_MODE=batch). Fuse-nertiden klumpas i fas 1; en enda upp-fas i fas 2.
+# Faller tillbaka till stream om dumparna inte får plats i CACHE_DIR.
+# ---------------------------------------------------------------------------
+
+# Uppskattad tar-storlek för en gäst (ZFS used om möjligt, annars konfig-storlek).
+_guest_bytes() {
+    local vmid="$1" spec volid ds used szg
+    spec="$(pct config "$vmid" 2>/dev/null | awk '/^rootfs:/{print $2}')"
+    volid="${spec%%,*}"                         # storeid:volume
+    ds="${volid/:/\/}"                          # storeid/volume (ZFS-dataset)
+    used="$(zfs list -Hpo used "$ds" 2>/dev/null)"
+    if [[ "$used" =~ ^[0-9]+$ ]]; then printf '%s' "$used"; return; fi
+    szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$spec")"   # fallback: konfig-storlek
+    printf '%s' "$(( ${szg:-4} * 1073741824 ))"
+}
+
+# Får alla dumpar plats i cachen? (kräver 85% marginal.)
+_batch_fits() {
+    local free need=0 v
+    free="$(df -PB1 "$CACHE_DIR" 2>/dev/null | awk 'NR==2{print $4}')"
+    [[ "$free" =~ ^[0-9]+$ ]] || return 1
+    for v in "$@"; do need=$(( need + $(_guest_bytes "$v") )); done
+    (( need > 0 && free > need * 100 / 85 ))
+}
+
+# rdo_run_batch <vmid...> → 0 ok/partiell, 2 = ryms ej (be caller köra stream).
+rdo_run_batch() {
+    local vmids=("$@")
+    restic_init
+    if ! _batch_fits "${vmids[@]}"; then
+        log_warn "batch: dumparna får inte plats i CACHE_DIR ($CACHE_DIR) → faller tillbaka till stream (1-och-1)"
+        return 2
+    fi
+    acquire_global_lock "queue" "batch" "alla"
+    local start; start="$(date +%s)"
+
+    # --- FAS 1: dumpa alla → cache ---
+    log_info "batch: FAS 1 — dumpar ${#vmids[@]} gäster till cache…"
+    local dumped=() v mode dumpdir base ts jobfile
+    declare -A TS_OF=()
+    for v in "${vmids[@]}"; do
+        [[ -n "$v" ]] || continue
+        if ! run_preflight "$v"; then log_warn "batch: preflight underkänd för $v — hoppar"; continue; fi
+        mode="$(_effective_mode "$v")"; dumpdir="${CACHE_DIR}/${v}"
+        rm -f "$dumpdir"/vzdump-* 2>/dev/null; mkdir -p "$dumpdir" "$JOBS_DIR"
+        jobfile="${JOBS_DIR}/batch-dump-${v}-$(date +%Y%m%d-%H%M%S).log"
+        log_info "batch: vzdump $v ($mode)…"
+        if run_stream "$jobfile" "vzdump[$v]" -- vzdump "$v" --mode "$mode" --compress 0 --dumpdir "$dumpdir"; then
+            base="$(ls -1t "$dumpdir"/vzdump-*-"$v"-*.tar 2>/dev/null | head -1)"
+            if [[ -n "$base" && -f "$base" ]]; then
+                ts="$(_archive_ts "$(basename "$base")")"; [[ -n "$ts" ]] || ts="$(date +%Y_%m_%d-%H_%M_%S)"
+                pct config "$v" > "${base}.conf" 2>/dev/null || true
+                dumped+=("$v"); TS_OF[$v]="$ts"
+            else
+                log_warn "batch: hittar ingen tar för $v efter vzdump — hoppar"
+            fi
+        else
+            log_warn "batch: vzdump $v MISSLYCKADES — hoppar"
+        fi
+    done
+
+    # --- FAS 2: ladda upp alla dumpar → ETT repo ---
+    log_info "batch: FAS 2 — laddar upp ${#dumped[@]} dumpar → $(_restic_read_repo)…"
+    local okc=0 failc=0 failed=() wrepo; wrepo="$(_restic_write_repo)"
+    for v in "${dumped[@]}"; do
+        ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
+        jobfile="${JOBS_DIR}/backup-${v}-$(date +%Y%m%d-%H%M%S).log"
+        if ! run_stream "$jobfile" "restic-backup[$v]" -- \
+                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=lxc" --host "$(hostname -s)"; then
+            failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v MISSLYCKADES"; continue
+        fi
+        if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+            run_stream "$jobfile" "restic-copy[$v]" -- \
+                _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$v,ts=$ts" \
+                || { failc=$((failc+1)); failed+=("$v"); log_warn "batch: copy→offsite $v MISSLYCKADES"; continue; }
+        fi
+        rm -f "$dumpdir"/vzdump-* 2>/dev/null
+        okc=$((okc+1))
+    done
+    local dur=$(( $(date +%s) - start ))
+
+    if (( failc > 0 )); then notify_failure "batch: ${failc} misslyckades (${failed[*]}) på ${dur}s"
+    else notify_success "batch: ${okc} backuper OK på ${dur}s"; fi
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_result "$( ((failc==0)) && echo ok || echo partial )" "$( ((failc==0)) && echo true || echo false )" \
+            "mode" "batch" "backups_ok" "$okc" "backups_failed" "$failc" "duration_s" "$dur" "failed_vmids" "${failed[*]:-}"
+    else
+        log_info "batch: klart — ${okc} ok, ${failc} fel, ${dur}s (allt i ett repo)"
+    fi
+    (( failc == 0 )) || return "$EX_SOFTWARE"
+    return "$EX_OK"
+}
