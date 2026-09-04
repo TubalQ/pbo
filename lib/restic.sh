@@ -163,8 +163,12 @@ rdo_list() {
 # ---------------------------------------------------------------------------
 # extraktion: hämta+verifiera en snapshot till <target>, echo:a tar-sökväg.
 # ---------------------------------------------------------------------------
-_restic_extract() {            # _restic_extract <vmid> <ts> <target>
+# Sätter GLOBALEN RX_TAR (INTE via stdout — log_info går till stdout i icke-json-
+# läge och skulle förorena command-substitution → trasig pct-restore-sökväg).
+RX_TAR=""
+_restic_extract() {            # _restic_extract <vmid> <ts> <target> → RX_TAR
     local vmid="$1" ts="$2" target="$3"
+    RX_TAR=""
     local repo; repo="$(_restic_read_repo)"
     mkdir -p "$target"
     local id
@@ -173,9 +177,9 @@ _restic_extract() {            # _restic_extract <vmid> <ts> <target>
     log_info "restic restore snapshot $id → $target (verifierar vid utläsning)"
     _restic "$repo" restore "$id" --target "$target" >/dev/null 2>&1 \
         || { log_error "restic restore misslyckades (snap $id)"; return 1; }
-    local tar; tar="$(find "$target" -type f -name 'vzdump-*.tar' | head -1)"
-    [[ -n "$tar" ]] || { log_error "restic: ingen tar i återställd snapshot $id"; return 1; }
-    printf '%s' "$tar"
+    RX_TAR="$(find "$target" -type f -name 'vzdump-*.tar' | head -1)"
+    [[ -n "$RX_TAR" ]] || { log_error "restic: ingen tar i återställd snapshot $id"; return 1; }
+    return 0
 }
 
 # Läs unprivileged ur .conf-sidecar bredvid taren (default 1).
@@ -197,7 +201,8 @@ rdo_restore() {
         return "$EX_OK"
     fi
     local rdir="${CACHE_DIR}/restore-${newid}"; rm -rf "$rdir"
-    local tar; tar="$(_restic_extract "$src" "$ts" "$rdir")" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    _restic_extract "$src" "$ts" "$rdir" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    local tar="$RX_TAR"
     local unpriv; unpriv="$(_conf_unpriv "$tar")"
     [[ -n "$storage" ]] || storage="nvmepool"
     local cmd=(pct restore "$newid" "$tar" --storage "$storage" --unprivileged "$unpriv")
@@ -241,7 +246,8 @@ rdo_test_restore() {
     fi
     local rdir="${CACHE_DIR}/restore-${target}"; rm -rf "$rdir"
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
-    local tar; tar="$(_restic_extract "$vmid" "$ts" "$rdir")" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic-extraktion misslyckades"
+    local tar="$RX_TAR"
     local unpriv; unpriv="$(_conf_unpriv "$tar")"
     local storage="${TR_STORAGE:-nvmepool}"
     local ok=1 stage=""

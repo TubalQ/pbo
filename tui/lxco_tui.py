@@ -57,13 +57,15 @@ def rootdir_storages():
 
 
 def read_cfg():
+    import re as _re
     cfg = {}
     try:
         for line in open(CFG_PATH):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                cfg[k] = v.strip().strip('"')
+                v = _re.split(r"\s+#", v, 1)[0].strip().strip('"')  # strippa inline-# kommentar
+                cfg[k.strip()] = v
     except OSError:
         pass
     return cfg
@@ -306,7 +308,8 @@ class LxcoTUI(App):
             with Horizontal(classes="row"):
                 yield Label("Motor")
                 yield Select([("restic", "restic"), ("tar", "tar")],
-                             value=cfg.get("ENGINE", "restic"), id="f-engine", allow_blank=False)
+                             value=(cfg.get("ENGINE", "restic") if cfg.get("ENGINE") in ("restic", "tar") else "restic"),
+                             id="f-engine", allow_blank=False)
             with Horizontal(classes="row"):
                 yield Label("Läge")
                 yield Select([("cache + offsite", "cached"), ("bara offsite", "offsite")],
