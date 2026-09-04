@@ -12,23 +12,23 @@
 :root{
   --font:"Open Sans","Helvetica Neue",helvetica,arial,sans-serif; --mono:"SFMono-Regular",Menlo,Consolas,monospace;
   --masthead:#2b2b2b; --masthead-ink:#e8e8e8; --masthead-line:#454545;
-  --ground:#f5f5f5; --panel:#ffffff; --sidebar:#fafafa;
+  --ground:#f5f5f5; --panel:#ffffff; --panel-hd:#f0f0f0; --sidebar:#fafafa; --title:#0060a4;
   --ink:#151515; --muted:#5a5a5a; --faint:#888; --line:#dcdcdc; --line-2:#e8e8e8;
   --blue:#0060a4; --blue-ink:#fff; --sel:#dbeaf7; --hover:#ededed;
   --good:#1a9c3e; --good-bg:#e6f4ea; --warn:#b7791f; --warn-bg:#fbf0d6; --crit:#c0392b; --crit-bg:#fbe4e1;
   --btn-face:linear-gradient(#fff,#ececec); --btn-line:#b7b7b7;
 }
 :root[data-theme="dark"]{
-  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --sidebar:#212121;
-  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#3a3a3a; --line-2:#333;
-  --blue:#3f9fe0; --blue-ink:#08243a; --sel:#123a5c; --hover:#2f2f2f;
+  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --panel-hd:#333333; --sidebar:#1a1a1a; --title:#4db5ff;
+  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#404040; --line-2:#333;
+  --blue:#0078cf; --blue-ink:#ffffff; --sel:#595959; --hover:#2f2f2f;
   --good:#3ec27f; --good-bg:#15321f; --warn:#e0a53a; --warn-bg:#33280f; --crit:#e5695a; --crit-bg:#3a1c18;
   --btn-face:linear-gradient(#333,#2a2a2a); --btn-line:#4a4a4a;
 }
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --sidebar:#212121;
-  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#3a3a3a; --line-2:#333;
-  --blue:#3f9fe0; --blue-ink:#08243a; --sel:#123a5c; --hover:#2f2f2f;
+  --masthead:#111; --masthead-line:#333; --ground:#1a1a1a; --panel:#262626; --panel-hd:#333333; --sidebar:#1a1a1a; --title:#4db5ff;
+  --ink:#f2f2f2; --muted:#a6a6a6; --faint:#7d7d7d; --line:#404040; --line-2:#333;
+  --blue:#0078cf; --blue-ink:#ffffff; --sel:#595959; --hover:#2f2f2f;
   --good:#3ec27f; --good-bg:#15321f; --warn:#e0a53a; --warn-bg:#33280f; --crit:#e5695a; --crit-bg:#3a1c18;
   --btn-face:linear-gradient(#333,#2a2a2a); --btn-line:#4a4a4a;
 }}
@@ -44,9 +44,9 @@ button{font-family:inherit;cursor:pointer}
 .mh-logo svg{width:15px;height:15px}
 .mh-title{font-size:14px;font-weight:700}.mh-ver{font-size:11px;color:#9a9a9a;font-family:var(--mono)}
 .mh-sp{flex:1}
-.mh-btn{background:transparent;border:1px solid transparent;color:var(--masthead-ink);font-size:12px;height:26px;padding:0 9px;border-radius:3px;display:inline-flex;align-items:center;gap:6px}
-.mh-btn:hover{background:#ffffff1a;border-color:#ffffff2e}
-.mh-user{font-size:12px;color:#cfcfcf;padding-left:9px;border-left:1px solid var(--masthead-line);display:flex;align-items:center;gap:6px}
+.mh-btn{background:#ffffff12;border:1px solid #ffffff2b;color:var(--masthead-ink);font-size:12px;height:26px;padding:0 10px;border-radius:3px;display:inline-flex;align-items:center;gap:6px}
+.mh-btn:hover{background:#ffffff24;border-color:#ffffff40}
+.mh-user{font-size:12px;color:#e0e0e0;background:#ffffff12;border:1px solid #ffffff2b;border-radius:3px;height:26px;padding:0 10px;display:flex;align-items:center;gap:6px}
 .mh-user .u{width:20px;height:20px;border-radius:50%;background:#4a4a4a;display:grid;place-items:center;font-size:10px;color:#ddd}
 .previewnote{font-size:11.5px;color:var(--faint);padding:7px 14px;background:var(--ground);border-bottom:1px solid var(--line)}
 .previewnote b{color:var(--muted)}
@@ -69,15 +69,15 @@ button{font-family:inherit;cursor:pointer}
 .children[hidden]{display:none}
 
 .content{flex:1;overflow-y:auto;min-width:0;display:flex;flex-direction:column}
-.ctitle{display:flex;align-items:center;gap:8px;padding:9px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.ctitle{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--ground);border-bottom:1px solid var(--line)}
 .ctitle .ci{width:17px;height:17px;color:var(--blue)}
-.ctitle h1{margin:0;font-size:14.5px;font-weight:600}
+.ctitle h1{margin:0;font-size:15px;font-weight:600;color:var(--title)}
 .ctitle .path{font-size:12px;color:var(--muted);font-family:var(--mono)}
 /* content tabs (datastore) */
 .ctabs{display:flex;gap:0;background:var(--panel);border-bottom:1px solid var(--line);padding:0 10px;overflow-x:auto}
 .ctab{border:0;background:none;color:var(--muted);font-size:12.5px;padding:8px 13px;border-bottom:2px solid transparent;white-space:nowrap}
 .ctab:hover{color:var(--ink)}
-.ctab[aria-selected="true"]{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.ctab[aria-selected="true"]{background:var(--blue);color:var(--blue-ink);border-bottom-color:var(--blue);font-weight:600}
 .cbody{padding:14px 16px;flex:1}
 .panel[hidden]{display:none}.dtab[hidden]{display:none}
 
@@ -89,7 +89,8 @@ button{font-family:inherit;cursor:pointer}
 
 .grid{background:var(--panel);border:1px solid var(--line);overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px}
-th{text-align:left;font-size:11.5px;font-weight:600;color:var(--muted);padding:6px 11px;border-bottom:1px solid var(--line);background:var(--ground);white-space:nowrap}
+th{text-align:left;font-size:12px;font-weight:600;color:var(--ink);padding:6px 11px;border-bottom:1px solid var(--line);border-right:1px solid var(--line-2);background:var(--panel-hd);white-space:nowrap}
+th:last-child{border-right:0}
 td{padding:5px 11px;border-bottom:1px solid var(--line-2);white-space:nowrap}
 tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--hover)}
@@ -121,7 +122,7 @@ td.num{text-align:right}
 /* dashboard panels — stacked full-width like PBS */
 .dstack{display:flex;flex-direction:column;gap:12px}
 .box{background:var(--panel);border:1px solid var(--line);border-radius:3px}
-.box h3{margin:0;font-size:12.5px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--ground);display:flex;align-items:center;gap:7px}
+.box h3{margin:0;font-size:13px;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel-hd);color:var(--title);display:flex;align-items:center;gap:7px}
 .box h3 svg{width:14px;height:14px;color:var(--blue)}
 .box h3 .hbtn{margin-left:auto}
 /* PBS-style resource stat grid */
@@ -224,7 +225,7 @@ td.num{text-align:right}
       </div>
 
       <div class="tsep"></div>
-      <div class="tgrp">Datastore</div>
+      
       <button class="tnode dstore open" data-tree="ds" data-nav="datastore"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.6 3.6 3 8 3s8-1.4 8-3V6M4 12v6c0 1.6 3.6 3 8 3s8-1.4 8-3v-6"/></svg>lxc-offsite-cache</button>
       <div class="children" data-children="ds">
         <button class="tnode lvl2" data-nav="datastore" data-tab="summary">Summary</button>
