@@ -172,7 +172,7 @@ class RestoreModal(ModalScreen):
 
     def __init__(self, vmid, ts, name):
         super().__init__()
-        self.vmid, self.ts, self.name = vmid, ts, name
+        self.vmid, self.ts, self.gname = vmid, ts, name   # OBS: 'name' är reserverad på Widget
 
     def compose(self) -> ComposeResult:
         used = {int(g["vmid"]) for g in guests() if str(g.get("vmid", "")).isdigit()}
@@ -181,7 +181,7 @@ class RestoreModal(ModalScreen):
             nf += 1
         stores = rootdir_storages() or ["nvmepool"]
         with Vertical(id="formbox"):
-            yield Static(f"Återställ  {self.name} ({self.vmid})  ·  {self.ts}", classes="mtitle")
+            yield Static(f"Återställ  {self.gname} ({self.vmid})  ·  {self.ts}", classes="mtitle")
             with Horizontal(classes="row"):
                 yield Label("Nytt VMID")
                 yield Input(value=str(nf), id="newid")
