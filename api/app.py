@@ -342,7 +342,12 @@ def get_config(user: str = Depends(current_user)):
             break
     return {"cache_dir": cfg.get("CACHE_DIR"), "remote": cfg.get("RCLONE_REMOTE"),
             "remote_path": cfg.get("REMOTE_PATH"), "offsite_enabled": cfg.get("OFFSITE_ENABLED", "true"),
-            "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values())}
+            "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values()),
+            "keep_local": cfg.get("KEEP_LOCAL", "2"), "keep_daily": cfg.get("KEEP_OFFSITE_DAILY", "7"),
+            "keep_weekly": cfg.get("KEEP_OFFSITE_WEEKLY", "4"), "keep_monthly": cfg.get("KEEP_OFFSITE_MONTHLY", "6"),
+            "vzdump_mode": cfg.get("VZDUMP_MODE", "snapshot"), "compress": cfg.get("VZDUMP_COMPRESS", "zstd"),
+            "backup_order": cfg.get("BACKUP_ORDER", ""),
+            "snapshots_confirmed": cfg.get("STORAGE_BOX_SNAPSHOTS_CONFIRMED", "false")}
 
 _cpu_prev = None
 def cpu_percent():
@@ -375,10 +380,48 @@ def resources(user: str = Depends(current_user)):
                            capture_output=True, text=True, timeout=10)
         d = json.loads(p.stdout)
         ci = d.get("cpuinfo", {})
+        running = False
+        try:
+            hp = "/var/lib/lxc-offsite/global.holder"
+            if os.path.exists(hp):
+                parts = open(hp).read().strip().split("|")
+                if len(parts) >= 3 and parts[2].isdigit():
+                    try:
+                        os.kill(int(parts[2]), 0); running = True
+                    except ProcessLookupError:
+                        running = False
+                    except PermissionError:
+                        running = True
+        except Exception:  # noqa: BLE001
+            pass
+        last = None
+        try:
+            fs = glob.glob(JOBS + "/*.log")
+            if fs:
+                last = int(max(os.path.getmtime(f) for f in fs))
+        except Exception:  # noqa: BLE001
+            pass
+        cfg = read_config()
+        arr = _cached("list", 30, lambda: cli("list")).get("archives", [])
+        offsite_bytes = sum(a.get("size_bytes", 0) for a in arr)
+        snap_count = sum(1 for a in arr if str(a.get("archive", "")).endswith(".tar.zst"))
+        cache_dir = cfg.get("CACHE_DIR", "/var/cache/lxc-offsite")
+        cache_used = cache_total = None
+        try:
+            if os.path.exists(cache_dir):
+                stv = os.statvfs(cache_dir)
+                cache_total = stv.f_blocks * stv.f_frsize
+                cache_used = (stv.f_blocks - stv.f_bfree) * stv.f_frsize
+        except Exception:  # noqa: BLE001
+            pass
         return {"node": node, "cpu": cpu_percent(), "cpus": ci.get("cpus"),
                 "cpu_model": ci.get("model"), "memory": d.get("memory"), "swap": d.get("swap"),
                 "loadavg": d.get("loadavg"), "uptime": d.get("uptime"),
-                "rootfs": d.get("rootfs"), "kversion": d.get("kversion")}
+                "rootfs": d.get("rootfs"), "kversion": d.get("kversion"),
+                "backup_running": running, "last_job": last,
+                "offsite_bytes": offsite_bytes, "snapshots": snap_count,
+                "cache_dir": cache_dir, "cache_used": cache_used, "cache_total": cache_total,
+                "remote": cfg.get("RCLONE_REMOTE")}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

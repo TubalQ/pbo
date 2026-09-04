@@ -211,7 +211,7 @@ td.num{text-align:right}
     <button class="mh-btn" id="logoutBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>Logout</button>
     <div class="mh-user" id="mhUser"><span class="u">R</span>root@pam</div>
   </div>
-  <div class="previewnote"><b>Design preview.</b> Snapshot <span class="mono">ct/9003</span> is a real verified run; other rows are example data. VM rows show planned <b>VM support</b> (coming). Secrets masked.</div>
+  
 
   <div class="main">
     <nav class="sidebar">
@@ -254,7 +254,7 @@ td.num{text-align:right}
               </div>
               <div style="margin-top:8px;font-size:12px;color:var(--muted)" id="resCpuModel">—</div>
             </div></div>
-            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg>lxc-offsite — protected · last run 32 min ago</h3><div class="bd">
+            <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg><span id="statusHdrText">lxc-offsite — protected</span></h3><div class="bd">
               <div class="res">
                 <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/></svg><span class="rl">Guests protected</span><span class="rv st good" id="kGuests">12 / 12 OK</span><span class="rbar"><i class="g" style="width:100%"></i></span></div>
                 <div class="resitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg><span class="rl">Verified offsite</span><span class="rv">100 %</span><span class="rbar"><i style="width:100%"></i></span></div>
@@ -267,7 +267,7 @@ td.num{text-align:right}
             </div></div>
 
             <div class="box"><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg>Datastore Usage</h3><div class="bd" style="padding:0">
-              <div class="grid" style="border:0"><table><thead><tr><th>Name</th><th>Type</th><th class="num">Size</th><th class="num">Used</th><th class="num">Available</th><th>Usage</th></tr></thead><tbody>
+              <div class="grid" style="border:0"><table><thead><tr><th>Name</th><th>Type</th><th class="num">Size</th><th class="num">Used</th><th class="num">Available</th><th>Usage</th></tr></thead><tbody id="dsUsageBody">
                 <tr><td class="mono">lxc-offsite-cache</td><td>local cache</td><td class="num mono">50 GB</td><td class="num mono">481 MB</td><td class="num mono">49.5 GB</td><td style="min-width:120px"><span class="bar" style="display:inline-block;width:100px;vertical-align:middle"><i class="g" style="width:3%"></i></span> 1%</td></tr>
                 <tr><td class="mono">hetzner-crypt</td><td>offsite (sftp+crypt)</td><td class="num mono">—</td><td class="num mono">17.6 GiB</td><td class="num mono">—</td><td style="color:var(--muted)">14 snapshots</td></tr>
               </tbody></table></div>
@@ -306,22 +306,22 @@ td.num{text-align:right}
           </div>
           <!-- Summary -->
           <div class="dtab" data-tab="summary" hidden>
-            <div class="box" style="margin-bottom:12px"><h3>Getting started · 4 of 5</h3><div class="bd">
+            <div class="box" style="margin-bottom:12px"><h3 id="clHdr">Getting started</h3><div class="bd">
               <div class="cl done"><span class="mk">✓</span><div class="t"><b>Backup target configured</b><span>Local cache + offsite remote</span></div></div>
               <div class="cl done"><span class="mk">✓</span><div class="t"><b>Offsite reachable and encrypted</b><span>rclone crypt over sftp — cryptcheck verifies</span></div></div>
               <div class="cl done"><span class="mk">✓</span><div class="t"><b>First backup complete</b><span>12/12 guests, 17.6 GiB offsite</span></div></div>
               <div class="cl done"><span class="mk">✓</span><div class="t"><b>Restore tested</b><span>test-restore of 122 booted from offsite</span></div></div>
-              <div class="cl todo"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
+              <div class="cl todo" id="clSnaps"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
             </div></div>
             <div class="cols"><div class="box"><h3>Usage</h3><div class="bd">
-              <div class="usage"><div class="top"><span class="l">Offsite</span><span>17.6 GiB</span></div><div class="bar"><i style="width:18%"></i></div></div>
-              <div class="usage"><div class="top"><span class="l">Local cache</span><span>481 MB / 50 GB</span></div><div class="bar"><i class="g" style="width:3%"></i></div></div>
+              <div class="usage"><div class="top"><span class="l">Offsite</span><span id="sumOffsite">—</span></div><div class="bar"><i id="sumOffBar" style="width:0%"></i></div></div>
+              <div class="usage"><div class="top"><span class="l">Local cache</span><span id="sumCache">—</span></div><div class="bar"><i class="g" id="sumCacheBar" style="width:0%"></i></div></div>
             </div></div>
             <div class="box"><h3>Stats</h3><div class="bd">
-              <div class="kvr"><span class="lbl">Backup groups</span><span class="val">12 · 1 VM pending</span></div>
-              <div class="kvr"><span class="lbl">Snapshots offsite</span><span class="val">14</span></div>
-              <div class="kvr"><span class="lbl">Last backup</span><span class="val">today 11:34</span></div>
-              <div class="kvr"><span class="lbl">Last verify</span><span class="val st good">all passed</span></div>
+              <div class="kvr"><span class="lbl">Backup groups</span><span class="val" id="sumGroups">—</span></div>
+              <div class="kvr"><span class="lbl">Snapshots offsite</span><span class="val" id="sumSnaps">—</span></div>
+              <div class="kvr"><span class="lbl">Last backup</span><span class="val" id="sumLast">—</span></div>
+              <div class="kvr"><span class="lbl">Last verify</span><span class="val st good" id="sumVerify">—</span></div>
             </div></div></div>
           </div>
           <!-- Guests -->
@@ -333,8 +333,8 @@ td.num{text-align:right}
           <!-- Prune -->
           <div class="dtab" data-tab="prune" hidden>
             <div class="cols"><div class="box"><h3>Retention (GFS)</h3><div class="bd">
-              <div class="kvr"><span class="lbl">Local (cache)</span><span class="val">2 latest / guest</span></div>
-              <div class="kvr"><span class="lbl">Offsite daily / weekly / monthly</span><span class="val">7 / 4 / 6</span></div>
+              <div class="kvr"><span class="lbl">Local (cache)</span><span class="val" id="retLocal">—</span></div>
+              <div class="kvr"><span class="lbl">Offsite daily / weekly / monthly</span><span class="val" id="retGfs">—</span></div>
               <div class="kvr"><span class="lbl">Latest snapshot</span><span class="val">never pruned</span></div>
             </div></div><div class="box"><h3>Run</h3><div class="bd">
               <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">Prune removes snapshots outside the policy. Dry run shows exactly what would be removed.</p>
@@ -346,7 +346,7 @@ td.num{text-align:right}
             <div class="box"><h3>Verification</h3><div class="bd">
               <div class="kvr"><span class="lbl">Method (offsite)</span><span class="val">rclone cryptcheck</span></div>
               <div class="kvr"><span class="lbl">Method (local)</span><span class="val">sha256 + zstd -t</span></div>
-              <div class="kvr"><span class="lbl">Last result</span><span class="val st good">14/14 passed</span></div>
+              <div class="kvr"><span class="lbl">Last result</span><span class="val st good" id="verLast">—</span></div>
               <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">Verification runs automatically on every backup (cryptcheck offsite + sha256 local). Test-restore (which boots a snapshot on a throwaway VMID) is available from the CLI: <span class="mono">lxc-offsite test-restore &lt;vmid&gt;</span>.</p>
             </div></div>
           </div>
@@ -361,11 +361,11 @@ td.num{text-align:right}
               <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
             </div></div>
             <div class="box"><h3>Backup options</h3><div class="bd">
-              <div class="kvr"><span class="lbl">Backup mode</span><span class="val">snapshot (fuse → stop)</span></div>
-              <div class="kvr"><span class="lbl">Compression</span><span class="val">zstd</span></div>
-              <div class="kvr"><span class="lbl">Schedule</span><span class="val">daily 03:30 (timer)</span></div>
-              <div class="kvr"><span class="lbl">Order</span><span class="val mono" style="font-size:11px">110,115,116,112,111,113,122,121,100,108,114,120</span></div>
-              <div class="kvr"><span class="lbl">Offsite remote</span><span class="val">hetzner-crypt</span></div>
+              <div class="kvr"><span class="lbl">Backup mode</span><span class="val" id="optMode">—</span></div>
+              <div class="kvr"><span class="lbl">Compression</span><span class="val" id="optComp">—</span></div>
+              <div class="kvr"><span class="lbl">Schedule</span><span class="val" id="optSched">daily 03:30 (timer)</span></div>
+              <div class="kvr"><span class="lbl">Order</span><span class="val mono" style="font-size:11px" id="optOrder">—</span></div>
+              <div class="kvr"><span class="lbl">Offsite remote</span><span class="val" id="optRemote">—</span></div>
               <p style="margin:8px 0 0;font-size:12px;color:var(--muted)">Timer not enabled yet — <span class="mono">systemctl enable --now lxc-offsite.timer</span>. Configure the remote under Configuration → Remotes.</p>
             </div></div></div>
           </div>
@@ -557,6 +557,7 @@ function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();r
  const n=s.guests.filter(g=>g.protected).length;
  const kg=document.getElementById('kGuests');if(kg)kg.textContent=n+' / '+n+' OK';
  const ko=document.getElementById('kOffsite');if(ko)ko.textContent=human(s.offsite_bytes);
+ var sg=document.getElementById('sumGroups');if(sg)sg.textContent=n+' protected'+(s.guests.some(function(x){return x.type==='qemu';})?' · 1 VM pending':'');
  const tl=document.querySelector('.tasklist');
  if(tl&&Array.isArray(s.tasks)&&s.tasks.length){
    tl.innerHTML=s.tasks.map((t,i)=>`<button class="taskrow"${i===0?' aria-selected="true"':''} data-live="${t.name}"><span class="st good"><span class="dot"></span></span><span class="ti"><b>${t.name.split('-')[0]}</b><span>${t.name}</span></span></button>`).join('');
@@ -595,7 +596,13 @@ var cds=document.getElementById('cfCreateDs');if(cds){var dsrow=document.getElem
 fetch('/api/config').then(function(r){return r.ok?r.json():null;}).then(function(c){if(!c)return;var g=function(id){return document.getElementById(id);};
  if(c.cache_dir&&g('cfCachePath'))g('cfCachePath').value=c.cache_dir;
  if(c.sftp&&g('rmName')){if(c.sftp.name)g('rmName').value=c.sftp.name;if(c.sftp.host)g('rmHost').value=c.sftp.host;if(c.sftp.user)g('rmUser').value=c.sftp.user;if(c.sftp.port)g('rmPort').value=c.sftp.port;if(c.sftp.key_file)g('rmKey').value=c.sftp.key_file;}
- if(g('rmCrypt'))g('rmCrypt').checked=!!c.crypt;}).catch(function(){});
+ if(g('rmCrypt'))g('rmCrypt').checked=!!c.crypt;
+ var st=function(id,v){var e=g(id);if(e)e.textContent=v;};
+ st('optMode',(c.vzdump_mode||'snapshot')+' (fuse → stop)');st('optComp',c.compress||'zstd');st('optRemote',c.remote||'—');st('optOrder',c.backup_order||'—');
+ st('retLocal',(c.keep_local||'2')+' latest / guest');st('retGfs',(c.keep_daily||'7')+' / '+(c.keep_weekly||'4')+' / '+(c.keep_monthly||'6'));
+ var conf=(c.snapshots_confirmed==='true');var cs=g('clSnaps');if(cs){cs.className='cl '+(conf?'done':'todo');var mk=cs.querySelector('.mk');if(mk)mk.textContent=conf?'✓':'!';}
+ var ch=g('clHdr');if(ch)ch.textContent='Getting started · '+(conf?5:4)+' of 5';
+}).catch(function(){});
 var scb=document.getElementById('cfSaveCache');if(scb)scb.onclick=async function(){var b={path:document.getElementById('cfCachePath').value,create_dataset:document.getElementById('cfCreateDs').checked,pool:document.getElementById('cfPool').value,quota_gb:parseInt(document.getElementById('cfQuota').value,10)||0};try{var r=await fetch('/api/config/cache',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('cfMsg',r.ok,r.ok?('Saved · '+j.cache_dir+(j.created?' (dataset '+j.created+')':'')):('Error: '+(j.detail||'failed')));}catch(e){setMsg('cfMsg',false,'Error: '+e);}};
 var rsb=document.getElementById('rmSave');if(rsb)rsb.onclick=async function(){var b={name:document.getElementById('rmName').value,host:document.getElementById('rmHost').value,sftp_user:document.getElementById('rmUser').value,port:document.getElementById('rmPort').value,key_file:document.getElementById('rmKey').value,use_crypt:document.getElementById('rmCrypt').checked,password:document.getElementById('rmPw').value,password2:document.getElementById('rmPw2').value,remote_path:'lxc'};try{var r=await fetch('/api/config/remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',r.ok,r.ok?('Saved remote "'+j.remote+'" — click Test connection'):('Error: '+(j.detail||'failed')));}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
 var rtb=document.getElementById('rmTest');if(rtb)rtb.onclick=async function(){setMsg('rmMsg',true,'Testing…');try{var r=await fetch('/api/config/test',{method:'POST'});if(r.status===401){showLogin();return;}var j=await r.json();setMsg('rmMsg',j.ok,j.msg);}catch(e){setMsg('rmMsg',false,'Error: '+e);}};
@@ -612,7 +619,21 @@ function loadRes(){fetch('/api/resources').then(function(r){return r.ok?r.json()
  if(d.swap&&d.swap.total){_set('resSwap',Math.round(d.swap.used/d.swap.total*100)+'% ('+human(d.swap.used)+')');}else{_set('resSwap','N/A');}
  _set('resCpuModel','CPU: '+(d.cpu_model||'—')+(d.kversion?' · '+d.kversion:''));
  var t=document.getElementById('resTitle');if(t)t.textContent=(d.node||'host')+' — Uptime '+fmtUp(d.uptime);
+ // Dashboard: status header
+ var sh=document.getElementById('statusHdrText');
+ if(sh)sh.textContent=d.backup_running?'lxc-offsite — backing up now':(d.last_job?'lxc-offsite — protected · last run '+fmtAgo(d.last_job):'lxc-offsite — protected');
+ // Dashboard: Datastore Usage grid
+ var du=document.getElementById('dsUsageBody');
+ if(du){var cu=d.cache_used,ct=d.cache_total,pct=(cu!=null&&ct)?Math.round(cu/ct*100):0;
+  du.innerHTML='<tr><td class="mono">'+(d.cache_dir||'cache')+'</td><td>local cache</td><td class="num mono">'+(ct?human(ct):'—')+'</td><td class="num mono">'+(cu!=null?human(cu):'—')+'</td><td class="num mono">'+((ct&&cu!=null)?human(ct-cu):'—')+'</td><td style="min-width:120px"><span class="bar" style="display:inline-block;width:100px;vertical-align:middle"><i class="g" style="width:'+pct+'%"></i></span> '+pct+'%</td></tr>'+
+   '<tr><td class="mono">'+(d.remote||'offsite')+'</td><td>offsite (sftp+crypt)</td><td class="num mono">—</td><td class="num mono">'+human(d.offsite_bytes||0)+'</td><td class="num mono">—</td><td style="color:var(--muted)">'+(d.snapshots||0)+' snapshots</td></tr>';}
+ // Summary + Verify
+ _set('sumOffsite',human(d.offsite_bytes||0));_bar('sumOffBar',Math.min(100,(d.offsite_bytes||0)/107374182400*100));
+ if(d.cache_used!=null&&d.cache_total){_set('sumCache',human(d.cache_used)+' / '+human(d.cache_total));_bar('sumCacheBar',Math.round(d.cache_used/d.cache_total*100));}
+ _set('sumSnaps',d.snapshots||0);if(d.last_job)_set('sumLast',fmtAgo(d.last_job));_set('sumVerify','cryptcheck on backup');
+ _set('verLast',(d.snapshots||0)+' snapshots · cryptcheck');
 }).catch(function(){});}
+function fmtAgo(ep){var s=Math.max(0,Math.floor(Date.now()/1000-ep));if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';}
 window.curTask=null;
 function loadTaskLog(name){window.curTask=name;var lt=document.getElementById('logtitle');if(lt)lt.textContent=name;
  fetch('/api/tasks/'+encodeURIComponent(name)).then(function(r){return r.ok?r.text():'';}).then(function(txt){var lb=document.getElementById('logbody');if(!lb)return;var atBottom=lb.scrollTop+lb.clientHeight>=lb.scrollHeight-40;lb.innerHTML=txt.split('\n').filter(Boolean).map(function(l){return '<div class="l">'+l.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>';}).join('');if(atBottom)lb.scrollTop=lb.scrollHeight;});}
