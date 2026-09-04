@@ -373,7 +373,7 @@ td.num{text-align:right}
             <div class="box"><h3>Local cache</h3><div class="bd">
               <div class="field"><label>Cache path</label><input id="cfCachePath" value="/var/cache/lxc-offsite"></div>
               <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota</label>
-              <div class="row2"><div class="field"><label>Pool</label><input id="cfPool" value="nvmepool"></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
+              <div class="row2"><div class="field"><label>Pool</label><select id="cfPool"></select></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
               <button class="btn pri" id="cfSaveCache">Save cache</button>
               <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
             </div></div>
@@ -593,6 +593,11 @@ var rk=document.getElementById('revealKeyBtn');if(rk)rk.onclick=async function()
 var ck=document.getElementById('copyKeyBtn');if(ck)ck.onclick=async function(){try{var t=await fetchKey();await navigator.clipboard.writeText(t);toast('DR config copied to clipboard');}catch(e){if(e!=='auth')toast('Copy failed — '+e);}};
 /* --- Setup: cache + remote onboarding --- */
 function setMsg(id,ok,txt){var e=document.getElementById(id);if(e){e.style.color=ok?'var(--good)':'var(--crit)';e.textContent=txt;}}
+/* rullistor: riktiga pooler + restore-storages från hosten */
+fetch('/api/storages').then(function(r){return r.ok?r.json():null;}).then(function(s){if(!s)return;
+ var cp=document.getElementById('cfPool');if(cp&&s.pools&&s.pools.length)cp.innerHTML=s.pools.map(function(p){return '<option>'+p+'</option>';}).join('');
+ var rs=document.getElementById('rstore');if(rs&&s.storages&&s.storages.length)rs.innerHTML=s.storages.map(function(p){return '<option>'+p+'</option>';}).join('');
+}).catch(function(){});
 fetch('/api/config').then(function(r){return r.ok?r.json():null;}).then(function(c){if(!c)return;var g=function(id){return document.getElementById(id);};
  if(c.cache_dir&&g('cfCachePath'))g('cfCachePath').value=c.cache_dir;
  if(c.sftp&&g('rmName')){if(c.sftp.name)g('rmName').value=c.sftp.name;if(c.sftp.host)g('rmHost').value=c.sftp.host;if(c.sftp.user)g('rmUser').value=c.sftp.user;if(c.sftp.port)g('rmPort').value=c.sftp.port;if(c.sftp.key_file)g('rmKey').value=c.sftp.key_file;}

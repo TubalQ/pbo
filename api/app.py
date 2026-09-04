@@ -344,6 +344,25 @@ def get_config(user: str = Depends(current_user)):
             "remote_path": cfg.get("REMOTE_PATH"), "offsite_enabled": cfg.get("OFFSITE_ENABLED", "true"),
             "sftp": sftp, "crypt": any(s.get("type") == "crypt" for s in rc.values())}
 
+@app.get("/api/storages")
+def storages(user: str = Depends(current_user)):
+    pools = []
+    try:
+        p = subprocess.run(["zpool", "list", "-H", "-o", "name"], capture_output=True, text=True, timeout=10)
+        pools = [x for x in p.stdout.split() if x]
+    except Exception:  # noqa: BLE001
+        pass
+    stores = []
+    try:
+        p = subprocess.run(["pvesh", "get", "/storage", "--output-format", "json"],
+                           capture_output=True, text=True, timeout=15)
+        for s in json.loads(p.stdout):
+            if "rootdir" in (s.get("content") or ""):
+                stores.append(s["storage"])
+    except Exception:  # noqa: BLE001
+        pass
+    return {"pools": pools, "storages": sorted(set(stores))}
+
 @app.post("/api/config/cache")
 def cfg_cache(user: str = Depends(current_user), path: str = Body(...),
               create_dataset: bool = Body(default=False), pool: str = Body(default=""),
