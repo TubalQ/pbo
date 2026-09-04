@@ -203,7 +203,8 @@ td.num{text-align:right}
     <div class="mh-sp"></div>
     <button class="mh-btn" id="themeBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>Theme</button>
     <button class="mh-btn">Documentation</button>
-    <div class="mh-user"><span class="u">R</span>root@pam</div>
+    <button class="mh-btn" id="logoutBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>Logout</button>
+    <div class="mh-user" id="mhUser"><span class="u">R</span>root@pam</div>
   </div>
   <div class="previewnote"><b>Design preview.</b> Snapshot <span class="mono">ct/9003</span> is a real verified run; other rows are example data. VM rows show planned <b>VM support</b> (coming). Secrets masked.</div>
 
@@ -442,6 +443,20 @@ password2 = <span class="mask">•••••••••• (masked)</span></d
   <div class="mfoot"><button class="btn" data-close-e>Cancel</button><button class="btn pri">Copy to clipboard</button></div>
 </div></div>
 
+<!-- Login overlay -->
+<div class="scrim" id="loginscrim" hidden><div class="modal" style="width:min(370px,100%)" role="dialog" aria-modal="true">
+  <div class="mh2">lxc-offsite — Sign in</div>
+  <div class="mb">
+    <p>Sign in with your Proxmox account.</p>
+    <div class="field"><label>User name</label><input id="lu" value="root" autocomplete="username"></div>
+    <div class="field"><label>Realm</label><select id="lr"><option value="pam">Linux PAM (pam)</option><option value="pve">Proxmox VE (pve)</option></select></div>
+    <div class="field"><label>Password</label><input id="lp" type="password" autocomplete="current-password"></div>
+    <div id="lerr" style="color:var(--crit);font-size:12px;min-height:15px"></div>
+  </div>
+  <div class="mfoot"><button class="btn pri" id="lbtn" style="width:100%;justify-content:center">Login</button></div>
+</div></div>
+<div id="toast" style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:9px 16px;border-radius:4px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:60;opacity:0;transition:opacity .2s;pointer-events:none"></div>
+
 <script>
 const groups=[
  {g:'ct/9003',name:'lxco-e2e',cmt:'test run (real)',snaps:[{ts:'2026-09-04 11:34:04',size:'160 MB',where:'both',bind:true,prot:true}]},
@@ -477,7 +492,7 @@ document.getElementById('guestRows').innerHTML=groups.map(grp=>grp.vm
 ).join('');
 
 const rscrim=document.getElementById('rscrim');
-function openRestore(item){const p=item.s,grp=item.grp;
+function openRestore(item){window._rest=item;const p=item.s,grp=item.grp;
  document.getElementById('rsummary').innerHTML=`Source: <b>${grp.g}</b> ${grp.name} · ${p.ts} · ${p.size} · ${locPill(p.where)}`;
  const set=()=>document.getElementById('rcmd').textContent=`pct restore ${document.getElementById('rnew').value} ${grp.g.replace('/','-')}-${p.ts.replace(/[ :]/g,'_')}.tar.zst --storage ${document.getElementById('rstore').value} --unprivileged 1`;
  document.getElementById('rnew').oninput=set;document.getElementById('rstore').onchange=set;set();
@@ -526,10 +541,10 @@ const fmtTs=s=>{try{return String(s).replace('T',' ').slice(0,19);}catch(e){retu
 const guestRow=grp=>grp.vm
  ?`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">VM</span></td><td>—</td><td>—</td><td style="text-align:center"><span class="soon">coming</span></td></tr>`
  :`<tr><td><span class="grpname">${grp.name}</span> <span class="vmid">${grp.g}</span></td><td><span class="tag">LXC</span></td><td class="mono">2 · 7/4/6</td><td class="mono">${grp.snaps[0]?grp.snaps[0].ts.split(' ')[1]:'—'}</td><td style="text-align:center"><button class="tg" aria-pressed="true"></button></td></tr>`;
-fetch('/api/state').then(r=>r.json()).then(s=>{
- if(!Array.isArray(s.guests)||!s.guests.length)return;
+function hydrate(){fetch('/api/state').then(r=>{if(r.status===401){showLogin();return null;}return r.json();}).then(s=>{
+ if(!s||!Array.isArray(s.guests)||!s.guests.length)return;
  groups.length=0;
- s.guests.forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite'}));const vm=g.type==='qemu';
+ s.guests.forEach(g=>{const arr=(s.snapshots[g.vmid]||[]).map(a=>({ts:fmtTs(a.modtime),size:human(a.size_bytes),where:'offsite',tskey:(String(a.archive).match(/(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})/)||[])[1]||''}));const vm=g.type==='qemu';
    groups.push({g:(vm?'vm/':'ct/')+g.vmid,name:g.name||g.vmid,cmt:vm?'VM support coming':'',vm:vm,snaps:arr});});
  renderContent();
  const gr=document.getElementById('guestRows');if(gr)gr.innerHTML=groups.map(guestRow).join('');
@@ -545,7 +560,22 @@ fetch('/api/state').then(r=>r.json()).then(s=>{
    loadLog(s.tasks[0].name);
  }
  const v=document.querySelector('.mh-ver');if(v)v.textContent='0.1.0 · live';
-}).catch(()=>{});
+}).catch(()=>{});}
+
+/* --- auth + actions --- */
+function showLogin(){var e=document.getElementById('loginscrim');if(e)e.hidden=false;}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._t);t._t=setTimeout(function(){t.style.opacity=0;},2800);}
+async function act(method,url,body,msg){try{var r=await fetch(url,{method:method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});if(r.status===401){showLogin();return;}var j=await r.json().catch(function(){return{};});if(j&&j.result){toast('Prune dry run — cache '+((j.result.cache_deleted||[]).length)+', offsite '+((j.result.offsite_deleted||[]).length));}else{toast(msg||'Done');}setTimeout(hydrate,2000);return j;}catch(e){toast('Error: '+e);}}
+function byText(t){return [].slice.call(document.querySelectorAll('button')).filter(function(b){return b.textContent.replace(/\s+/g,' ').trim()===t;});}
+byText('Back up now').forEach(function(b){b.onclick=function(){act('POST','/api/run-schedule',null,'Backup of all guests started — see Tasks');};});
+byText('Dry run prune').forEach(function(b){b.onclick=function(){act('POST','/api/prune',{dry_run:true});};});
+byText('Run prune').forEach(function(b){b.onclick=function(){if(confirm('Run prune now? This deletes snapshots outside the policy.'))act('POST','/api/prune',{dry_run:false},'Prune started');};});
+var rpri=document.querySelector('#rscrim .btn.pri');if(rpri)rpri.onclick=function(){var it=window._rest;if(!it)return;var tgt=document.getElementById('rnew').value;act('POST','/api/restore',{vmid:it.grp.g.split('/')[1],ts:it.s.tskey||'',target:tgt,storage:document.getElementById('rstore').value},'Restore started → new VMID '+tgt);document.getElementById('rscrim').hidden=true;};
+var lb=document.getElementById('logoutBtn');if(lb)lb.onclick=async function(){await fetch('/api/logout',{method:'POST'});showLogin();};
+async function doLogin(){var u=document.getElementById('lu').value+'@'+document.getElementById('lr').value;var p=document.getElementById('lp').value;var err=document.getElementById('lerr');err.textContent='';var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});if(r.ok){document.getElementById('loginscrim').hidden=true;var j=await r.json().catch(function(){return{};});var mu=document.getElementById('mhUser');if(mu&&j.user)mu.innerHTML='<span class="u">'+j.user[0].toUpperCase()+'</span>'+j.user;hydrate();}else{err.textContent='Login failed — check user, realm and password.';}}
+var lbtn=document.getElementById('lbtn');if(lbtn){lbtn.onclick=doLogin;document.getElementById('lp').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});}
+/* init */
+fetch('/api/me').then(function(r){if(r.ok){r.json().then(function(j){var mu=document.getElementById('mhUser');if(mu&&j.user)mu.innerHTML='<span class="u">'+j.user[0].toUpperCase()+'</span>'+j.user;});hydrate();}else{showLogin();}}).catch(showLogin);
 </script>
 </body>
 </html>

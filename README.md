@@ -28,7 +28,7 @@ Under uppbyggnad, steg för steg enligt `docs/IMPLEMENTATION-PROMPT.md`.
 | 10 | PVE dir-storage för cachen | ✅ |
 | 11 | FastAPI (tunt skal runt CLI:t) | ✅ live på hosten |
 | 12 | PBS-lik frontend (live via /api/state) | ✅ |
-| 13 | Auth (Proxmox ticket) + audit | ⏳ nästa |
+| 13 | Auth (Proxmox ticket) + audit + skriv-endpoints | ✅ |
 | 14 | install.sh + RUNBOOK.md | ✅ |
 
 ## Snabbstart (isolerad dev)
