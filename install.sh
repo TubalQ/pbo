@@ -74,19 +74,16 @@ cat <<EOF
 
 Klart. lxc-offsite installerat.
 
-Nästa steg (manuellt):
-  1. Redigera  $CFGDIR/config        (BACKUP_ORDER, retention, remote)
-  2. Lägg din  $CFGDIR/rclone.conf   (rclone crypt-nyckel, chmod 600)
-  3. Cache-dataset (ZFS, exempel):
-       zfs create -o mountpoint=/var/cache/lxc-offsite -o quota=50G <pool>/lxc-offsite-cache
-       pvesm add dir lxc-offsite-cache --path /var/cache/lxc-offsite --content backup --is_mountpoint 1
-  4. Testa:    lxc-offsite --dry-run backup <vmid>   och   lxc-offsite test-restore <vmid>
-  5. Enabla schemat när du är redo:
-       systemctl enable --now lxc-offsite.timer
-       systemctl list-timers lxc-offsite.timer
-  6. Web-konsol (PBS-lik):
-       systemctl enable --now lxc-offsite-api.service
-       → http://<host>:8008   (v1: läs-endpoints, ingen auth än — håll på LAN/bakom traefik)
+Nästa steg:
+  1. Starta gränssnittet:   lxc-offsite tui        (Textual; whiptail-fallback: tui --simple)
+       → Setup-fliken gör restic-onboarding (repo/sftp/lösen/init) åt dig.
+  2. Eller CLI:   lxc-offsite --dry-run backup <vmid>   ·   lxc-offsite test-restore <vmid>
+  3. Enabla schemat när du är redo:
+       systemctl enable --now lxc-offsite.timer   &&   systemctl list-timers lxc-offsite.timer
+
+Motor: default ENGINE=tar (rclone crypt). För restic-spåret: sätt ENGINE=restic i
+config (eller via TUI Setup) + kör 'lxc-offsite init'. Se docs/adr/0001.
+Web-konsolen (api/web) är fryst som referens — TUI:n är primärt gränssnitt.
 
 Avinstallera: ta bort $LIBDIR, $BIN, units i $UNITDIR. Config/creds i $CFGDIR lämnas.
 EOF
