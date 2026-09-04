@@ -371,9 +371,9 @@ td.num{text-align:right}
           </div></div>
           <div class="cols" style="margin-top:12px">
             <div class="box"><h3>Local cache</h3><div class="bd">
-              <div class="field"><label>Cache path</label><input id="cfCachePath" value="/var/cache/lxc-offsite"></div>
-              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota</label>
-              <div class="row2"><div class="field"><label>Pool</label><select id="cfPool"></select></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
+              <div class="field"><label>Cache path (any mounted disk — ext4 / md / ZFS)</label><input id="cfCachePath" value="/var/cache/lxc-offsite" list="cacheMounts" autocomplete="off"><datalist id="cacheMounts"></datalist></div>
+              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota (optional — ZFS pools only)</label>
+              <div class="row2" id="cfDsRow" hidden><div class="field"><label>ZFS pool</label><select id="cfPool"></select></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
               <button class="btn pri" id="cfSaveCache">Save cache</button>
               <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
             </div></div>
@@ -597,7 +597,9 @@ function setMsg(id,ok,txt){var e=document.getElementById(id);if(e){e.style.color
 fetch('/api/storages').then(function(r){return r.ok?r.json():null;}).then(function(s){if(!s)return;
  var cp=document.getElementById('cfPool');if(cp&&s.pools&&s.pools.length)cp.innerHTML=s.pools.map(function(p){return '<option>'+p+'</option>';}).join('');
  var rs=document.getElementById('rstore');if(rs&&s.storages&&s.storages.length)rs.innerHTML=s.storages.map(function(p){return '<option>'+p+'</option>';}).join('');
+ var dl=document.getElementById('cacheMounts');if(dl&&s.mounts)dl.innerHTML=s.mounts.map(function(m){return '<option value="'+m.path.replace(/\/+$/,'')+'/lxc-offsite">'+m.fstype+(m.avail_gb!=null?' · '+m.avail_gb+' GB free':'')+'</option>';}).join('');
 }).catch(function(){});
+var cds=document.getElementById('cfCreateDs');if(cds){var dsrow=document.getElementById('cfDsRow');cds.onchange=function(){if(dsrow)dsrow.hidden=!cds.checked;};}
 fetch('/api/config').then(function(r){return r.ok?r.json():null;}).then(function(c){if(!c)return;var g=function(id){return document.getElementById(id);};
  if(c.cache_dir&&g('cfCachePath'))g('cfCachePath').value=c.cache_dir;
  if(c.sftp&&g('rmName')){if(c.sftp.name)g('rmName').value=c.sftp.name;if(c.sftp.host)g('rmHost').value=c.sftp.host;if(c.sftp.user)g('rmUser').value=c.sftp.user;if(c.sftp.port)g('rmPort').value=c.sftp.port;if(c.sftp.key_file)g('rmKey').value=c.sftp.key_file;}

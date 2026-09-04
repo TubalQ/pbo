@@ -361,7 +361,30 @@ def storages(user: str = Depends(current_user)):
                 stores.append(s["storage"])
     except Exception:  # noqa: BLE001
         pass
-    return {"pools": pools, "storages": sorted(set(stores))}
+    # Monterade riktiga filsystem (ext4/xfs/zfs/md…) → cachen kan ligga på vilken som helst.
+    mounts = []
+    try:
+        p = subprocess.run(["findmnt", "-rnbo", "TARGET,FSTYPE,AVAIL,SOURCE", "--real"],
+                           capture_output=True, text=True, timeout=10)
+        for line in p.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            target, fstype, avail = parts[0], parts[1], parts[2]
+            source = " ".join(parts[3:])
+            if target.startswith(("/proc", "/sys", "/dev", "/run", "/boot")):
+                continue
+            if fstype in ("overlay", "squashfs", "iso9660") or fstype.startswith("fuse."):
+                continue
+            # hoppa container-/VM-diskar (rootfs-subvols, vm-disks) — inte cache-mål
+            if "subvol-" in source or "subvol-" in target or "vm-" in source:
+                continue
+            mounts.append({"path": target, "fstype": fstype,
+                           "avail_gb": (int(avail) // (1024 ** 3)) if avail.isdigit() else None,
+                           "source": " ".join(parts[3:])})
+    except Exception:  # noqa: BLE001
+        pass
+    return {"pools": pools, "storages": sorted(set(stores)), "mounts": mounts}
 
 @app.post("/api/config/cache")
 def cfg_cache(user: str = Depends(current_user), path: str = Body(...),
