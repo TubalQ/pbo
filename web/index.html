@@ -219,9 +219,8 @@ td.num{text-align:right}
 
       <button class="tnode" data-tree="cfg"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 .1-3l1.8-1.4-2-3.4-2 .9a7 7 0 0 0-2.6-1.5L14.4 3h-4l-.3 2.6a7 7 0 0 0-2.6 1.5l-2-.9-2 3.4L5.3 12a7 7 0 0 0 0 3l-1.8 1.4 2 3.4 2-.9a7 7 0 0 0 2.6 1.5l.3 2.6h4l.3-2.6a7 7 0 0 0 2.6-1.5l2 .9 2-3.4Z"/></svg>Configuration</button>
       <div class="children" data-children="cfg" hidden>
-        <button class="tnode lvl2" data-nav="cfgtarget">Backup Target</button>
-        <button class="tnode lvl2" data-nav="schedule">Schedule &amp; Retention</button>
-        <button class="tnode lvl2" data-nav="access">Access &amp; Key</button>
+        <button class="tnode lvl2" data-nav="remotes">Remotes</button>
+        <button class="tnode lvl2" data-nav="access">Access Control</button>
       </div>
 
       <div class="tsep"></div>
@@ -295,6 +294,13 @@ td.num{text-align:right}
           </div>
           <!-- Summary -->
           <div class="dtab" data-tab="summary" hidden>
+            <div class="box" style="margin-bottom:12px"><h3>Getting started · 4 of 5</h3><div class="bd">
+              <div class="cl done"><span class="mk">✓</span><div class="t"><b>Backup target configured</b><span>Local cache + offsite remote</span></div></div>
+              <div class="cl done"><span class="mk">✓</span><div class="t"><b>Offsite reachable and encrypted</b><span>rclone crypt over sftp — cryptcheck verifies</span></div></div>
+              <div class="cl done"><span class="mk">✓</span><div class="t"><b>First backup complete</b><span>12/12 guests, 17.6 GiB offsite</span></div></div>
+              <div class="cl done"><span class="mk">✓</span><div class="t"><b>Restore tested</b><span>test-restore of 122 booted from offsite</span></div></div>
+              <div class="cl todo"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
+            </div></div>
             <div class="cols"><div class="box"><h3>Usage</h3><div class="bd">
               <div class="usage"><div class="top"><span class="l">Offsite</span><span>17.6 GiB</span></div><div class="bar"><i style="width:18%"></i></div></div>
               <div class="usage"><div class="top"><span class="l">Local cache</span><span>481 MB / 50 GB</span></div><div class="bar"><i class="g" style="width:3%"></i></div></div>
@@ -334,13 +340,21 @@ td.num{text-align:right}
           </div>
           <!-- Options -->
           <div class="dtab" data-tab="options" hidden>
-            <div class="grid"><table><tbody>
-              <tr><td style="color:var(--muted)">Local cache path</td><td class="mono">/var/cache/lxc-offsite</td></tr>
-              <tr><td style="color:var(--muted)">Cache quota</td><td class="mono">50 GB</td></tr>
-              <tr><td style="color:var(--muted)">Offsite remote</td><td class="mono">hetzner-crypt (sftp + crypt)</td></tr>
-              <tr><td style="color:var(--muted)">Backup mode</td><td class="mono">snapshot (fuse → stop)</td></tr>
-              <tr><td style="color:var(--muted)">Compression</td><td class="mono">zstd</td></tr>
-            </tbody></table></div>
+            <div class="cols"><div class="box"><h3>Local cache</h3><div class="bd">
+              <div class="field"><label>Cache path (any mounted disk — ext4 / md / ZFS)</label><input id="cfCachePath" value="/var/cache/lxc-offsite" list="cacheMounts" autocomplete="off"><datalist id="cacheMounts"></datalist></div>
+              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota (optional — ZFS pools only)</label>
+              <div class="row2" id="cfDsRow" hidden><div class="field"><label>ZFS pool</label><select id="cfPool"></select></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
+              <button class="btn pri" id="cfSaveCache">Save cache</button>
+              <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
+            </div></div>
+            <div class="box"><h3>Backup options</h3><div class="bd">
+              <div class="kvr"><span class="lbl">Backup mode</span><span class="val">snapshot (fuse → stop)</span></div>
+              <div class="kvr"><span class="lbl">Compression</span><span class="val">zstd</span></div>
+              <div class="kvr"><span class="lbl">Schedule</span><span class="val">daily 03:30 (timer)</span></div>
+              <div class="kvr"><span class="lbl">Order</span><span class="val mono" style="font-size:11px">110,115,116,112,111,113,122,121,100,108,114,120</span></div>
+              <div class="kvr"><span class="lbl">Offsite remote</span><span class="val">hetzner-crypt</span></div>
+              <p style="margin:8px 0 0;font-size:12px;color:var(--muted)">Timer not enabled yet — <span class="mono">systemctl enable --now lxc-offsite.timer</span>. Configure the remote under Configuration → Remotes.</p>
+            </div></div></div>
           </div>
         </div>
       </div>
@@ -358,62 +372,26 @@ td.num{text-align:right}
         </div></div>
       </div>
 
-      <!-- CONFIG: Target -->
-      <div class="panel" id="cfgtarget" hidden>
-        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/></svg><h1>Backup Target</h1></div>
+      <!-- CONFIG: Remotes -->
+      <div class="panel" id="remotes" hidden>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.6 3.6 3 8 3s8-1.4 8-3V6"/></svg><h1>Remotes</h1></div>
         <div class="cbody">
-          <div class="box"><h3>Getting started · 4 of 5</h3><div class="bd">
-            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Backup target configured</b><span>Local cache (ZFS, 50 GB) + offsite remote</span></div></div>
-            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Offsite reachable and encrypted</b><span>rclone crypt over sftp — cryptcheck verifies</span></div></div>
-            <div class="cl done"><span class="mk">✓</span><div class="t"><b>First backup complete</b><span>12/12 guests, 17.6 GiB offsite</span></div></div>
-            <div class="cl done"><span class="mk">✓</span><div class="t"><b>Restore tested</b><span>test-restore of 122 booted from offsite</span></div></div>
-            <div class="cl todo"><span class="mk">!</span><div class="t"><b>Storage Box snapshots confirmed</b><span>The only ransomware protection — enable in the Hetzner console</span></div></div>
+          <div class="box" style="max-width:560px"><h3>Offsite remote (rclone / SFTP)</h3><div class="bd">
+            <div class="field"><label>Remote name</label><input id="rmName" value="hetzner"></div>
+            <div class="row2"><div class="field"><label>SFTP host</label><input id="rmHost" placeholder="uXXXXX.your-storagebox.de"></div><div class="field"><label>Port</label><input id="rmPort" value="23"></div></div>
+            <div class="field"><label>SFTP user</label><input id="rmUser" placeholder="uXXXXX-subN"></div>
+            <div class="field"><label>SSH key file (on host)</label><input id="rmKey" value="/root/.ssh/id_rsa"></div>
+            <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="rmCrypt" checked> Encrypt (filenames + content)</label>
+            <div class="row2"><div class="field"><label>Crypt password</label><input id="rmPw" type="password" autocomplete="new-password"></div><div class="field"><label>Salt (password2)</label><input id="rmPw2" type="password" autocomplete="new-password"></div></div>
+            <div style="display:flex;gap:7px"><button class="btn pri" id="rmSave">Save remote</button><button class="btn" id="rmTest">Test connection</button></div>
+            <div id="rmMsg" style="font-size:12px;margin-top:8px"></div>
           </div></div>
-          <div class="cols" style="margin-top:12px">
-            <div class="box"><h3>Local cache</h3><div class="bd">
-              <div class="field"><label>Cache path (any mounted disk — ext4 / md / ZFS)</label><input id="cfCachePath" value="/var/cache/lxc-offsite" list="cacheMounts" autocomplete="off"><datalist id="cacheMounts"></datalist></div>
-              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="cfCreateDs"> Create ZFS dataset with quota (optional — ZFS pools only)</label>
-              <div class="row2" id="cfDsRow" hidden><div class="field"><label>ZFS pool</label><select id="cfPool"></select></div><div class="field"><label>Quota (GB)</label><input id="cfQuota" value="50"></div></div>
-              <button class="btn pri" id="cfSaveCache">Save cache</button>
-              <div id="cfMsg" style="font-size:12px;margin-top:8px"></div>
-            </div></div>
-            <div class="box"><h3>Offsite remote (rclone / SFTP)</h3><div class="bd">
-              <div class="field"><label>Remote name</label><input id="rmName" value="hetzner"></div>
-              <div class="row2"><div class="field"><label>SFTP host</label><input id="rmHost" placeholder="uXXXXX.your-storagebox.de"></div><div class="field"><label>Port</label><input id="rmPort" value="23"></div></div>
-              <div class="field"><label>SFTP user</label><input id="rmUser" placeholder="uXXXXX-subN"></div>
-              <div class="field"><label>SSH key file (on host)</label><input id="rmKey" value="/root/.ssh/id_rsa"></div>
-              <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="rmCrypt" checked> Encrypt (filenames + content)</label>
-              <div class="row2"><div class="field"><label>Crypt password</label><input id="rmPw" type="password" autocomplete="new-password"></div><div class="field"><label>Salt (password2)</label><input id="rmPw2" type="password" autocomplete="new-password"></div></div>
-              <div style="display:flex;gap:7px"><button class="btn pri" id="rmSave">Save remote</button><button class="btn" id="rmTest">Test connection</button></div>
-              <div id="rmMsg" style="font-size:12px;margin-top:8px"></div>
-            </div></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- CONFIG: Schedule -->
-      <div class="panel" id="schedule" hidden>
-        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg><h1>Schedule &amp; Retention</h1></div>
-        <div class="cbody"><div class="cols">
-          <div class="box"><h3>Schedule</h3><div class="bd">
-            <div class="field"><label>Frequency</label><input value="Daily (systemd timer)" readonly></div>
-            <div class="row2"><div class="field"><label>Time</label><input value="03:30" readonly></div><div class="field"><label>Next run</label><input value="tomorrow 03:30" readonly></div></div>
-            <div class="field"><label>Order (critical first)</label><input class="mono" value="110,115,116,112,111,113,122,121,100,108,114,120" readonly></div>
-            <p style="margin:0;font-size:12px;color:var(--muted)">One guest at a time · ~23 min for the fleet.</p>
-          </div></div>
-          <div class="box"><h3>Retention</h3><div class="bd">
-            <div class="kvr"><span class="lbl">Local</span><span class="val">2 / guest</span></div>
-            <div class="kvr"><span class="lbl">Daily / Weekly / Monthly</span><span class="val">7 / 4 / 6</span></div>
-            <div class="kvr"><span class="lbl">Latest</span><span class="val">never pruned</span></div>
-          </div></div>
-        </div>
-        <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/></svg><div><b>Timer not enabled yet.</b><p>Enable with <span class="mono">systemctl enable --now lxc-offsite.timer</span> — or a button here. Failures alert via ntfy.</p></div></div>
         </div>
       </div>
 
       <!-- CONFIG: Access -->
       <div class="panel" id="access" hidden>
-        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><h1>Access &amp; Key</h1></div>
+        <div class="ctitle"><svg class="ci" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><h1>Access Control</h1></div>
         <div class="cbody"><div class="box"><h3>Access</h3><div class="bd">
           <div class="kvr"><span class="lbl">Sign-in</span><span class="val">Proxmox ticket auth</span></div>
           <div class="kvr"><span class="lbl">Destructive actions</span><span class="val">audit-logged</span></div>
@@ -519,7 +497,7 @@ escrim.addEventListener('click',e=>{if(e.target===escrim)escrim.hidden=true;});
 addEventListener('keydown',e=>{if(e.key==='Escape'){rscrim.hidden=true;escrim.hidden=true;}});
 
 // nav (tree)
-function showPanel(id,tab){['dashboard','datastore','tasks','cfgtarget','schedule','access'].forEach(p=>document.getElementById(p).hidden=(p!==id));
+function showPanel(id,tab){['dashboard','datastore','tasks','remotes','access'].forEach(p=>document.getElementById(p).hidden=(p!==id));
  document.querySelector('.content').scrollTop=0; if(id==='datastore'&&tab)selectTab(tab);}
 document.querySelectorAll('.tnode[data-nav]').forEach(n=>n.addEventListener('click',()=>{
  document.querySelectorAll('.tnode').forEach(x=>x.setAttribute('aria-current','false'));
