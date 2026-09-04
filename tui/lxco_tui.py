@@ -205,9 +205,35 @@ class RestoreModal(ModalScreen):
         self.dismiss(None)
 
 
+class ConfirmScreen(ModalScreen):
+    """Ja/nej-bekräftelse för tunga/destruktiva åtgärder."""
+    BINDINGS = [("escape", "no", "Avbryt"), ("y", "yes", "Ja"), ("n", "no", "Nej")]
+
+    def __init__(self, question, danger=False):
+        super().__init__()
+        self.question, self.danger = question, danger
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="formbox"):
+            yield Static(self.question, classes="mtitle")
+            with Horizontal(classes="toolbar"):
+                yield Button("Ja", id="yes", classes="-danger" if self.danger else "-primary")
+                yield Button("Avbryt", id="no")
+
+    def on_button_pressed(self, e):
+        self.dismiss(e.button.id == "yes")
+
+    def action_yes(self):
+        self.dismiss(True)
+
+    def action_no(self):
+        self.dismiss(False)
+
+
 # ----------------------------- huvudapp -----------------------------
 class LxcoTUI(App):
     CSS_PATH = "lxco.tcss"
+    ENABLE_COMMAND_PALETTE = False   # behövs ej; håller foten ren + undviker krock
     TITLE = "lxc-offsite"
     SUB_TITLE = "offsite-backup för Proxmox"
     BINDINGS = [
@@ -295,26 +321,62 @@ class LxcoTUI(App):
             t = self.query_one(f"#{tid}", DataTable)
             t.cursor_type = "row"
             t.add_columns(*cols)
-        self.refresh_data()
+        self.reload()
         self.set_interval(6, self.refresh_metrics)   # live host/repo-metrics
 
+    # -------------------- flöde: bekräftelse + rad-aktivering --------------------
+    def confirm(self, question, on_yes, danger=False):
+        def cb(ok):
+            if ok:
+                on_yes()
+        self.push_screen(ConfirmScreen(question, danger), cb)
+
+    def on_data_table_row_selected(self, event):
+        """Enter/klick på en rad = agera direkt (mindre klick)."""
+        tid = event.data_table.id
+        try:
+            row = event.data_table.get_row(event.row_key)
+        except Exception:  # noqa: BLE001
+            return
+        if tid == "gtable" and str(row[0]).isdigit():
+            v = str(row[0])
+            self.confirm(f"Backa upp gäst {v} ({row[1]}) nu?",
+                         lambda: self.run_cli(f"Backup {v}", [BIN, "backup", v]))
+        elif tid == "rtable":
+            self._restore_selected()
+        elif tid == "dstable":
+            self.query_one(TabbedContent).active = "tab-restore"
+
     def action_refresh(self):
+        self.reload()
+
+    def reload(self):
+        """Sätt laddindikator och starta den icke-blockerande dataladdningen."""
+        try:
+            self.query_one("#statusbar", Static).update("  [b yellow]⟳ laddar…[/]")
+        except Exception:  # noqa: BLE001
+            pass
         self.refresh_data()
 
+    @work(thread=True, exclusive=True, group="refresh")
     def refresh_data(self):
+        """Hämtar data i en tråd (pvesh/CLI kan vara långsamt) → renderar på main."""
         cfg = read_cfg()
+        listing = cli_json("list", timeout=90)
+        arcs = listing.get("archives", []) if isinstance(listing, dict) else []
+        gs = guests()
+        prot = protected_set()
+        self.call_from_thread(self._render_data, cfg, arcs, gs, prot)
+
+    def _render_data(self, cfg, arcs, gs, prot):
         eng = cfg.get("ENGINE", "tar")
         mode = "cache+offsite" if cfg.get("LOCAL_REPO", "true") == "true" else "offsite-only"
-        listing = cli_json("list")
-        arcs = listing.get("archives", []) if isinstance(listing, dict) else []
         total = sum(int(a.get("size_bytes", 0)) for a in arcs)
         vmids = sorted({a.get("vmid") for a in arcs})
-        gs = guests()
         name_by = {str(g.get("vmid")): g.get("name", "") for g in gs}
         snaps_by = {}
         for a in arcs:
-            snaps_by.setdefault(a.get("vmid"), 0)
-            snaps_by[a.get("vmid")] += 1
+            snaps_by[a.get("vmid")] = snaps_by.get(a.get("vmid"), 0) + 1
 
         # statusrad
         sb = self.query_one("#statusbar", Static)
@@ -347,7 +409,6 @@ class LxcoTUI(App):
         # gäst-tabell
         gt = self.query_one("#gtable", DataTable)
         gt.clear()
-        prot = protected_set()
         for g in gs:
             vid = str(g.get("vmid"))
             gt.add_row(vid, g.get("name", "-"), g.get("type", "-"), g.get("node", "-"),
@@ -415,9 +476,13 @@ class LxcoTUI(App):
 
     def _toggle_protect(self, vmid):
         order = [x for x in read_cfg().get("BACKUP_ORDER", "").replace(" ", "").split(",") if x]
-        order.remove(vmid) if vmid in order else order.append(vmid)
+        if vmid in order:
+            order.remove(vmid); msg = f"Gäst {vmid} skyddas inte längre."
+        else:
+            order.append(vmid); msg = f"Gäst {vmid} skyddad (ingår i backup)."
         self._write_cfg({"BACKUP_ORDER": ",".join(order)})
-        self.refresh_data()
+        self.notify(msg)
+        self.reload()
 
     def _setup_test(self):
         g = lambda i: self.query_one(f"#{i}").value  # noqa: E731
@@ -440,21 +505,36 @@ class LxcoTUI(App):
         except Exception:  # noqa: BLE001
             return None
 
+    def _need(self, table_id):
+        v = self._sel(table_id)
+        if not v or not v.isdigit():
+            self.notify("Välj en gäst i listan först.", severity="warning")
+            return None
+        return v
+
+    def _goto_dash(self):
+        try:
+            self.query_one(TabbedContent).active = "tab-dash"
+        except Exception:  # noqa: BLE001
+            pass
+
     def on_button_pressed(self, e):
         bid = e.button.id
         if bid == "bk-all":
             self.action_backup_all()
         elif bid == "bk-one":
-            v = self._sel("gtable")
-            if v and v.isdigit():
-                self.run_cli(f"Backup {v}", [BIN, "backup", v])
+            v = self._need("gtable")
+            if v:
+                self.confirm(f"Backa upp gäst {v} nu?",
+                             lambda: self.run_cli(f"Backup {v}", [BIN, "backup", v]))
         elif bid == "tr-one":
-            v = self._sel("gtable")
-            if v and v.isdigit():
-                self.run_cli(f"Test-restore {v}", [BIN, "test-restore", v])
+            v = self._need("gtable")
+            if v:
+                self.confirm(f"Test-restore gäst {v}? Hämtar → bootar → destroy (engångskopia).",
+                             lambda: self.run_cli(f"Test-restore {v}", [BIN, "test-restore", v]))
         elif bid == "pr-one":
-            v = self._sel("gtable")
-            if v and v.isdigit():
+            v = self._need("gtable")
+            if v:
                 self._toggle_protect(v)
         elif bid == "setup-test":
             self._setup_test()
@@ -463,18 +543,25 @@ class LxcoTUI(App):
         elif bid == "mt-prune-dry":
             self.run_cli("Prune (torrkörning)", [BIN, "--dry-run", "prune"])
         elif bid == "mt-prune":
-            self.run_cli("Prune (skarpt)", [BIN, "prune"])
+            self.confirm("Kör SKARP prune — raderar snapshots utanför policyn. Fortsätt?",
+                         lambda: self.run_cli("Prune (skarpt)", [BIN, "prune"]), danger=True)
         elif bid == "mt-verify":
             self.run_cli("Verifiera", [BIN, "verify"])
-        elif bid in ("mt-export",):
+        elif bid == "mt-export":
             self.action_export()
         elif bid == "setup-gen":
             self.query_one("#f-pass", Input).value = secrets.token_urlsafe(18)
+            self.notify("Nytt repo-lösen genererat.")
         elif bid == "setup-save":
             self._setup_save()
 
     def action_backup_all(self):
-        self.run_cli("Backup — alla skyddade", [BIN, "run-schedule"])
+        if not read_cfg().get("BACKUP_ORDER", "").strip():
+            self.notify("Inga skyddade gäster (BACKUP_ORDER tom) — skydda några i Gäster.",
+                        severity="warning")
+            return
+        self.confirm("Backa upp ALLA skyddade gäster nu (sekventiellt)?",
+                     lambda: self.run_cli("Backup — alla skyddade", [BIN, "run-schedule"]))
 
     def _restore_selected(self):
         rt = self.query_one("#rtable", DataTable)
@@ -511,6 +598,9 @@ class LxcoTUI(App):
             self._write_cfg({"ENGINE": "tar"})
             self.run_cli("Setup", ["sh", "-c", "echo ENGINE=tar satt."])
             return
+        if not all(str(g(x)).strip() for x in ("f-host", "f-user", "f-repo")):
+            self.notify("Fyll i SFTP-host, user och repo-path först.", severity="warning")
+            return
         pw = (g("f-pass") or secrets.token_urlsafe(18)).strip()
         passfile = "/etc/lxc-offsite/restic-pass"
         try:
@@ -529,7 +619,8 @@ class LxcoTUI(App):
             "RESTIC_PASSWORD_FILE": passfile,
             "RESTIC_SFTP_COMMAND": sftp,
         })
-        self.run_cli("Setup — skapar repo (init)", [BIN, "init"])
+        self.notify("Config sparad. Skapar/verifierar repo…")
+        self.run_cli("Setup — skapar repo (init)", [BIN, "init"], on_close=self._goto_dash)
 
     def _write_cfg(self, updates):
         lines = []
@@ -554,9 +645,11 @@ class LxcoTUI(App):
             fh.write("\n".join(lines) + "\n")
         os.chmod(tmp, 0o600); os.replace(tmp, CFG_PATH)
 
-    def run_cli(self, title, argv):
+    def run_cli(self, title, argv, on_close=None):
         def after(_):
-            self.refresh_data()
+            self.reload()
+            if on_close:
+                on_close()
         self.push_screen(LogScreen(title, argv), after)
 
 
