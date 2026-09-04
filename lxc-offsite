@@ -39,6 +39,8 @@ source "${SELF_DIR}/lib/schedule.sh"
 source "${SELF_DIR}/lib/restic.sh"
 # shellcheck source=lib/tui.sh  (terminal-UI, `lxc-offsite tui`)
 source "${SELF_DIR}/lib/tui.sh"
+# shellcheck source=lib/menu.sh  (interaktivt prompt-CLI, `lxc-offsite menu`)
+source "${SELF_DIR}/lib/menu.sh"
 
 readonly VERSION="0.1.0-dev"
 
@@ -64,7 +66,8 @@ Globala flaggor:
   -V, --version       versionsnummer
 
 Kommandon:
-  tui                         interaktiv terminal-meny (whiptail) — setup/backup/restore/export
+  menu                        interaktivt prompt-CLI (rclone-stil) — gäster/backup/restore/status
+  tui                         (äldre) Textual-TUI — fryst till förmån för `menu`
   init                        (restic) skapa/verifiera repo(s)
   backup <vmid>               dump→verifiera→ladda upp→verifiera→prune (globalt lås)
   preflight <vmid>            kör enbart förkontrollerna (finns/utrymme/cache/rclone)
@@ -188,6 +191,7 @@ cmd_restore() {
 }
 
 cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) init:ade/klara"; else log_warn "init: bara meningsfullt med ENGINE=restic"; fi; }
+cmd_menu()         { menu_main; }
 cmd_tui() {
     case "${1:-}" in
         --selftest) _tui_selftest; return ;;
@@ -229,6 +233,7 @@ main() {
 
     case "$LXCO_COMMAND" in
         init)          cmd_init "$@" ;;
+        menu)          cmd_menu "$@" ;;
         tui)           cmd_tui "$@" ;;
         backup)        cmd_backup "$@" ;;
         preflight)     cmd_preflight "$@" ;;
