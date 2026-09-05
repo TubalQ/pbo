@@ -17,6 +17,12 @@ prompt (`pbo menu`).
 One rule shaped the whole thing: you should be able to debug it at three in the
 morning, even if you did not write it.
 
+> **Status: beta, under active construction.** pbo backs up and restores real
+> containers and VMs today, and there is a test suite to back that up, but
+> interfaces and defaults can still change between versions. Try it on something
+> you can afford to lose first, pin a commit if you depend on it, and please tell
+> us what breaks.
+
 ## Why restic
 
 - **One repository.** Everything lands in the same restic repo, whether you back
@@ -145,6 +151,14 @@ throwaway copy, boots it, and destroys it again.
 `etc/config.example` documents every setting. The only secret is the repo
 password, which lives in the file named by `RESTIC_PASSWORD_FILE` (mode 0600). The
 config file itself holds no secrets.
+
+## Contributing
+
+Pull requests are very welcome. Bug reports, fixes, better docs, and new ideas all
+help, especially while the tool is still in beta. It is plain bash with a small
+test suite under `tests/`, so it is easy to dig into. If you change behaviour, add
+or update a test to cover it. One house-style note: keep the writing plain and
+human, and no em-dashes.
 
 ## License
 
