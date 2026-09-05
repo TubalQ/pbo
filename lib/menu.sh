@@ -107,17 +107,46 @@ menu_backup() {
 }
 
 # --- 5. STATUS ---
+# Render one restic tier (cache|offsite): guests, snapshots, size, newest. Reads
+# via the PBO_REPO override so `list`/`usage` target that exact repo. On an
+# unreachable repo (e.g. Storage Box offline) it says so instead of failing.
+_menu_status_tier() {           # <label> <cache|offsite>
+    local label="$1" which="$2" ls
+    printf '  %s%s%s\n' "$C_B" "$label" "$C_0"
+    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list 2>/dev/null)"
+    if [[ -z "$ls" ]] || ! printf '%s' "$ls" | jq -e '.archives' >/dev/null 2>&1; then
+        printf '    %s(unreachable)%s\n\n' "$C_R" "$C_0"; return
+    fi
+    printf '%s' "$ls" | jq -r '
+        .archives as $a
+        | "    guests:    \($a|map(.vmid)|unique|length)\n    snapshots: \($a|length)"' 2>/dev/null
+    if [[ "${ENGINE:-tar}" == "restic" ]]; then
+        PBO_REPO="$which" "$PBO_BIN" --json usage 2>/dev/null | jq -r '
+            "    size:      \(.physical_bytes/1e9*10|floor/10) GB physical, \(.logical_bytes/1e9*10|floor/10) GB logical (dedup \(.compression_ratio)×)"' 2>/dev/null
+    fi
+    printf '%s' "$ls" | jq -r '
+        (.archives | map(.modtime) | max) as $m
+        | if $m then "    newest:    \($m | sub("\\..*";"") | sub("T";" "))" else empty end' 2>/dev/null
+    printf '\n'
+}
+
 menu_status() {
     _menu_header
     printf '%s Status%s\n\n' "$C_B" "$C_0"
-    printf '  Reading from the repo…\n'
-    "$PBO_BIN" --json list 2>/dev/null | jq -r '
-        .archives as $a | "  guests with snapshots: \($a|map(.vmid)|unique|length)\n  snapshots total:       \($a|length)\n  logical size:          \(($a|map(.size_bytes|tonumber)|add // 0)/1e9*10|floor/10) GB"' 2>/dev/null \
-        || echo "  (could not read list)"
-    if [[ "${ENGINE:-tar}" == "restic" ]]; then
-        "$PBO_BIN" --json usage 2>/dev/null | jq -r '"  physical offsite:      \(.physical_bytes/1e9*10|floor/10) GB (dedup \(.compression_ratio)×)"' 2>/dev/null
+    if [[ "${ENGINE:-tar}" != "restic" ]]; then
+        "$PBO_BIN" status 2>/dev/null | sed 's/^/  /' || echo "  (could not read status)"
+        echo; _pause; return
     fi
-    printf '\n  next scheduled run:\n'; systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
+    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+    if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
+        _menu_status_tier "Local  (cache: ${CACHE_DIR:-?})" cache
+    else
+        printf '  %sLocal%s\n    %s(offsite-only mode, no local cache repo)%s\n\n' "$C_B" "$C_0" "$C_D" "$C_0"
+    fi
+    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+        _menu_status_tier "Offsite (${RESTIC_OFFSITE_REPO})" offsite
+    fi
+    printf '  %snext scheduled run:%s\n' "$C_B" "$C_0"; systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
     echo; _pause
 }
 

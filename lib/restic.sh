@@ -36,7 +36,13 @@ _newest_dump() {               # <dir> <vmid> → path (empty if none)
 }
 
 # Primary READ repo (list/restore/prune): offsite if enabled, otherwise cache.
+# PBO_REPO=cache|offsite overrides the pick (used by `status` to query each tier
+# separately); it is an env var, not a config key, so it survives load_config.
 _restic_read_repo() {
+    case "${PBO_REPO:-}" in
+        cache)   printf '%s' "$RESTIC_CACHE_REPO";   return ;;
+        offsite) printf '%s' "$RESTIC_OFFSITE_REPO"; return ;;
+    esac
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         printf '%s' "$RESTIC_OFFSITE_REPO"
     else
