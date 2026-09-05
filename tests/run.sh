@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
-# tests/run.sh — unit tests for the skeleton (subcommands, config, two-level locking).
+# tests/run.sh: unit tests for the skeleton (subcommands, config, two-level locking).
 # Pure bash tests, no external dependencies. Runs nothing against real hardware.
 # Real vzdump/pct/restic are mocked in later stages.
 
@@ -23,7 +23,7 @@ check_exit() {
     [[ "$got" == "$want" ]] && ok "$desc (exit $got)" || bad "$desc (got $got, wanted $want)"
 }
 
-printf 'pbo — skeleton tests\n'
+printf 'pbo: skeleton tests\n'
 rm -rf "$PWD/run"
 
 # --- the tool must create LOCK_DIR itself (regression: ensure_dirs) ---

@@ -1,21 +1,21 @@
 # shellcheck shell=bash
-# lib/lock.sh — two-level locking. Must be right from the start (PLAN.md §6).
+# lib/lock.sh: two-level locking. Must be right from the start.
 #
 #   Global lock  (/var/lock/pbo.global)
 #     Lets EXACTLY one backup/push operation through at a time, regardless of vmid.
 #     Reason: two concurrent vzdump --mode snapshot against raidz2 punish running
-#     containers. fetch/restore NEVER take this lock — they don't write from the pool.
+#     containers. fetch/restore NEVER take this lock, they don't write from the pool.
 #
 #   Per-vmid lock (/var/lock/pbo.vmid-<vmid>.lock)
 #     Prevents the same container from being queued/run twice.
 #
 #   Modes:
-#     queue  — scheduled run: waits for the global lock up to
+#     queue , scheduled run: waits for the global lock up to
 #              GLOBAL_LOCK_TIMEOUT, then exits with an error (a queue you SEE).
-#     now    — manual run: exits immediately with a message about WHAT is blocking
+#     now   , manual run: exits immediately with a message about WHAT is blocking
 #              and FOR HOW LONG (a silently queued manual run = confusion).
 #
-# Locks are released automatically when the process dies (fd closes) — the holder
+# Locks are released automatically when the process dies (fd closes), the holder
 # file is cleaned up in cleanup_locks via the EXIT trap.
 
 GLOBAL_LOCK_HELD=0
@@ -55,7 +55,7 @@ acquire_global_lock() {
     else
         if ! flock -n "$GLOBAL_LOCK_FD"; then
             local h; h="$(read_global_holder)"
-            die "$EX_TEMPFAIL" "global lock busy — an operation is already running (${h:-unknown}). Exiting (manual mode does not queue)."
+            die "$EX_TEMPFAIL" "global lock busy, an operation is already running (${h:-unknown}). Exiting (manual mode does not queue)."
         fi
     fi
 
@@ -64,14 +64,14 @@ acquire_global_lock() {
     log_info "global lock acquired (op=$op vmid=${vmid:-none})."
 }
 
-# acquire_vmid_lock <vmid>  — non-blocking; double-queuing is always an error.
+# acquire_vmid_lock <vmid> , non-blocking; double-queuing is always an error.
 acquire_vmid_lock() {
     local vmid="$1"
     local f="${LOCK_DIR}/pbo.vmid-${vmid}.lock"
     exec {VMID_LOCK_FD}>"$f" \
         || die "$EX_CANTCREAT" "cannot open vmid lock file: $f"
     if ! flock -n "$VMID_LOCK_FD"; then
-        die "$EX_TEMPFAIL" "vmid $vmid is already queued or running — skipping."
+        die "$EX_TEMPFAIL" "vmid $vmid is already queued or running, skipping."
     fi
     VMID_LOCK_HELD=1
     log_info "vmid lock acquired for $vmid."

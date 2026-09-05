@@ -1,7 +1,7 @@
-# etc/config.dev — ISOLATED dev config. Points all paths to the repo-local
+# etc/config.dev, ISOLATED dev config. Points all paths to the repo-local
 # ./run/ so nothing touches the host system. Used via:
 #   PBO_CONFIG=$PWD/etc/config.dev ./pbo <command>
-# Real operations (vzdump/pct/restic) are NEVER run from here — only the
+# Real operations (vzdump/pct/restic) are NEVER run from here, only the
 # skeleton, lock and config logic is tested. Integration tests run against
 # temporary throwaway LXCs.
 

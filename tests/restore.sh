@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
-# tests/restore.sh — step 6 tests (restore), mocked pct + rclone.
+# tests/restore.sh: step 6 tests (restore), mocked pct + rclone.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 BIN=./pbo

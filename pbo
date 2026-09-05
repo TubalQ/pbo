@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pbo — offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
+# pbo: offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
 # Storage Box), using restic as the backup engine.
 # Copyright (C) 2026  ai-pvet440
 # License: AGPL-3.0-or-later (see LICENSE).
@@ -16,9 +16,9 @@ set -Eeuo pipefail
 SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
-# shellcheck source=lib/guest.sh  (LXC-vs-QEMU type awareness — used across the engine)
+# shellcheck source=lib/guest.sh  (LXC-vs-QEMU type awareness, used across the engine)
 source "${SELF_DIR}/lib/guest.sh"
-# shellcheck source=lib/cluster.sh  (node/cluster awareness — back up local guests)
+# shellcheck source=lib/cluster.sh  (node/cluster awareness, back up local guests)
 source "${SELF_DIR}/lib/cluster.sh"
 # shellcheck source=lib/notify.sh  (replaces the notify stubs in common.sh)
 source "${SELF_DIR}/lib/notify.sh"
@@ -42,7 +42,7 @@ source "${SELF_DIR}/lib/testrestore.sh"
 source "${SELF_DIR}/lib/schedule.sh"
 # shellcheck source=lib/restic.sh  (the restic engine, enabled with ENGINE=restic)
 source "${SELF_DIR}/lib/restic.sh"
-# shellcheck source=lib/tui.sh  (legacy Textual TUI, `pbo tui` — frozen)
+# shellcheck source=lib/tui.sh  (legacy Textual TUI, `pbo tui`, frozen)
 source "${SELF_DIR}/lib/tui.sh"
 # shellcheck source=lib/menu.sh  (interactive prompt-CLI, `pbo menu`)
 source "${SELF_DIR}/lib/menu.sh"
@@ -51,7 +51,7 @@ readonly VERSION="0.1.0-dev"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
-# must be available from the start — machine-readable output uses --json only.
+# must be available from the start, machine-readable output uses --json only.
 # ---------------------------------------------------------------------------
 JSON_OUTPUT=0
 DRY_RUN=0
@@ -59,7 +59,7 @@ PBO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-pbo — offsite backup of Proxmox LXCs to any SFTP target, via restic.
+pbo: offsite backup of Proxmox LXCs to any SFTP target, via restic.
 
 Usage:
   pbo [global flags] <command> [arguments]
@@ -72,8 +72,8 @@ Global flags:
 
 Commands:
   setup                       interactive setup wizard (engine/cache/sftp/password/mode/ntfy → init)
-  menu                        interactive prompt-CLI (rclone style) — guests/backup/restore/status
-  tui                         (legacy) whiptail TUI — frozen in favor of `menu`
+  menu                        interactive prompt-CLI (rclone style), guests/backup/restore/status
+  tui                         (legacy) whiptail TUI, frozen in favor of `menu`
   init                        (restic) create/verify repo(s)
   backup <vmid>               dump→verify→upload→verify→prune (global lock)
   preflight <vmid>            run the preflight checks only (exists/space/cache/repo)
@@ -88,7 +88,7 @@ Commands:
   prune                       clean cache and offsite per policy
   test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
 
-Exit codes: 0 ok · 64 usage error · 75 lock busy/queue · 78 config error.
+Exit codes: 0 ok, 64 usage error, 75 lock busy or queued, 78 config error.
 EOF
 }
 
@@ -116,8 +116,8 @@ parse_global_flags() {
 # ---------------------------------------------------------------------------
 
 # backup [--queue] <vmid>
-# Manual (default): "now" mode — exits immediately if the global lock is busy.
-# --queue: scheduled mode — queues on the global lock (used internally by run-schedule).
+# Manual (default): "now" mode, exits immediately if the global lock is busy.
+# --queue: scheduled mode, queues on the global lock (used internally by run-schedule).
 cmd_backup() {
     local mode="now"
     while [[ "${1:-}" == -* ]]; do
@@ -137,14 +137,14 @@ cmd_backup() {
     run_preflight "$vmid" || rc=$?
     if (( rc != 0 )); then
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
-        die "$EX_UNAVAILABLE" "preflight failed for vmid $vmid — backup aborted."
+        die "$EX_UNAVAILABLE" "preflight failed for vmid $vmid, backup aborted."
     fi
 
     # dump + local verify + meta + upload.
     do_backup "$vmid"
 }
 
-# preflight <vmid> — run the preflight checks only (also an internal part of backup).
+# preflight <vmid>, run the preflight checks only (also an internal part of backup).
 cmd_preflight() {
     require_vmid "${1:-}"
     local vmid="$1" rc=0
@@ -153,7 +153,7 @@ cmd_preflight() {
     return "$rc"
 }
 
-# run-schedule — scheduled backup of everything in BACKUP_ORDER. --stream (one-by-one,
+# run-schedule, scheduled backup of everything in BACKUP_ORDER. --stream (one-by-one,
 # default) or --batch (dump all→upload), always to the SAME repo.
 cmd_run_schedule() {
     case "${1:-}" in
@@ -165,10 +165,10 @@ cmd_run_schedule() {
     do_run_schedule
 }
 
-# status — read operation, no lock.
+# status, read operation, no lock.
 cmd_status() { do_status; }
 
-# fetch/restore — NEVER take the global lock (they do not write from the pool).
+# fetch/restore, NEVER take the global lock (they do not write from the pool).
 cmd_fetch() {
     require_vmid "${1:-}"
     [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch requires <vmid> <timestamp>"

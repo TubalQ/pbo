@@ -1,11 +1,11 @@
 # shellcheck shell=bash
-# lib/backup.sh — step 3: dump → verify locally → meta.json (no upload).
-#   + step 3b: run_stream — real-time logging of subprocess output with
+# lib/backup.sh: step 3: dump → verify locally → meta.json (no upload).
+#   + step 3b: run_stream, real-time logging of subprocess output with
 #     progressive timestamps to both the log file and the job file. Without this
 #     a long-running vzdump/rclone looks like a hung process, and someone kills
 #     it mid-run.
 #
-# Order (PLAN.md §2): dump → sha256 → structure check → meta. Upload and
+# Order: dump → sha256 → structure check → meta. Upload and
 # offsite verification come in step 4. ALWAYS verify locally before upload.
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ _tar_list_zstd() {
 }
 
 # ---------------------------------------------------------------------------
-# meta.json — pointer metadata next to the archive (never secrets).
+# meta.json, pointer metadata next to the archive (never secrets).
 # ---------------------------------------------------------------------------
 write_meta() {
     local metafile="$1" vmid="$2" host="$3" base="$4" size="$5" sha="$6" mode="${7:-$VZDUMP_MODE}"
@@ -106,7 +106,7 @@ META
 }
 
 # ---------------------------------------------------------------------------
-# do_backup <vmid> — the main flow for step 3. Assumes preflight has already
+# do_backup <vmid>, the main flow for step 3. Assumes preflight has already
 # been run by cmd_backup (the PF_* globals are set).
 # ---------------------------------------------------------------------------
 do_backup() {
@@ -156,10 +156,10 @@ do_backup() {
     # --- 3. structure check: zstd -t + tar -tf ---
     log_info "backup $vmid: structure check (zstd -t + tar -tf)…"
     if ! zstd -t "$archive" >/dev/null 2>&1; then
-        die "$EX_DATAERR" "zstd integrity check FAILED for $base — archive NOT usable"
+        die "$EX_DATAERR" "zstd integrity check FAILED for $base, archive NOT usable"
     fi
     if ! _tar_list_zstd "$archive"; then
-        die "$EX_DATAERR" "tar structure check FAILED for $base — archive NOT usable"
+        die "$EX_DATAERR" "tar structure check FAILED for $base, archive NOT usable"
     fi
     log_info "backup $vmid: structure check OK"
 
@@ -187,7 +187,7 @@ do_backup() {
             "sha256" "$sha" "verified" "offsite" \
             "offsite" "$(_remote_dest "$vmid")/$base" "job" "$jobfile"
     else
-        log_info "backup $vmid: DONE — uploaded and verified offsite."
+        log_info "backup $vmid: DONE, uploaded and verified offsite."
     fi
     return "$EX_OK"
 }

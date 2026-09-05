@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/menu.sh — interactive prompt-CLI (rclone config style). Pure bash, zero
+# lib/menu.sh: interactive prompt-CLI (rclone config style). Pure bash, zero
 # dependencies, no alternate-screen → behaves identically over SSH/serial/tmux.
 # Launched with `pbo menu`. This is the primary interactive interface.
 #
@@ -18,7 +18,7 @@ fi
 
 _ask()   { local p="$1" d="${2:-}" a; read -r -p "$p${d:+ [$d]}: " a; printf '%s' "${a:-$d}"; }
 _askpw() { local p="$1" a; read -r -s -p "$p: " a; echo >&2; printf '%s' "$a"; }
-_pause() { read -r -p "${C_D}— press Enter to continue —${C_0} " _; }
+_pause() { read -r -p "${C_D}press Enter to continue${C_0} " _; }
 _yn()    { local a; a="$(_ask "$1 (y/n)" "${2:-n}")"; [[ "$a" == [yYjJ]* ]]; }
 
 # Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
@@ -43,7 +43,7 @@ _is_protected() { local v="$1"; [[ ",${BACKUP_ORDER//[[:space:]]/}," == *",$v,"*
 # --- header ---
 _menu_header() {
     clear 2>/dev/null || printf '\n'
-    local repo="${RESTIC_OFFSITE_REPO:-${RCLONE_REMOTE:-—}}"
+    local repo="${RESTIC_OFFSITE_REPO:-${RCLONE_REMOTE:-none}}"
     local prot; prot="$(tr ',' ' ' <<<"${BACKUP_ORDER:-}" | wc -w)"
     printf '%s┌─ %sPBO%s%s · Proxmox Backup Offsite ────────────────────────┐%s\n' "$C_C" "$C_B" "$C_0$C_C" "" "$C_0"
     printf '%s│%s engine %s%s%s · offsite %s%s%s · protected %s%s%s\n' \
@@ -55,14 +55,14 @@ _menu_header() {
 menu_guests() {
     while true; do
         _menu_header
-        printf '%s Guests — scan the cluster, add/remove from backup%s\n\n' "$C_B" "$C_0"
+        printf '%s Guests, scan the cluster, add/remove from backup%s\n\n' "$C_B" "$C_0"
         printf '  %-6s %-22s %-5s %-9s %-9s %s\n' "VMID" "NAME" "TYPE" "NODE" "STATUS" "PROTECTED"
         printf '  %s\n' "-------------------------------------------------------------------"
         local v n t nd st mark new
         while IFS=$'\t' read -r v n t nd st; do
             [[ -n "$v" ]] || continue
             if _is_protected "$v"; then mark="${C_G}✓ yes${C_0}"; new=""
-            else mark="${C_D}—${C_0}"; new=" ${C_Y}(new)${C_0}"; fi
+            else mark="${C_D}-${C_0}"; new=" ${C_Y}(new)${C_0}"; fi
             printf '  %-6s %-22s %-5s %-9s %-9s %b%b\n' "$v" "${n:0:22}" "$t" "$nd" "$st" "$mark" "$new"
         done < <(_menu_guests_tsv)
         printf '\n  %s[a]%s protect (add)   %s[d]%s remove from backup   %s[r]%s refresh   %s[0]%s back\n' \
@@ -92,8 +92,8 @@ menu_guests() {
 menu_backup() {
     _menu_header
     printf '%s Back up%s\n\n' "$C_B" "$C_0"
-    printf '  %s[1]%s All protected — one by one (stream)\n' "$C_B" "$C_0"
-    printf '  %s[2]%s All protected — all at once (batch)\n' "$C_B" "$C_0"
+    printf '  %s[1]%s All protected, one by one (stream)\n' "$C_B" "$C_0"
+    printf '  %s[2]%s All protected, all at once (batch)\n' "$C_B" "$C_0"
     printf '  %s[3]%s Pick a single guest\n' "$C_B" "$C_0"
     printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
     local c; c="$(_ask "Choice")"
@@ -124,7 +124,7 @@ menu_status() {
 # --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
 run_setup_wizard() {
     set +e +u
-    printf '\n%s=== PBO · Proxmox Backup Offsite — setup ===%s\n\n' "$C_B" "$C_0"
+    printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n\n' "$C_B" "$C_0"
     local eng; eng="$(_ask "Backup engine (restic/tar)" "restic")"
     if [[ "$eng" != "restic" ]]; then _cfg_set ENGINE tar; echo "  ENGINE=tar set."; return 0; fi
     _cfg_set ENGINE restic
@@ -151,11 +151,11 @@ run_setup_wizard() {
     printf '\n'
     local host user port key repo
     host="$(_ask "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)")"
-    [[ -n "$host" ]] || { echo "  ${C_R}SFTP host required — aborting setup.${C_0}"; return 1; }
+    [[ -n "$host" ]] || { echo "  ${C_R}SFTP host required, aborting setup.${C_0}"; return 1; }
     user="$(_ask "SFTP user" "$host")"
     port="$(_ask "SFTP port" "23")"
     key="$(_ask "SSH key file on this host" "/root/.ssh/id_rsa")"
-    repo="$(_ask "Repo path (RELATIVE — Storage Box is chrooted)" "lxc-restic")"
+    repo="$(_ask "Repo path (RELATIVE, Storage Box is chrooted)" "lxc-restic")"
     _cfg_set OFFSITE_ENABLED true
     _cfg_set RESTIC_OFFSITE_REPO "sftp:hetzner:${repo}"
     _cfg_set RESTIC_SFTP_COMMAND "\"ssh ${user}@${host} -p ${port} -i ${key} -o StrictHostKeyChecking=accept-new -s sftp\""
@@ -165,7 +165,7 @@ run_setup_wizard() {
     local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
     if _yn "Generate a random repo password (recommended)?" y; then
         pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
-        echo "  Generated — export it afterwards (menu → Export DR key) and store it safely."
+        echo "  Generated, export it afterwards (menu → Export DR key) and store it safely."
     else
         pass="$(_askpw "Enter restic repo password (this IS your DR key)")"
     fi
@@ -211,7 +211,7 @@ menu_export() {
     _yn "This shows SECRETS (repo password on screen). Continue?" n || return
     local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}" pw
     pw="$(cat "$pf" 2>/dev/null || echo '<no password file>')"
-    echo; echo "  ${C_Y}# PBO DR key — SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
+    echo; echo "  ${C_Y}# PBO DR key, SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
     echo "  ENGINE=restic"
     echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<not set>}"
     echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<not set>}"
@@ -220,7 +220,7 @@ menu_export() {
     if _yn "Save a copy to /root/pbo-dr-key.txt (0600)?" n; then
         ( umask 077; { echo "ENGINE=restic"; echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
           echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
-        echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0} — move it offline and delete it from this host."
+        echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0}, move it offline and delete it from this host."
     fi
     _pause
 }
@@ -275,7 +275,7 @@ menu_maint() {
 
 # --- main menu ---
 menu_main() {
-    # Interactive: read/grep/[[ ]] often return !=0 — the dispatcher's set -Eeuo
+    # Interactive: read/grep/[[ ]] often return !=0, the dispatcher's set -Eeuo
     # must NOT kill the menu. (CLI actions run as their own subprocesses with their own set -e.)
     set +e +u
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for the menu (apt install jq)\n' >&2; return 1; }

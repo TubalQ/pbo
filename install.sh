@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — installs pbo on a Proxmox host. Idempotent.
+# install.sh: installs pbo on a Proxmox host. Idempotent.
 # NEVER enables the timer automatically (it prints how to do that yourself).
 #
 # Run as root on the host:  ./install.sh
@@ -22,7 +22,7 @@ if [[ "${#need[@]}" -gt 0 ]]; then
 else
     echo "    all present (restic jq zstd flock curl)"
 fi
-for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing — required on a real Proxmox host."; done
+for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing, required on a real Proxmox host."; done
 
 echo "==> Program files → $LIBDIR"
 install -d -m 0755 "$LIBDIR" "$LIBDIR/lib"
@@ -41,10 +41,10 @@ install -d -m 0700 "$CFGDIR"
 echo "==> Config"
 install -m 0644 "$SRC/etc/config.example" "$CFGDIR/config.example"
 if [[ -f "$CFGDIR/config" ]]; then
-    echo "    $CFGDIR/config already exists — left untouched."
+    echo "    $CFGDIR/config already exists, left untouched."
 else
     install -m 0600 "$SRC/etc/config.example" "$CFGDIR/config"
-    echo "    created $CFGDIR/config (0600) — run '$BIN setup' or EDIT it."
+    echo "    created $CFGDIR/config (0600), run '$BIN setup' or EDIT it."
 fi
 
 echo "==> systemd units (installed, NOT enabled)"
@@ -54,10 +54,10 @@ systemctl daemon-reload
 
 cat <<EOF
 
-Installed: pbo (PBO · Proxmox Backup Offsite).
+Installed: pbo (Proxmox Backup Offsite).
 
-  Setup:      $BIN setup     — guided config (engine/cache/sftp/password/mode/ntfy → init)
-  Interface:  $BIN menu      — interactive prompt-CLI (guests/backup/restore/status)
+  Setup:      $BIN setup      run the guided config wizard
+  Interface:  $BIN menu       open the interactive prompt
   Schedule:   systemctl enable --now pbo.timer   (runs 05:00 nightly)
 
 Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
@@ -70,8 +70,8 @@ if [[ -t 0 && -t 1 ]]; then
     if [[ -z "$_ans" || "$_ans" == [Yy]* ]]; then
         "$BIN" setup
     else
-        echo "OK — run '$BIN setup' whenever you're ready."
+        echo "OK, run '$BIN setup' whenever you're ready."
     fi
 else
-    echo "Non-interactive install — run '$BIN setup' to configure."
+    echo "Non-interactive install, run '$BIN setup' to configure."
 fi

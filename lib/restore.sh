@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# lib/restore.sh — step 6: restore (fetch + pct restore to a NEW vmid).
+# lib/restore.sh: step 6: restore (fetch + pct restore to a NEW vmid).
 #
-# Hard rules (PLAN.md §2/§6):
+# Hard rules:
 #   - ALWAYS restore to a new vmid; never overwrite an existing one.
 #   - Read `unprivileged` from the archive's config and set the flag EXPLICITLY (don't
 #     rely on the pct default).
@@ -17,7 +17,7 @@ do_restore() {
 
     # Target vmid must not exist.
     if pct config "$newid" >/dev/null 2>&1; then
-        die "$EX_USAGE" "target vmid $newid already exists — restore refuses to overwrite"
+        die "$EX_USAGE" "target vmid $newid already exists, restore refuses to overwrite"
     fi
 
     if [[ "${DRY_RUN:-0}" == 1 ]]; then

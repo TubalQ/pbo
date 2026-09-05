@@ -1,4 +1,4 @@
-# /etc/pbo/config — KEY=VALUE. chmod 600, root:root.
+# /etc/pbo/config, KEY=VALUE. chmod 600, root:root.
 # This is the example/template, copied by install.sh. It contains no secrets
 # (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
 #
@@ -19,7 +19,7 @@ VZDUMP_ZSTD_THREADS=4
 # --- schedule ---
 # auto  = back up every guest ON THIS NODE (LXC + VM), auto-discovering new ones.
 # or a comma-separated vmid list for explicit order/exclusions (critical first).
-# In a cluster: put the SAME config on every node — each node backs up only its
+# In a cluster: put the SAME config on every node, each node backs up only its
 # own guests into the shared repo (an explicit list is filtered to local guests).
 BACKUP_ORDER=auto
 GLOBAL_LOCK_TIMEOUT=7200   # seconds a scheduled run waits in the queue
@@ -39,7 +39,7 @@ NTFY_TOPIC=
 NTFY_ON_SUCCESS=false      # alert on failure, silent on success
 
 # --- dashboard ---
-MAX_AGE_WARN=172800        # 48h — flagged if the latest push is older
+MAX_AGE_WARN=172800        # 48h, flagged if the latest push is older
 
 # --- engine (ADR 0001): restic ---
 # restic is the backup engine. Onboarding: run `pbo setup` (or set the
@@ -50,7 +50,7 @@ BACKUP_MODE=stream                             # stream (one-by-one) | batch (du
 #RESTIC_BIN=restic                             # override in tests (scratch binary)
 #LOCAL_REPO=true                               # true=cached (local repo+copy), false=offsite-only
 #RESTIC_CACHE_REPO=/var/cache/pbo/repo # local restic repo (cache tier)
-#RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp — RELATIVE path (Storage Box is chrooted!)
+#RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp, RELATIVE path (Storage Box is chrooted!)
 # The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name):
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)

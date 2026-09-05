@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
-# tests/list.sh — step 5 tests (list + fetch), mocked rclone.
+# tests/list.sh: step 5 tests (list + fetch), mocked rclone.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 BIN=./pbo

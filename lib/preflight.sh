@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/preflight.sh — checks BEFORE a backup (PLAN.md §6, IMPL step 2).
+# lib/preflight.sh: checks BEFORE a backup.
 #
 # Hard requirements (FAIL → abort backup):
 #   - the container exists      (pct config <vmid>)
@@ -23,9 +23,9 @@ _pf_add_check() { # <name> <ok:true|false> <detail>
     local sep=""; [[ -n "$PF_CHECKS_JSON" ]] && sep=","
     PF_CHECKS_JSON+="${sep}{\"name\":\"$(json_escape "$1")\",\"ok\":$2,\"detail\":\"$(json_escape "$3")\"}"
     if [[ "$2" == "true" ]]; then
-        log_info "preflight: $1 — OK ($3)"
+        log_info "preflight: $1, OK ($3)"
     else
-        log_error "preflight: $1 — ERROR ($3)"
+        log_error "preflight: $1, ERROR ($3)"
         PF_FAIL=1
     fi
 }
@@ -75,19 +75,19 @@ _pf_parse_volumes() {
         volspec="${val%%,*}"        # "storeid:volume" OR "/host/path"
         opts=",${val#*,},"          # wrap with commas for safe matching
 
-        # qemu: cdrom / cloudinit drives are not data disks — skip them.
+        # qemu: cdrom / cloudinit drives are not data disks, skip them.
         if [[ "$gtype" == qemu && ( "$opts" == *",media=cdrom,"* || "$volspec" == *cloudinit* ) ]]; then
             continue
         fi
         # Bind mount (lxc only): volspec is an absolute path, not storeid:volume.
         if [[ "$gtype" != qemu && "$volspec" == /* ]]; then
-            PF_WARNINGS+=("$key is a bind mount ($volspec) — NEVER backed up by vzdump")
+            PF_WARNINGS+=("$key is a bind mount ($volspec), NEVER backed up by vzdump")
             PF_BINDMOUNTS+=("$key=$volspec")
             continue
         fi
         # Excluded volume (backup=0).
         if [[ "$opts" == *",backup=0,"* ]]; then
-            PF_WARNINGS+=("$key ($volspec) has backup=0 — excluded from the archive")
+            PF_WARNINGS+=("$key ($volspec) has backup=0, excluded from the archive")
             PF_EXCLUDED+=("$key")
             continue
         fi
@@ -109,7 +109,7 @@ _pf_parse_volumes() {
 _pf_check_zfs_space() {
     if [[ "${#PF_BACKUP_VOLUMES[@]}" -eq 0 ]]; then
         if [[ "${#PF_NONZFS_VOLUMES[@]}" -gt 0 ]]; then
-            _pf_add_check "zfs_space" "true" "no ZFS volumes (${PF_NONZFS_VOLUMES[*]}) — ZFS space check skipped"
+            _pf_add_check "zfs_space" "true" "no ZFS volumes (${PF_NONZFS_VOLUMES[*]}), ZFS space check skipped"
         else
             _pf_add_check "zfs_space" "false" "no backable volumes found"
         fi
@@ -156,7 +156,7 @@ _pf_check_cache() {
 _pf_check_rclone() {
     if [[ "${ENGINE:-tar}" == "restic" ]]; then
         if [[ "${OFFSITE_ENABLED:-true}" != "true" || -z "${RESTIC_OFFSITE_REPO:-}" ]]; then
-            _pf_add_check "restic_repo" "true" "offsite disabled — skipping repo check"
+            _pf_add_check "restic_repo" "true" "offsite disabled, skipping repo check"
             return
         fi
         if _restic "$(_restic_read_repo)" cat config >/dev/null 2>&1; then

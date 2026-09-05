@@ -1,22 +1,22 @@
 # shellcheck shell=bash
-# lib/schedule.sh — step 9: run-schedule (scheduled sequential backup) + status.
+# lib/schedule.sh: step 9: run-schedule (scheduled sequential backup) + status.
 #
 # ONE timer, not one per container: run-schedule works through BACKUP_ORDER one CT
 # at a time. Each CT runs as its own `backup --queue` call → queues on the global
 # lock (so manual runs can't collide). One CT's failure doesn't stop
 # the rest; the whole run alerts via ntfy if anything went wrong.
 
-# do_run_schedule — run backup for each vmid in BACKUP_ORDER, sequentially.
+# do_run_schedule, run backup for each vmid in BACKUP_ORDER, sequentially.
 do_run_schedule() {
     # Ransomware protection: SFTP provides no append-only. Remind about Storage Box snapshots.
     [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]] || \
-        log_warn "run-schedule: Storage Box snapshots NOT confirmed — a compromised host can delete offsite. Enable Hetzner's snapshots and set STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
+        log_warn "run-schedule: Storage Box snapshots NOT confirmed, a compromised host can delete offsite. Enable Hetzner's snapshots and set STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
     local self="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
     # The guests that live on THIS node: BACKUP_ORDER=auto → all local; an explicit
     # list → the listed vmids that live here (cluster-aware, no-op on one node).
     local ids=(); mapfile -t ids < <(_backup_set)
     if (( ${#ids[@]} == 0 )); then
-        log_warn "run-schedule: no guests to back up on node '$(_local_node)' (BACKUP_ORDER=${BACKUP_ORDER:-auto}) — nothing to do."
+        log_warn "run-schedule: no guests to back up on node '$(_local_node)' (BACKUP_ORDER=${BACKUP_ORDER:-auto}), nothing to do."
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "backups_ok" 0 "backups_failed" 0 "note" "no local guests"
         return "$EX_OK"
     fi
@@ -52,12 +52,12 @@ do_run_schedule() {
         json_result "$( ((failc==0)) && echo ok || echo partial )" "$( ((failc==0)) && echo true || echo false )" \
             "backups_ok" "$okc" "backups_failed" "$failc" "duration_s" "$dur" "failed_vmids" "${failed[*]:-}"
     else
-        log_info "run-schedule: done — ${okc} ok, ${failc} failed, ${dur}s"
+        log_info "run-schedule: done, ${okc} ok, ${failc} failed, ${dur}s"
     fi
     (( failc == 0 )) || return "$EX_SOFTWARE"
 }
 
-# do_status — global lock holder (+ pid liveness) and latest jobs.
+# do_status, global lock holder (+ pid liveness) and latest jobs.
 do_status() {
     local holder pid alive="free" hstr
     hstr="$(read_global_holder)"

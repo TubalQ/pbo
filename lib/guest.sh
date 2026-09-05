@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/guest.sh — guest type awareness (LXC container vs QEMU VM).
+# lib/guest.sh: guest type awareness (LXC container vs QEMU VM).
 #
 # The tool was born LXC-only. VMs (qemu) differ in a few concrete ways that this
 # layer isolates so the rest of the engine can branch on a single `type` value:
@@ -9,7 +9,7 @@
 #   - liveness:         pct exec <id> -- true         vs qm agent <id> ping
 #   - config fields:    hostname:/rootfs:/unprivileged (lxc-only) vs name:/scsiN:/...
 #
-# Phase 1 (ADR 0002): LOCAL node only — detection is `qm config` / `pct config`
+# Phase 1 (ADR 0002): LOCAL node only, detection is `qm config` / `pct config`
 # on the host the tool runs on. Cross-node routing comes in Phase 2.
 
 # _guest_type <vmid> → "qemu" | "lxc" on stdout; returns 1 if neither exists locally.
@@ -23,7 +23,7 @@ _guest_type() {
 }
 
 # _guest_type_from_archive <archive-path> → "qemu" | "lxc" (by name/extension).
-# Used on restore, where the live guest does not exist yet — the type travels with
+# Used on restore, where the live guest does not exist yet, the type travels with
 # the archive (vzdump-qemu-*.vma vs vzdump-lxc-*.tar).
 _guest_type_from_archive() {
     case "$1" in
@@ -32,17 +32,17 @@ _guest_type_from_archive() {
     esac
 }
 
-# _g_config <type> <vmid> — config dump (qm/pct).
+# _g_config <type> <vmid>, config dump (qm/pct).
 _g_config()  { [[ "$1" == qemu ]] && qm config "$2" || pct config "$2"; }
 
-# _g_exists <vmid> — does a guest with this id exist locally (either type)?
+# _g_exists <vmid>, does a guest with this id exist locally (either type)?
 _g_exists()  { qm config "$1" >/dev/null 2>&1 || pct config "$1" >/dev/null 2>&1; }
 
 # _g_start / _g_stop <type> <vmid>
 _g_start()   { [[ "$1" == qemu ]] && qm start "$2" || pct start "$2"; }
 _g_stop()    { [[ "$1" == qemu ]] && qm stop  "$2" || pct stop  "$2"; }
 
-# _g_alive <type> <vmid> — is the guest responsive?
+# _g_alive <type> <vmid>, is the guest responsive?
 #   qemu: guest-agent ping; if no agent is configured, accept `running` (crash-consistent).
 #   lxc:  a command runs inside it.
 _g_alive() {

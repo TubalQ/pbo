@@ -1,13 +1,13 @@
 # shellcheck shell=bash
-# lib/testrestore.sh — step 8: test-restore. Full chain against a THROWAWAY vmid:
+# lib/testrestore.sh: step 8: test-restore. Full chain against a THROWAWAY vmid:
 # fetch FROM OFFSITE (not cache) → verify → pct restore → start → wait for
 # the container to respond → stop → destroy. Report via ntfy (silent on success
 # unless NTFY_ON_SUCCESS=true; alerts on failure).
 #
 # This is the only command that truly proves an offsite backup can be
-# restored AND booted — the rest just verify bytes.
+# restored AND booted, the rest just verify bytes.
 
-# Best-effort teardown — the throwaway may be either an LXC or a VM, so try both.
+# Best-effort teardown, the throwaway may be either an LXC or a VM, so try both.
 _tr_destroy() {
     local id="$1"
     [[ -n "$id" ]] || return 0
@@ -26,7 +26,7 @@ _tr_wait() {
     return 1
 }
 
-# Pick the highest free throwaway vmid in 9000–9099 (free = neither an LXC nor a VM).
+# Pick the highest free throwaway vmid in 9000-9099 (free = neither an LXC nor a VM).
 _tr_pick_target() {
     local n
     for (( n=9099; n >= 9000; n-- )); do
@@ -48,7 +48,7 @@ do_test_restore() {
     ts="$(_archive_ts "$base")"
 
     local target; target="$(_tr_pick_target)" \
-        || die "$EX_UNAVAILABLE" "test-restore: no free vmid in 9000–9099"
+        || die "$EX_UNAVAILABLE" "test-restore: no free vmid in 9000-9099"
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
     mkdir -p "$JOBS_DIR"
     audit_log "test-restore vmid=$vmid ts=$ts throwaway=$target"
@@ -60,7 +60,7 @@ do_test_restore() {
         return "$EX_OK"
     fi
 
-    # 1. fetch FROM OFFSITE (+ sha256). die cleans up nothing — target not created yet.
+    # 1. fetch FROM OFFSITE (+ sha256). die cleans up nothing, target not created yet.
     _fetch_core "$vmid" "$ts"
     local archive="$FETCHED_ARCHIVE"
 
@@ -74,7 +74,7 @@ do_test_restore() {
     storage="$(jq -r '.source_volumes[0] // empty' "${archive}.meta.json" 2>/dev/null | cut -d'|' -f1)"
     [[ -n "$storage" && "$storage" != "null" ]] || storage="nvmepool"
 
-    # 2–4. restore → start → respond. From now on: clean up target on every failure.
+    # 2-4. restore → start → respond. From now on: clean up target on every failure.
     local ok=1 stage=""
     if ! run_stream "$jobfile" "pct-restore[$target]" -- \
             pct restore "$target" "$archive" --storage "$storage" --unprivileged "$unpriv"; then

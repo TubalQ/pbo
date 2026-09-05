@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
-# tests/schedule.sh — step 9 (run-schedule + status), fake backup binary.
+# tests/schedule.sh: step 9 (run-schedule + status), fake backup binary.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 BIN=./pbo; ROOT="$PWD"

@@ -1,4 +1,4 @@
-# Backlog — wishes to build in
+# Backlog, wishes to build in
 
 ## Settled / shipped (no longer backlog)
 - **Engine = restic.** The tar.zst engine was replaced; restic is the production
@@ -8,11 +8,11 @@
   removed. The shipped interface is `pbo menu` (rclone-style prompt-CLI), with a
   whiptail TUI (`lib/tui.sh`) as a zero-dependency fallback. See
   [`docs/adr/0003-tui.md`](adr/0003-tui.md).
-- **Export DR key** — done (`menu → Export DR key`): prints the restic repo
+- **Export DR key**, done (`menu → Export DR key`): prints the restic repo
   password (the whole DR key) with a treat-as-secret warning.
 
 ## VM + cluster (open)
-- **Direction set:** qemu VM support + cluster awareness — see
+- **Direction set:** qemu VM support + cluster awareness, see
   [`docs/adr/0002-vm-and-cluster-support.md`](adr/0002-vm-and-cluster-support.md)
   (type branch `pct`/`qm`, `qmrestore` for `.vma`; cluster = agent-per-node +
   shared offsite repo + pmxcfs config). Phase 1 = VM locally, Phase 2 = cluster.

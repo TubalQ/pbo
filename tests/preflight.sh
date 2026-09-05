@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
-# tests/preflight.sh — step 2 tests (preflight) with mocked pct/zfs/zpool/rclone.
+# tests/preflight.sh: step 2 tests (preflight) with mocked pct/zfs/zpool/rclone.
 # Runs nothing against real hardware.
 
 set -uo pipefail
@@ -66,7 +66,7 @@ rootfs: nvmepool:subvol-8003-disk-0,size=400G
 unprivileged: 0
 EOF
 
-printf 'pbo — step 2 tests (preflight, mocked)\n'
+printf 'pbo: step 2 tests (preflight, mocked)\n'
 
 # --- A: healthy state → ready, exit 0 ---
 mkcfg "$ROOT/run/cfgA"

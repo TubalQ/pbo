@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# lib/upload.sh — step 4: rclone copy → verify offsite.
+# lib/upload.sh: step 4: rclone copy → verify offsite.
 #
-# Order (PLAN.md §2): verify locally (step 3) BEFORE upload; verify on
+# Order: verify locally (step 3) BEFORE upload; verify on
 # offsite BEFORE any local prune (step 7). An archive that was never verified
 # is not a backup.
 #
@@ -12,7 +12,7 @@
 #     exposes no comparable hashes). check --checksum is used for non-crypt.
 #   - transfers+checkers are kept under Hetzner's connection limit (10) via config.
 
-# Type of RCLONE_REMOTE (sftp/crypt/…) — controls the choice of verification command.
+# Type of RCLONE_REMOTE (sftp/crypt/…), controls the choice of verification command.
 remote_type() {
     rclone config show "$RCLONE_REMOTE" 2>/dev/null | awk '/^type[[:space:]]*=/{print $NF; exit}'
 }
@@ -62,9 +62,9 @@ verify_offsite() {
         return "$EX_OK"
     fi
 
-    log_error "verify $vmid: offsite DOES NOT MATCH local — deleting uploaded files and aborting"
+    log_error "verify $vmid: offsite DOES NOT MATCH local, deleting uploaded files and aborting"
     audit_log "offsite-delete verify-error dest=$dest base=$base"
     rclone delete "$dest" --include "${base}*" >/dev/null 2>&1 || \
-        log_warn "verify $vmid: could not clean up half-uploaded files — check $dest manually"
+        log_warn "verify $vmid: could not clean up half-uploaded files, check $dest manually"
     die "$EX_DATAERR" "offsite verification FAILED for $base"
 }

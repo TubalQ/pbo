@@ -1,9 +1,9 @@
 # shellcheck shell=bash
-# lib/cluster.sh — cluster / node awareness (ADR 0002, Phase 2).
+# lib/cluster.sh: cluster / node awareness (ADR 0002, Phase 2).
 #
 # The model (like PVE+PBS): each node backs up the guests that live ON IT, into
 # the SAME shared repo. Restic tags per vmid → migration-safe; dedup is
-# cluster-wide. Nothing here is node-specific — everything is derived at runtime,
+# cluster-wide. Nothing here is node-specific, everything is derived at runtime,
 # so the SAME config can sit on every node.
 #
 # On a single node (or with no cluster/quorum) every filter is a no-op: the tool
@@ -38,7 +38,7 @@ _all_local_vmids() {
 #   BACKUP_ORDER=auto | empty  → all local guests (auto-discovered, numeric order)
 #   BACKUP_ORDER=<csv>         → the listed vmids that live here, in the given order
 # When no cluster view is available (single node / no quorum / test sandbox) an
-# explicit list is trusted as-is (we cannot — and need not — filter by node).
+# explicit list is trusted as-is (we cannot, and need not, filter by node).
 _backup_set() {
     local order="${BACKUP_ORDER:-auto}" id
     local cluster_ids; cluster_ids="$(_cluster_local_vmids)"

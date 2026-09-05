@@ -1,8 +1,8 @@
 # shellcheck shell=bash
-# lib/list.sh — step 5: list (offsite inventory) + fetch (fetch an archive
+# lib/list.sh: step 5: list (offsite inventory) + fetch (fetch an archive
 # to local cache and verify). Fetch never takes the global lock (step 1).
 #
-# list uses `rclone lsjson` + jq. fetch verifies sha256 against the sidecar —
+# list uses `rclone lsjson` + jq. fetch verifies sha256 against the sidecar.
 # a fetched archive that doesn't match its hash is corrupt and must not be restored.
 
 _have_jq() { command -v jq >/dev/null 2>&1; }
@@ -63,7 +63,7 @@ do_list() {
     fi
 }
 
-# _fetch_core <vmid> <ts> — fetches archive+sidecars to cache/restore and
+# _fetch_core <vmid> <ts>, fetches archive+sidecars to cache/restore and
 # verifies sha256. Sets FETCHED_ARCHIVE. No JSON output (reused
 # by restore). die on error. rclone copy skips already-fetched files.
 FETCHED_ARCHIVE=""
@@ -92,12 +92,12 @@ _fetch_core() {
         log_info "fetch $vmid: sha256 verified ✓"
     else
         rm -f "$archive"
-        die "$EX_DATAERR" "sha256 DOES NOT MATCH for fetched $base — deleted, do not restore"
+        die "$EX_DATAERR" "sha256 DOES NOT MATCH for fetched $base, deleted, do not restore"
     fi
     FETCHED_ARCHIVE="$archive"
 }
 
-# do_fetch <vmid> <ts> — the CLI command: _fetch_core + result.
+# do_fetch <vmid> <ts>, the CLI command: _fetch_core + result.
 do_fetch() {
     local vmid="$1" ts="$2"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
@@ -109,7 +109,7 @@ do_fetch() {
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "fetched" "true" "vmid" "$vmid" "archive" "$FETCHED_ARCHIVE" "verified" "sha256"
     else
-        log_info "fetch $vmid: DONE — $FETCHED_ARCHIVE (sha256-verified)"
+        log_info "fetch $vmid: DONE, $FETCHED_ARCHIVE (sha256-verified)"
     fi
     return "$EX_OK"
 }

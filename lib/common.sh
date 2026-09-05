@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/common.sh — shared helper functions: config, logging, JSON, notify stub.
+# lib/common.sh: shared helper functions: config, logging, JSON, notify stub.
 # Sourced by the main script. Must never be run standalone.
 #
 # Conventions:
@@ -8,14 +8,14 @@
 #   - No secrets in logs or error messages.
 
 # ---------------------------------------------------------------------------
-# Exit codes (subset of sysexits.h) — consistent across the whole tool.
+# Exit codes (subset of sysexits.h), consistent across the whole tool.
 # ---------------------------------------------------------------------------
 readonly EX_OK=0
 readonly EX_USAGE=64        # incorrect argument usage
 readonly EX_DATAERR=65      # bad input data (corrupt archive, config)
 readonly EX_UNAVAILABLE=69  # a service/resource is missing (rclone remote down)
 readonly EX_SOFTWARE=70     # internal error
-readonly EX_TEMPFAIL=75     # temporary failure — lock busy, queue full
+readonly EX_TEMPFAIL=75     # temporary failure, lock busy, queue full
 readonly EX_CANTCREAT=73    # cannot create/open file (lock file, holder)
 readonly EX_CONFIG=78       # configuration error
 
@@ -53,7 +53,7 @@ set_defaults() {
     : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach CT
     : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
     : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
-    : "${MAX_AGE_WARN:=172800}"   # 48h — dashboard warns if the latest push is older
+    : "${MAX_AGE_WARN:=172800}"   # 48h, dashboard warns if the latest push is older
 
     # --- engine (ADR 0001): tar (current) | restic (new track) ---
     : "${ENGINE:=tar}"                                    # tar | restic
@@ -66,7 +66,7 @@ set_defaults() {
     : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restic's own metadata cache
     : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # local repo: keep N latest per guest
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
-    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max) — speeds up restore considerably
+    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max), speeds up restore considerably
 
     # Derived paths.
     LOG_FILE="${LOG_DIR}/pbo.log"
@@ -80,7 +80,7 @@ set_defaults() {
 # Config loading. The file must be root-owned and 0600; we refuse to source it
 # if it is group-/world-writable (it may contain paths but never secrets).
 # ---------------------------------------------------------------------------
-# Source one config file if it exists. Refuse it if group-/world-WRITABLE — it
+# Source one config file if it exists. Refuse it if group-/world-WRITABLE, it
 # controls what root runs. (Readable by others is fine; it holds no secrets.)
 _source_config_file() {
     local cfg="$1"
@@ -164,7 +164,7 @@ die() {
 # Notify stub. Replaced by lib/notify.sh (ntfy) in step 8. Here just a no-op
 # that honors the NTFY_ON_SUCCESS contract so the call sites already line up.
 # ---------------------------------------------------------------------------
-notify_failure() { :; }   # sends ntfy on failure — implemented in step 8
+notify_failure() { :; }   # sends ntfy on failure, implemented in step 8
 notify_success() {        # silent unless NTFY_ON_SUCCESS=true
     [[ "${NTFY_ON_SUCCESS:-false}" == "true" ]] || return 0
     :
@@ -210,7 +210,7 @@ not_implemented() {
     return "$EX_OK"
 }
 
-# Validate that an argument looks like a vmid (integer 100–999999999).
+# Validate that an argument looks like a vmid (integer 100-999999999).
 is_vmid() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 100 )); }
 require_vmid() {
     is_vmid "${1:-}" || die "$EX_USAGE" "invalid vmid: '${1:-<missing>}'"

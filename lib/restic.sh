@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/restic.sh — the restic engine (ADR 0001, Path A). Enabled with ENGINE=restic.
+# lib/restic.sh: the restic engine (ADR 0001, Path A). Enabled with ENGINE=restic.
 #
 # The vzdump archive (UNCOMPRESSED) is stored IN restic instead of being pushed as
 # tar.zst via rclone. restore goes via `restic restore` → `pct restore`.
@@ -26,7 +26,7 @@ _restic() {                    # _restic <repo> <args...>
         "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
 }
 
-# Newest vzdump archive for a vmid in a dumpdir — .tar (lxc) or .vma (qemu).
+# Newest vzdump archive for a vmid in a dumpdir, .tar (lxc) or .vma (qemu).
 # Uses find (returns 0 on no match) instead of a two-glob `ls` (which returns
 # non-zero when one glob misses → trips set -e/pipefail on the assignment).
 _newest_dump() {               # <dir> <vmid> → path (empty if none)
@@ -58,7 +58,7 @@ _restic_ensure() {             # _restic_ensure <repo> [init-args...]
     _restic "$repo" init "$@"
 }
 
-# restic_init — init cache and/or offsite repo (onboarding, idempotent).
+# restic_init, init cache and/or offsite repo (onboarding, idempotent).
 restic_init() {
     [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "restic: missing password file $RESTIC_PASSWORD_FILE (0600)"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
@@ -136,13 +136,13 @@ rdo_backup() {
         json_result "uploaded" "true" "vmid" "$vmid" "ts" "$ts" "engine" "restic" \
             "archive" "$base" "repo" "$rrepo" "job" "$jobfile"
     else
-        log_info "backup $vmid: DONE (restic) — ts=$ts"
+        log_info "backup $vmid: DONE (restic), ts=$ts"
     fi
     return "$EX_OK"
 }
 
 # ---------------------------------------------------------------------------
-# list — emit the SAME envelope as the tar engine ({archives:[...]}) so the UI is untouched.
+# list, emit the SAME envelope as the tar engine ({archives:[...]}) so the UI is untouched.
 # ---------------------------------------------------------------------------
 rdo_list() {
     local only="${1:-}"
@@ -173,7 +173,7 @@ rdo_list() {
 # ---------------------------------------------------------------------------
 # extraction: fetch+verify a snapshot to <target>, echo the tar path.
 # ---------------------------------------------------------------------------
-# Sets the GLOBAL RX_TAR (NOT via stdout — log_info goes to stdout in non-json
+# Sets the GLOBAL RX_TAR (NOT via stdout, log_info goes to stdout in non-json
 # mode and would pollute command substitution → broken pct-restore path).
 RX_TAR=""
 _restic_extract() {            # _restic_extract <vmid> <ts> <target> → RX_TAR
@@ -200,11 +200,11 @@ _conf_unpriv() {               # _conf_unpriv <tar>
 }
 
 # ---------------------------------------------------------------------------
-# restore — restic → pct restore to a NEW vmid (never overwrite).
+# restore, restic → pct restore to a NEW vmid (never overwrite).
 # ---------------------------------------------------------------------------
 rdo_restore() {
     local src="$1" ts="$2" newid="$3" storage="$4" yes="$5"
-    _g_exists "$newid" && die "$EX_USAGE" "target vmid $newid already exists — refusing"
+    _g_exists "$newid" && die "$EX_USAGE" "target vmid $newid already exists, refusing"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
         log_info "[dry-run] restic restore $src ($ts) → new vmid $newid"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$src" "target_vmid" "$newid"
@@ -245,7 +245,7 @@ rdo_restore() {
 }
 
 # ---------------------------------------------------------------------------
-# test-restore — full chain against a throwaway vmid (reuses _tr_* from testrestore.sh).
+# test-restore, full chain against a throwaway vmid (reuses _tr_* from testrestore.sh).
 # ---------------------------------------------------------------------------
 rdo_test_restore() {
     local vmid="$1"
@@ -254,7 +254,7 @@ rdo_test_restore() {
     ts="$(_restic "$repo" snapshots --json --tag "vmid=$vmid" 2>/dev/null \
         | jq -r '[ .[] | (.tags // []) | map(select(startswith("ts=")))[0] // empty | sub("ts=";"") ] | sort | last // empty')"
     [[ -n "$ts" ]] || die "$EX_DATAERR" "test-restore: no restic snapshots for vmid $vmid"
-    local target; target="$(_tr_pick_target)" || die "$EX_UNAVAILABLE" "no free throwaway vmid 9000–9099"
+    local target; target="$(_tr_pick_target)" || die "$EX_UNAVAILABLE" "no free throwaway vmid 9000-9099"
     audit_log "test-restore vmid=$vmid ts=$ts throwaway=$target engine=restic"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
         log_info "[dry-run] test-restore $vmid ($ts) → throwaway-$target"
@@ -286,7 +286,7 @@ rdo_test_restore() {
 }
 
 # ---------------------------------------------------------------------------
-# prune — restic forget/prune. Envelope {cache_deleted,offsite_deleted} like the UI.
+# prune, restic forget/prune. Envelope {cache_deleted,offsite_deleted} like the UI.
 # offsite_deleted = removed snapshot ids (offsite/read repo). --group-by paths
 # gives keep-per-guest (stable dumpdir path).
 # ---------------------------------------------------------------------------
@@ -302,12 +302,12 @@ _restic_forget_json() {
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
     # Real run that actually removed snapshots → reclaim pack files separately.
     if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
-        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error — space not fully reclaimed"
+        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
     fi
     printf '%s' "$removed"
 }
 
-# prune — the cache repo is pruned keep-last, offsite is pruned PURE GFS. In cached mode
+# prune, the cache repo is pruned keep-last, offsite is pruned PURE GFS. In cached mode
 # BOTH are pruned. Envelope {cache_deleted, offsite_deleted} = removed ids per repo.
 rdo_prune() {
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for prune"
@@ -316,7 +316,7 @@ rdo_prune() {
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")"
     fi
-    # Offsite: pure GFS (daily/weekly/monthly) — no keep-last (a cache concept).
+    # Offsite: pure GFS (daily/weekly/monthly), no keep-last (a cache concept).
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
             --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
@@ -333,7 +333,7 @@ rdo_prune() {
     return "$EX_OK"
 }
 
-# usage — repo size/dedup from `restic stats` (for the Metrics tab/dashboard).
+# usage, repo size/dedup from `restic stats` (for the Metrics tab/dashboard).
 rdo_usage() {
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for usage"
     local repo raw rest
@@ -356,7 +356,7 @@ rdo_usage() {
     return "$EX_OK"
 }
 
-# verify — restic check (light) or --read-data (deep) via VERIFY_READ_DATA=1.
+# verify, restic check (light) or --read-data (deep) via VERIFY_READ_DATA=1.
 rdo_verify() {
     local repo; repo="$(_restic_read_repo)"
     local args=(check); [[ "${VERIFY_READ_DATA:-0}" == 1 ]] && args+=(--read-data)
@@ -418,12 +418,12 @@ rdo_run_batch() {
     local start; start="$(date +%s)"
 
     # --- PHASE 1: dump all → cache ---
-    log_info "batch: PHASE 1 — dumping ${#vmids[@]} guests to cache…"
+    log_info "batch: PHASE 1, dumping ${#vmids[@]} guests to cache…"
     local dumped=() v mode dumpdir base ts jobfile gt
     declare -A TS_OF=() GT_OF=()
     for v in "${vmids[@]}"; do
         [[ -n "$v" ]] || continue
-        if ! run_preflight "$v"; then log_warn "batch: preflight failed for $v — skipping"; continue; fi
+        if ! run_preflight "$v"; then log_warn "batch: preflight failed for $v, skipping"; continue; fi
         mode="$(_effective_mode "$v")"; dumpdir="${CACHE_DIR}/${v}"
         gt="$(_guest_type "$v")" || gt="lxc"
         rm -f "$dumpdir"/vzdump-* 2>/dev/null; mkdir -p "$dumpdir" "$JOBS_DIR"
@@ -436,15 +436,15 @@ rdo_run_batch() {
                 _g_config "$gt" "$v" > "${base}.conf" 2>/dev/null || true
                 dumped+=("$v"); TS_OF[$v]="$ts"; GT_OF[$v]="$gt"
             else
-                log_warn "batch: no tar found for $v after vzdump — skipping"
+                log_warn "batch: no tar found for $v after vzdump, skipping"
             fi
         else
-            log_warn "batch: vzdump $v FAILED — skipping"
+            log_warn "batch: vzdump $v FAILED, skipping"
         fi
     done
 
     # --- PHASE 2: upload all dumps → ONE repo ---
-    log_info "batch: PHASE 2 — uploading ${#dumped[@]} dumps → $(_restic_read_repo)…"
+    log_info "batch: PHASE 2, uploading ${#dumped[@]} dumps → $(_restic_read_repo)…"
     local okc=0 failc=0 failed=() wrepo; wrepo="$(_restic_write_repo)"
     for v in "${dumped[@]}"; do
         ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
@@ -469,7 +469,7 @@ rdo_run_batch() {
         json_result "$( ((failc==0)) && echo ok || echo partial )" "$( ((failc==0)) && echo true || echo false )" \
             "mode" "batch" "backups_ok" "$okc" "backups_failed" "$failc" "duration_s" "$dur" "failed_vmids" "${failed[*]:-}"
     else
-        log_info "batch: done — ${okc} ok, ${failc} failed, ${dur}s (all in one repo)"
+        log_info "batch: done, ${okc} ok, ${failc} failed, ${dur}s (all in one repo)"
     fi
     (( failc == 0 )) || return "$EX_SOFTWARE"
     return "$EX_OK"

@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# lib/prune.sh — step 7: prune cache (KEEP_LOCAL) and offsite (GFS).
+# lib/prune.sh: step 7: prune cache (KEEP_LOCAL) and offsite (GFS).
 #
-# Hard rules (PLAN.md §5, IMPL step 7):
+# Hard rules:
 #   - NEVER delete the latest archive per vmid, regardless of policy.
 #   - Must support --dry-run.
 #   - Never delete anything offsite if no kept archive for that vmid has a
@@ -15,13 +15,13 @@ _archive_ts() { [[ "$1" =~ ([0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2
 # → "YYYY-MM-DD HH:MM:SS" for `date -d`.
 _ts_to_date() { local t="$1"; printf '%s-%s-%s %s:%s:%s' "${t:0:4}" "${t:5:2}" "${t:8:2}" "${t:11:2}" "${t:14:2}" "${t:17:2}"; }
 
-# _gfs_keep — reads archive names (one per line, any order) on stdin, writes those
+# _gfs_keep, reads archive names (one per line, any order) on stdin, writes those
 # to be KEPT on stdout. Uses KEEP_OFFSITE_{DAILY,WEEKLY,MONTHLY}.
 _gfs_keep() {
     local -a names=(); local n
     while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done
     [[ "${#names[@]}" -gt 0 ]] || return 0
-    # Sort descending — archive names have a zero-padded ts (YYYY_MM_DD-HH_MM_SS) so
+    # Sort descending, archive names have a zero-padded ts (YYYY_MM_DD-HH_MM_SS) so
     # lexically descending = chronologically newest first.
     local -a sorted
     mapfile -t sorted < <(printf '%s\n' "${names[@]}" | sort -r)
@@ -87,7 +87,7 @@ prune_offsite() {
         sidecars="$(rclone lsf "$base/$v" 2>/dev/null | grep -E '\.sha256$' || true)"
         for a in "${keep[@]}"; do grep -qF "${a}.sha256" <<<"$sidecars" && { has_verified=1; break; }; done
         if (( ! has_verified )); then
-            log_warn "prune offsite: vmid $v — no kept archive has sha256, SKIPPING (cannot certify a good copy)"
+            log_warn "prune offsite: vmid $v, no kept archive has sha256, SKIPPING (cannot certify a good copy)"
             continue
         fi
         # Delete those not in the keep list.

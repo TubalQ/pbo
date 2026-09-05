@@ -1,94 +1,102 @@
 # pbo
 
-Offsite backup of Proxmox LXC containers to any SFTP target (for example a
-Hetzner Storage Box), using [restic](https://restic.net/) as the backup engine.
+Offsite backup for Proxmox guests, both LXC containers and QEMU VMs, to any SFTP
+target such as a Hetzner Storage Box. It uses [restic](https://restic.net/) as
+the backup engine, so you get deduplicated, encrypted, incremental backups.
 
-Not everyone can run a Proxmox Backup Server. `pbo` gives you a similar
-result — deduplicated, encrypted, incremental offsite backups with easy
-restores — using nothing but SFTP storage and a single self-contained tool that
-runs on the Proxmox host itself.
+Not everyone can run a Proxmox Backup Server. `pbo` gives you a lot of the same
+value (dedup, encryption, easy restores, an offsite copy) with nothing more than
+SFTP storage and one self-contained script that runs on the Proxmox host.
 
-It takes a `vzdump` archive of each container, stores it inside a restic
-repository, ships it offsite over native SFTP, and can fetch it back and
-`pct restore` it to a brand-new VMID for disaster recovery. There is an
-interactive prompt-CLI (`pbo menu`) for day-to-day use.
+It works like this. For each guest it runs `vzdump`, stores the resulting archive
+inside a restic repository, and ships it offsite over native SFTP. To recover, it
+pulls the archive back and restores it to a brand new VMID with `pct restore`
+(containers) or `qmrestore` (VMs). Day to day you drive it from an interactive
+prompt (`pbo menu`).
 
-> The tool should be debuggable at three in the morning by someone who did not
-> write it.
+One rule shaped the whole thing: you should be able to debug it at three in the
+morning, even if you did not write it.
 
 ## Why restic
 
-- **One repository.** Everything lands in the *same* restic repo, whether you
-  back up one container at a time (`stream`) or all at once (`batch`), with or
-  without a local cache tier. No fragmentation.
-- **Deduplication + encryption** are handled by restic. The repo password *is*
-  your disaster-recovery key — export it and store it somewhere safe.
-- **Native SFTP.** No FUSE mounts, no rclone. restic talks SFTP directly, with a
-  full ssh command so you control port and key (needed for Hetzner Storage Box).
+- **One repository.** Everything lands in the same restic repo, whether you back
+  up one guest at a time or all of them at once, with or without a local cache
+  tier. Nothing gets fragmented across places.
+- **Dedup and encryption come for free.** restic handles both. The repo password
+  is your disaster-recovery key, so export it and keep it somewhere safe.
+- **Plain SFTP.** No FUSE mounts, no rclone. restic speaks SFTP directly, and you
+  give it a full ssh command so you control the port and key. That is what a
+  Hetzner Storage Box needs.
 
 ## Requirements
 
-- A Proxmox VE host (provides `pct`, `vzdump`).
-- `restic`, `jq`, `zstd`, `flock`, `curl` (installed by `install.sh` if missing).
-- An SFTP target with key-based access. Hetzner Storage Box works well; its repo
-  path is **relative** because the account is chrooted.
+- A Proxmox VE host, which gives you `pct`, `qm`, and `vzdump`.
+- `restic`, `jq`, `zstd`, `flock`, and `curl`. `install.sh` installs any that are
+  missing.
+- An SFTP target you can reach with a key. A Hetzner Storage Box works well. Its
+  repo path is relative, because the account is chrooted to its own directory.
 
 ## Install
 
 ```bash
 git clone https://github.com/ai-pvet440/pbo
 cd pbo
-sudo ./install.sh          # installs to /usr/local, offers the setup wizard
+sudo ./install.sh
 ```
 
-`install.sh` never enables the timer on its own — it tells you how.
+`install.sh` installs to `/usr/local`, offers to run the setup wizard, and never
+enables the timer on its own. It prints the command for that.
 
 ## Quick start
 
 ```bash
-pbo setup          # interactive wizard: engine/cache/sftp/password/mode/ntfy → init
-pbo menu           # interactive prompt-CLI: guests / backup / restore / status
+pbo setup     # a wizard for engine, cache, sftp, password, and mode
+pbo menu      # the interactive prompt: guests, backup, restore, status
 ```
 
-The wizard writes `/etc/pbo/config` (0600) and creates the restic repo.
-After setup, use the menu to protect guests (scan the cluster, add/remove
-VMIDs), run a backup, and — importantly — **export your DR key** to a password
-manager.
+The wizard writes `/etc/pbo/config` (mode 0600) and creates the restic repo. Once
+that is done, use the menu to choose which guests to protect, run a backup, and,
+most important of all, export your DR key to a password manager.
 
 ### Schedule nightly backups
 
 ```bash
-systemctl enable --now pbo.timer    # runs run-schedule at 05:00 nightly
+systemctl enable --now pbo.timer     # runs the schedule at 05:00 every night
 ```
 
 ## Cluster setup
 
-`pbo` runs on **each node**, and each node backs up the guests that live on it
-into the **same** repo — deduplicated cluster-wide. No central coordinator, no
-cross-node SSH: it works exactly like Proxmox's own backup jobs (defined once,
-run per node). On **every** node in the cluster:
+`pbo` runs on each node, and each node backs up the guests that live on it into
+the same shared repo. There is no central coordinator and no cross-node SSH. It
+is the same shape as Proxmox's own backup jobs: you define the intent once, and
+each node runs its own part.
+
+On every node in the cluster:
 
 ```bash
 git clone https://github.com/ai-pvet440/pbo && cd pbo
 sudo ./install.sh
-pbo setup                                 # point at the SAME repo + SAME password
+pbo setup                            # point at the same repo and password
 systemctl enable --now pbo.timer
 ```
 
-That is the whole thing. With `BACKUP_ORDER=auto` (the default) each node
-discovers and backs up its own guests; a guest that migrates to another node is
-picked up there on the next run (restic tags per vmid, so its history
-continues). A single-node install is just this with one node — nothing changes.
+That really is all of it. With `BACKUP_ORDER=auto` (the default) each node finds
+and backs up its own guests. If a guest moves to another node, that node picks it
+up on the next run, and its history continues, because restic tags every snapshot
+with the vmid. A single-node install is just this with one node, and nothing about
+it changes.
 
-- **Same DR key on every node.** Paste the exported repo password into
-  `/etc/pbo/restic-pass` (0600) on each node. Never put it in `/etc/pve` —
-  pmxcfs replicates in cleartext.
-- **Edit config once (optional).** Put the non-secret config in
-  `/etc/pve/pbo/config` (replicated by pmxcfs); each node's local
-  `/etc/pbo/config` then only needs the password file. The local file overrides
-  the shared one.
-- **Prune from one node.** `prune` needs an exclusive repo lock — run it from a
-  single node, or set `PRUNE_OWNER=<nodename>`.
+A few things worth knowing:
+
+- **Use the same DR key on every node.** Paste the exported repo password into
+  `/etc/pbo/restic-pass` (mode 0600) on each node. Do not put it in `/etc/pve`,
+  because pmxcfs replicates that in cleartext.
+- **You can edit the config once, if you want.** Put the non-secret config in
+  `/etc/pve/pbo/config` and pmxcfs replicates it to every node. Each node's local
+  `/etc/pbo/config` then only needs the password file, and it overrides the shared
+  file where they differ.
+- **Prune from a single node.** Pruning needs an exclusive lock on the repo, so
+  run it from one node, or set `PRUNE_OWNER=<nodename>`.
 
 ## Command-line usage
 
@@ -97,46 +105,46 @@ pbo [global flags] <command> [arguments]
 
 Global flags:
   --json              machine-readable output on stdout
-  --dry-run           show what would be done, change nothing
+  --dry-run           show what would happen, change nothing
 
 Commands:
-  setup                       interactive setup wizard
-  menu                        interactive prompt-CLI (rclone style)
-  init                        create/verify the restic repo(s)
-  backup <vmid>               dump→verify→upload→verify→prune (global lock)
-  run-schedule [--stream|--batch]  back up everything in BACKUP_ORDER → same repo
-  status                      running jobs, queue length, lock holder
-  list [vmid]                 list offsite archives
-  restore <vmid> <ts> --to N  fetch + pct restore to a new vmid
-  verify                      restic check (repo integrity)
-  prune                       clean cache and offsite per policy
-  test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
+  setup                       run the interactive setup wizard
+  menu                        open the interactive prompt
+  init                        create or verify the restic repo
+  backup <vmid>               back up one guest (dump, store, verify)
+  run-schedule [--stream|--batch]   back up this node's guests into the repo
+  status                      show running jobs and who holds the lock
+  list [vmid]                 list the offsite archives
+  restore <vmid> <ts> --to N  restore an archive to a new vmid
+  verify                      run restic's integrity check
+  prune                       apply the retention policy
+  test-restore <vmid>         restore to a throwaway vmid, boot it, destroy it
 ```
 
 ## Modes
 
-| Setting | Meaning |
+| Setting | What it does |
 |---|---|
-| `LOCAL_REPO=true`  | Cached: back up to a local restic repo, then `copy` offsite (fast local restores). |
-| `LOCAL_REPO=false` | Offsite-only: back up straight to the SFTP repo (minimal local disk). |
-| `BACKUP_MODE=stream` | Dump→upload one container at a time (low disk). Default. |
-| `BACKUP_MODE=batch`  | Dump all to cache, then upload (if there is room). |
+| `LOCAL_REPO=true`  | Keep a local restic repo, then copy each snapshot offsite. Restores from the local copy are fast. |
+| `LOCAL_REPO=false` | Back up straight to the SFTP repo. Uses very little local disk. |
+| `BACKUP_MODE=stream` | Dump and upload one guest at a time. Low disk use. This is the default. |
+| `BACKUP_MODE=batch`  | Dump everything to the cache first, then upload, if there is room. |
 
-Whatever the combination, everything ends up in **one** repo.
+Whatever you pick, it all ends up in one repo.
 
 ## Disaster recovery
 
-Backups are only as good as your restores. On a fresh host: install
-`pbo`, paste your exported DR key (menu → Export DR key), then
-`pbo menu` → Restore. It always restores to a **new** VMID and never
-overwrites an existing guest. Test it with `test-restore`, which restores, boots
-and then destroys a throwaway copy.
+A backup is only as good as the restore. On a fresh host, install `pbo`, paste
+your exported DR key (menu, then Export DR key), and open `pbo menu`, then
+Restore. It always restores to a new VMID and never overwrites a guest that
+already exists. To prove the whole path works, run `test-restore`: it restores a
+throwaway copy, boots it, and destroys it again.
 
 ## Configuration
 
-See `etc/config.example` for every key. The password file
-(`RESTIC_PASSWORD_FILE`, mode 0600) holds the only secret; the config file holds
-none.
+`etc/config.example` documents every setting. The only secret is the repo
+password, which lives in the file named by `RESTIC_PASSWORD_FILE` (mode 0600). The
+config file itself holds no secrets.
 
 ## License
 

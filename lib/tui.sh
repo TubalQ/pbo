@@ -1,9 +1,9 @@
 # shellcheck shell=bash
-# lib/tui.sh — terminal UI (whiptail). ADR 0003. Enabled with `pbo tui`.
+# lib/tui.sh: terminal UI (whiptail). ADR 0003. Enabled with `pbo tui`.
 #
 # FROZEN: superseded by the interactive prompt-CLI (`pbo menu`). Kept for
 # compatibility. The TUI has NO business logic of its own: it shells out to the
-# same CLI (`$PBO_BIN [--json] <cmd>`) — locks/preflight/audit/envelope reused.
+# same CLI (`$PBO_BIN [--json] <cmd>`), locks/preflight/audit/envelope reused.
 # Config vars (ENGINE, RESTIC_*) are already loaded by main→load_config.
 #
 # Focus (ADR 0003): 1) easy restic setup 2) export DR key
@@ -30,26 +30,26 @@ _guests_json() { pvesh get /cluster/resources --type vm --output-format json 2>/
 _rootdir_storages() { pvesh get /storage --output-format json 2>/dev/null | jq -r '.[]|select((.content//"")|test("rootdir"))|.storage' 2>/dev/null; }
 _offsite_vmids() { "$PBO_BIN" --json list 2>/dev/null | jq -r '.archives[].vmid' 2>/dev/null | sort -un; }
 
-# ---- 1. SETUP / onboarding (restic) — highest focus ----
+# ---- 1. SETUP / onboarding (restic), highest focus ----
 tui_setup() {
-    local eng; eng="$(_wt_radiolist "Setup — engine" "Which backup engine?" \
+    local eng; eng="$(_wt_radiolist "Setup, engine" "Which backup engine?" \
         restic "restic (dedup, incremental, encryption)" ON \
         tar    "tar.zst via rclone (legacy)" OFF)" || return 0
     if [[ "$eng" != "restic" ]]; then _tui_set_cfg ENGINE tar; _wt_msg "Setup" "ENGINE=tar set."; return 0; fi
 
-    local mode; mode="$(_wt_radiolist "Setup — mode" "Where should the backups live?" \
+    local mode; mode="$(_wt_radiolist "Setup, mode" "Where should the backups live?" \
         cached "Local cache + offsite (fast restore)" ON \
         offsite "Offsite only (minimal disk)" OFF)" || return 0
     local host user port keyf repo pass
-    host="$(_wt_input "Setup — SFTP" "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)" "")" || return 0
-    user="$(_wt_input "Setup — SFTP" "SFTP user" "$host")" || return 0
-    port="$(_wt_input "Setup — SFTP" "Port" "23")" || return 0
-    keyf="$(_wt_input "Setup — SFTP" "SSH key file on this host" "/root/.ssh/id_rsa")" || return 0
-    repo="$(_wt_input "Setup — repo" "Repo path (RELATIVE — Storage Box is chrooted)" "lxc-restic")" || return 0
-    if _wt_yesno "Setup — repo password" "Generate a new repo password automatically?\n(otherwise you enter your own)"; then
+    host="$(_wt_input "Setup, SFTP" "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)" "")" || return 0
+    user="$(_wt_input "Setup, SFTP" "SFTP user" "$host")" || return 0
+    port="$(_wt_input "Setup, SFTP" "Port" "23")" || return 0
+    keyf="$(_wt_input "Setup, SFTP" "SSH key file on this host" "/root/.ssh/id_rsa")" || return 0
+    repo="$(_wt_input "Setup, repo" "Repo path (RELATIVE, Storage Box is chrooted)" "lxc-restic")" || return 0
+    if _wt_yesno "Setup, repo password" "Generate a new repo password automatically?\n(otherwise you enter your own)"; then
         pass="$(openssl rand -base64 24 2>/dev/null || head -c18 /dev/urandom | base64)"
     else
-        pass="$(_wt_password "Setup — repo password" "Enter repo password (this IS your DR key!)")" || return 0
+        pass="$(_wt_password "Setup, repo password" "Enter repo password (this IS your DR key!)")" || return 0
     fi
     # write config + password file
     local passfile="/etc/pbo/restic-pass"
@@ -60,13 +60,13 @@ tui_setup() {
     _tui_set_cfg RESTIC_OFFSITE_REPO "sftp:hetzner:${repo}"
     _tui_set_cfg RESTIC_PASSWORD_FILE "$passfile"
     _tui_set_cfg_q RESTIC_SFTP_COMMAND "ssh ${user}@${host} -p ${port} -i ${keyf} -o StrictHostKeyChecking=accept-new -s sftp"
-    _wt_run "Setup — running init" "$PBO_BIN" init
+    _wt_run "Setup, running init" "$PBO_BIN" init
     _wt_msg "Setup complete" "Engine=restic, mode=${mode}.\nRepo: sftp:…:${repo}\nPassword saved in ${passfile} (0600).\n\nIMPORTANT: export the DR key (menu 4) and store it in a password manager + offline."
 }
 
 # Write KEY=VALUE (unquoted) into the config, atomically.
 _tui_set_cfg()   { _tui_cfg_write "$1" "$2" ""; }
-# Write KEY="VALUE" (quoted — for values with spaces).
+# Write KEY="VALUE" (quoted, for values with spaces).
 _tui_set_cfg_q() { _tui_cfg_write "$1" "$2" q; }
 _tui_cfg_write() {
     local k="$1" v="$2" q="$3" cfg="${PBO_CONFIG:-/etc/pbo/config}"
@@ -80,19 +80,19 @@ _tui_cfg_write() {
     chmod 600 "$tmp"; mv "$tmp" "$cfg"
 }
 
-# ---- 2. BACKUP — all or single ----
+# ---- 2. BACKUP, all or single ----
 tui_backup() {
     local c; c="$(_wt_menu "Back up" "What do you want to back up?" \
         all "All protected guests (run-schedule)" \
         one "Pick a single guest…")" || return 0
     if [[ "$c" == all ]]; then
         _wt_yesno "Backup" "Back up ALL protected guests now?" || return 0
-        _wt_run "Backup — all" "$PBO_BIN" run-schedule
+        _wt_run "Backup, all" "$PBO_BIN" run-schedule
     else
         local args=() row
         while IFS= read -r row; do args+=("$row" "" OFF); done < <(_guests_json | jq -r '.[]|select(.type=="lxc")|"\(.vmid):\(.name//"-")"')
         [[ ${#args[@]} -gt 0 ]] || { _wt_msg "Backup" "No LXC guests found."; return 0; }
-        local sel; sel="$(_wt_checklist "Backup — pick guests" "Check the guests to back up:" "${args[@]}")" || return 0
+        local sel; sel="$(_wt_checklist "Backup, pick guests" "Check the guests to back up:" "${args[@]}")" || return 0
         local id
         for id in $sel; do id="${id//\"/}"; id="${id%%:*}"; _wt_run "Backup $id" "$PBO_BIN" backup "$id"; done
     fi
@@ -103,17 +103,17 @@ tui_restore() {
     local vmids; mapfile -t vmids < <(_offsite_vmids)
     [[ ${#vmids[@]} -gt 0 ]] || { _wt_msg "Restore" "No offsite archives found (run a backup first)."; return 0; }
     local menu=() v; for v in "${vmids[@]}"; do menu+=("$v" "guest $v"); done
-    local src; src="$(_wt_menu "Restore — guest" "Which guest should be restored?" "${menu[@]}")" || return 0
+    local src; src="$(_wt_menu "Restore, guest" "Which guest should be restored?" "${menu[@]}")" || return 0
     # snapshots (ts) for the guest
     local tsmenu=() ts
     while IFS= read -r ts; do tsmenu+=("$ts" "snapshot"); done < <("$PBO_BIN" --json list "$src" 2>/dev/null | jq -r '.archives[].archive' | grep -oE '[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}' | sort -r)
     [[ ${#tsmenu[@]} -gt 0 ]] || { _wt_msg "Restore" "No snapshots for $src."; return 0; }
-    local pick; pick="$(_wt_menu "Restore — snapshot" "Pick a snapshot for $src:" "${tsmenu[@]}")" || return 0
+    local pick; pick="$(_wt_menu "Restore, snapshot" "Pick a snapshot for $src:" "${tsmenu[@]}")" || return 0
     local nf; nf="$("$PBO_BIN" --json list >/dev/null 2>&1; echo)"; # placeholder
-    local newid; newid="$(_wt_input "Restore — new VMID" "Always restore to a NEW vmid (never overwrite):" "9100")" || return 0
+    local newid; newid="$(_wt_input "Restore, new VMID" "Always restore to a NEW vmid (never overwrite):" "9100")" || return 0
     local smenu=() s; while IFS= read -r s; do smenu+=("$s" "pool"); done < <(_rootdir_storages)
-    local storage; storage="$(_wt_menu "Restore — storage" "Which storage?" "${smenu[@]}")" || return 0
-    _wt_yesno "Restore — confirm" "Restore guest $src ($pick) → NEW vmid $newid on $storage?" || return 0
+    local storage; storage="$(_wt_menu "Restore, storage" "Which storage?" "${smenu[@]}")" || return 0
+    _wt_yesno "Restore, confirm" "Restore guest $src ($pick) → NEW vmid $newid on $storage?" || return 0
     _wt_run "Restore" "$PBO_BIN" restore "$src" "$pick" --to "$newid" --storage "$storage" --yes
 }
 
@@ -122,7 +122,7 @@ tui_export_key() {
     _wt_yesno "DR key" "This shows SECRETS (repo password). Store it offline (password manager + USB). Continue?" || return 0
     local f; f="$(mktemp)"
     {
-        echo "# pbo DR key — treat as a SECRET"
+        echo "# pbo DR key, treat as a SECRET"
         echo "# Install pbo on a new host, paste this config, run: list → restore"
         echo
         echo "ENGINE=restic"
@@ -160,8 +160,8 @@ tui_maint() {
         test "Test-restore (boot a throwaway copy)")" || return 0
     case "$c" in
         prune)
-            _wt_run "Prune — dry run" "$PBO_BIN" --dry-run prune
-            _wt_yesno "Prune" "Run a REAL prune now (deletes per policy)?" && _wt_run "Prune — real" "$PBO_BIN" prune ;;
+            _wt_run "Prune, dry run" "$PBO_BIN" --dry-run prune
+            _wt_yesno "Prune" "Run a REAL prune now (deletes per policy)?" && _wt_run "Prune, real" "$PBO_BIN" prune ;;
         verify) _wt_run "Verify" "$PBO_BIN" verify ;;
         test)
             local menu=() v; for v in $(_offsite_vmids); do menu+=("$v" "guest $v"); done
@@ -176,7 +176,7 @@ tui_main() {
     command -v whiptail >/dev/null 2>&1 || { printf 'whiptail missing (apt install whiptail)\n' >&2; return "$EX_UNAVAILABLE"; }
     while true; do
         local c
-        c="$(_wt_menu "pbo — main menu" "Engine: ${ENGINE:-tar}   (arrow keys + Enter)" \
+        c="$(_wt_menu "pbo: main menu" "Engine: ${ENGINE:-tar}   (arrow keys + Enter)" \
             1 "Setup / onboarding (restic)" \
             2 "Back up (backup)" \
             3 "Restore" \

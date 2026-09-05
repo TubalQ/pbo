@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/notify.sh — ntfy notifications. Replaces the stubs in common.sh (defined
+# lib/notify.sh: ntfy notifications. Replaces the stubs in common.sh (defined
 # later → wins). Alerts ON FAILURE; success is silent unless NTFY_ON_SUCCESS=true.
 #
 # Reads NTFY_URL/NTFY_TOKEN/topic from config, falls back to NTFY_CREDS_FILE
@@ -15,7 +15,7 @@ _ntfy_load() {
 
 # _ntfy_publish <priority> <title> <message>
 _ntfy_publish() {
-    # Kill-switch — set PBO_NO_NOTIFY=1 to silence all notifications (tests/CI/dry
+    # Kill-switch, set PBO_NO_NOTIFY=1 to silence all notifications (tests/CI/dry
     # sessions), so a test suite or trial run never reaches a real ntfy server.
     [[ "${PBO_NO_NOTIFY:-0}" == 1 ]] && return 0
     _ntfy_load
