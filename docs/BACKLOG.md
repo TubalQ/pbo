@@ -30,4 +30,4 @@
 
 ## Other
 - Public GitHub release: `origin` currently points at the private Gitea repo
-  (`ai-pvet440/pbo`); add the public remote when ready.
+  (`TubalQ/pbo`); add the public remote when ready.
