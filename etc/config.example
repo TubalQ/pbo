@@ -17,8 +17,15 @@ VZDUMP_COMPRESS=zstd
 VZDUMP_ZSTD_THREADS=4
 
 # --- schedule ---
-BACKUP_ORDER=              # comma-separated vmid order for run-schedule
+# auto  = back up every guest ON THIS NODE (LXC + VM), auto-discovering new ones.
+# or a comma-separated vmid list for explicit order/exclusions (critical first).
+# In a cluster: put the SAME config on every node — each node backs up only its
+# own guests into the shared repo (an explicit list is filtered to local guests).
+BACKUP_ORDER=auto
 GLOBAL_LOCK_TIMEOUT=7200   # seconds a scheduled run waits in the queue
+# Cluster only: restrict `prune` to one node (prune needs an exclusive repo lock).
+# Empty = any node may prune (restic's lock keeps concurrent attempts safe).
+PRUNE_OWNER=
 
 # --- retention ---
 KEEP_LOCAL=2

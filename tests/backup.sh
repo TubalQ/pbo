@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/backup.sh — step 3 tests (dump/sha256/structure check/meta), mocked vzdump.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # Run all test suites. Use before commit.
 cd "$(dirname "$0")/.." || exit 1
 fail=0

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/preflight.sh — step 2 tests (preflight) with mocked pct/zfs/zpool/rclone.
 # Runs nothing against real hardware.
 

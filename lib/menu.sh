@@ -244,7 +244,10 @@ menu_restore() {
     used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"
     while grep -qx "$free" <<<"$used"; do free=$((free+1)); done
     local newid; newid="$(_ask "New VMID (never overwrites)" "$free")"
-    local stores; stores="$(pvesh get /storage --output-format json 2>/dev/null | jq -r '.[]|select((.content//"")|test("rootdir"))|.storage')"
+    # Storage must match the guest type: a VM needs images, a container needs rootdir.
+    local arch content; arch="$(jq -r --arg v "$src" --arg t "$ts" '.archives[]|select(.vmid==$v and (.archive|test($t)))|.archive' <<<"$listing" | head -1)"
+    case "$arch" in *qemu*) content=images ;; *) content=rootdir ;; esac
+    local stores; stores="$(pvesh get /storage --output-format json 2>/dev/null | jq -r --arg c "$content" '.[]|select((.content//"")|test($c))|.storage')"
     echo "  Storage: ${C_C}$(echo $stores | tr '\n' ' ')${C_0}"
     local storage; storage="$(_ask "Storage" "$(echo "$stores" | head -1)")"
     _yn "Restore $src ($ts) → NEW vmid $newid on $storage?" y || return

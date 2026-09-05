@@ -36,7 +36,8 @@ set_defaults() {
     : "${RCLONE_TRANSFERS:=4}"
     : "${RCLONE_CHECKERS:=4}"
     : "${RCLONE_BWLIMIT:=}"
-    : "${BACKUP_ORDER:=}"
+    : "${BACKUP_ORDER:=auto}"          # auto = all guests on THIS node; or an explicit csv (critical-first)
+    : "${PRUNE_OWNER:=}"               # cluster: restrict prune to this nodename (empty = any node may prune)
     : "${GLOBAL_LOCK_TIMEOUT:=7200}"
     : "${KEEP_LOCAL:=2}"
     : "${KEEP_OFFSITE_DAILY:=7}"
@@ -79,24 +80,32 @@ set_defaults() {
 # Config loading. The file must be root-owned and 0600; we refuse to source it
 # if it is group-/world-writable (it may contain paths but never secrets).
 # ---------------------------------------------------------------------------
-load_config() {
-    local cfg="${PBO_CONFIG:-/etc/pbo/config}"
-    if [[ -f "$cfg" ]]; then
-        # Refuse a config that is group-/world-WRITABLE — it controls what root runs.
-        # (Readable by others is fine; the file contains no secrets.)
-        local perms; perms="$(stat -c '%a' "$cfg")"
-        local grp="${perms: -2:1}" oth="${perms: -1:1}"
-        if (( (grp & 2) || (oth & 2) )); then
-            printf 'pbo: REFUSING to source group-/world-writable config (%s): %s\n' \
-                "$perms" "$cfg" >&2
-            exit "$EX_CONFIG"
-        fi
-        # shellcheck disable=SC1090
-        source "$cfg"
-        PBO_CONFIG_LOADED="$cfg"
-    else
-        PBO_CONFIG_LOADED=""
+# Source one config file if it exists. Refuse it if group-/world-WRITABLE — it
+# controls what root runs. (Readable by others is fine; it holds no secrets.)
+_source_config_file() {
+    local cfg="$1"
+    [[ -f "$cfg" ]] || return 1
+    local perms; perms="$(stat -c '%a' "$cfg")"
+    local grp="${perms: -2:1}" oth="${perms: -1:1}"
+    if (( (grp & 2) || (oth & 2) )); then
+        printf 'pbo: REFUSING to source group-/world-writable config (%s): %s\n' "$perms" "$cfg" >&2
+        exit "$EX_CONFIG"
     fi
+    # shellcheck disable=SC1090
+    source "$cfg"
+    return 0
+}
+
+load_config() {
+    local cfg="${PBO_CONFIG:-/etc/pbo/config}" loaded=""
+    # Cluster: a shared, non-secret base config replicated by pmxcfs (edit once for
+    # the whole cluster). The local config overrides it; secrets stay local only.
+    # Skipped when PBO_CONFIG is set explicitly (that file stands alone).
+    if [[ -z "${PBO_CONFIG:-}" ]] && _source_config_file /etc/pve/pbo/config; then
+        loaded="/etc/pve/pbo/config"
+    fi
+    _source_config_file "$cfg" && loaded="$cfg"
+    PBO_CONFIG_LOADED="$loaded"
     set_defaults
     # Point rclone at our own config if given (rclone reads the RCLONE_CONFIG env).
     [[ -n "${RCLONE_CONFIG_FILE:-}" ]] && export RCLONE_CONFIG="$RCLONE_CONFIG_FILE"

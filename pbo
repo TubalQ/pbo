@@ -18,6 +18,8 @@ SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "${SELF_DIR}/lib/common.sh"
 # shellcheck source=lib/guest.sh  (LXC-vs-QEMU type awareness — used across the engine)
 source "${SELF_DIR}/lib/guest.sh"
+# shellcheck source=lib/cluster.sh  (node/cluster awareness — back up local guests)
+source "${SELF_DIR}/lib/cluster.sh"
 # shellcheck source=lib/notify.sh  (replaces the notify stubs in common.sh)
 source "${SELF_DIR}/lib/notify.sh"
 # shellcheck source=lib/lock.sh

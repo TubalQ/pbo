@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/schedule.sh — step 9 (run-schedule + status), fake backup binary.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -33,9 +34,9 @@ grep -q '"backups_failed":"1"' <<<"$out" && ok "B: 1 error counted" || bad "B fa
 [[ "$(wc -l <"$MOCK_LOG")" == 3 ]] && ok "B: the rest ran despite error (3 calls)" || bad "B did not continue"
 [[ $rc != 0 ]] && ok "B: exit != 0 on error" || bad "B exit ($rc)"
 
-# --- C: empty BACKUP_ORDER → EX_CONFIG ---
+# --- C: empty BACKUP_ORDER now means auto (all local guests), not a config error ---
 mkcfg "$ROOT/run/cfgC" "BACKUP_ORDER="; PBO_CONFIG="$ROOT/run/cfgC" $BIN run-schedule >/dev/null 2>&1; rc=$?
-[[ $rc == 78 ]] && ok "C: empty BACKUP_ORDER → EX_CONFIG" || bad "C exit ($rc)"
+[[ $rc == 0 ]] && ok "C: empty BACKUP_ORDER → auto (not an error)" || bad "C exit ($rc)"
 
 # --- D: status shows lock holder + liveness ---
 mkdir -p "$ROOT/run/state"

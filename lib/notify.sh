@@ -15,6 +15,9 @@ _ntfy_load() {
 
 # _ntfy_publish <priority> <title> <message>
 _ntfy_publish() {
+    # Kill-switch — set PBO_NO_NOTIFY=1 to silence all notifications (tests/CI/dry
+    # sessions), so a test suite or trial run never reaches a real ntfy server.
+    [[ "${PBO_NO_NOTIFY:-0}" == 1 ]] && return 0
     _ntfy_load
     [[ -n "${NTFY_URL:-}" && -n "${NTFY_TOPIC:-}" ]] || return 0
     local url="${NTFY_URL%/}/${NTFY_TOPIC}"

@@ -61,6 +61,35 @@ manager.
 systemctl enable --now pbo.timer    # runs run-schedule at 05:00 nightly
 ```
 
+## Cluster setup
+
+`pbo` runs on **each node**, and each node backs up the guests that live on it
+into the **same** repo — deduplicated cluster-wide. No central coordinator, no
+cross-node SSH: it works exactly like Proxmox's own backup jobs (defined once,
+run per node). On **every** node in the cluster:
+
+```bash
+git clone https://github.com/ai-pvet440/pbo && cd pbo
+sudo ./install.sh
+pbo setup                                 # point at the SAME repo + SAME password
+systemctl enable --now pbo.timer
+```
+
+That is the whole thing. With `BACKUP_ORDER=auto` (the default) each node
+discovers and backs up its own guests; a guest that migrates to another node is
+picked up there on the next run (restic tags per vmid, so its history
+continues). A single-node install is just this with one node — nothing changes.
+
+- **Same DR key on every node.** Paste the exported repo password into
+  `/etc/pbo/restic-pass` (0600) on each node. Never put it in `/etc/pve` —
+  pmxcfs replicates in cleartext.
+- **Edit config once (optional).** Put the non-secret config in
+  `/etc/pve/pbo/config` (replicated by pmxcfs); each node's local
+  `/etc/pbo/config` then only needs the password file. The local file overrides
+  the shared one.
+- **Prune from one node.** `prune` needs an exclusive repo lock — run it from a
+  single node, or set `PRUNE_OWNER=<nodename>`.
+
 ## Command-line usage
 
 ```

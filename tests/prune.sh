@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/prune.sh — step 7 tests (prune: cache KEEP_LOCAL + offsite GFS).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1

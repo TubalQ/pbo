@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/run.sh — unit tests for the skeleton (subcommands, config, two-level locking).
 # Pure bash tests, no external dependencies. Runs nothing against real hardware.
 # Real vzdump/pct/restic are mocked in later stages.

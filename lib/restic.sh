@@ -214,7 +214,8 @@ rdo_restore() {
     _restic_extract "$src" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
     local gtype; gtype="$(_guest_type_from_archive "$tar")"
-    [[ -n "$storage" ]] || storage="nvmepool"
+    [[ -n "$storage" ]] || storage="$(_default_storage "$gtype")"
+    [[ -n "$storage" ]] || die "$EX_USAGE" "no --storage given and no $([[ "$gtype" == qemu ]] && echo images || echo rootdir)-capable storage found"
     local cmd=() unpriv=""
     if [[ "$gtype" == qemu ]]; then
         cmd=(qmrestore "$tar" "$newid" --storage "$storage")            # <archive> <vmid>; no --unprivileged
@@ -265,7 +266,8 @@ rdo_test_restore() {
     _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
     local gtype; gtype="$(_guest_type_from_archive "$tar")"
-    local storage="${TR_STORAGE:-nvmepool}"
+    local storage="${TR_STORAGE:-$(_default_storage "$gtype")}"
+    [[ -n "$storage" ]] || die "$EX_UNAVAILABLE" "test-restore: no $([[ "$gtype" == qemu ]] && echo images || echo rootdir)-capable storage (set TR_STORAGE)"
     local ok=1 stage="" rcmd=()
     if [[ "$gtype" == qemu ]]; then rcmd=(qmrestore "$tar" "$target" --storage "$storage")
     else rcmd=(pct restore "$target" "$tar" --storage "$storage" --unprivileged "$(_conf_unpriv "$tar")"); fi
