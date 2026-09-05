@@ -1,6 +1,6 @@
 [Unit]
 Description=Daily pbo offsite backup
-Documentation=https://github.com/ai-pvet440/pbo
+Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
 # 05:00 every night.

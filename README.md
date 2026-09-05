@@ -39,8 +39,8 @@ morning, even if you did not write it.
 ## Install
 
 ```bash
-git clone https://github.com/ai-pvet440/pbo
-cd pbo
+git clone https://github.com/TubalQ/PBO
+cd PBO
 sudo ./install.sh
 ```
 
@@ -74,7 +74,7 @@ each node runs its own part.
 On every node in the cluster:
 
 ```bash
-git clone https://github.com/ai-pvet440/pbo && cd pbo
+git clone https://github.com/TubalQ/PBO && cd PBO
 sudo ./install.sh
 pbo setup                            # point at the same repo and password
 systemctl enable --now pbo.timer

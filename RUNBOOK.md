@@ -13,7 +13,7 @@ restore by booting a throwaway copy.
 ## Installing, including on a fresh host during recovery
 
 ```bash
-git clone https://github.com/ai-pvet440/pbo && cd pbo
+git clone https://github.com/TubalQ/PBO && cd PBO
 ./install.sh          # installs the tool and units, does not enable the timer
 pbo setup             # engine, cache, sftp, password, mode, then init
 ```
@@ -154,4 +154,4 @@ so you get cluster-wide dedup with no central coordinator. Points to remember:
 | Cache | `CACHE_DIR` from the config, used when `LOCAL_REPO=true` |
 | Logs and jobs | `/var/log/pbo/` and `/var/lib/pbo/jobs/` |
 | systemd | `pbo.service` and `pbo.timer` |
-| Source | `github.com/ai-pvet440/pbo` |
+| Source | `github.com/TubalQ/PBO` |
