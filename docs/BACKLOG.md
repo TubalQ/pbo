@@ -16,7 +16,10 @@
   [`docs/adr/0002-vm-and-cluster-support.md`](adr/0002-vm-and-cluster-support.md)
   (type branch `pct`/`qm`, `qmrestore` for `.vma`; cluster = agent-per-node +
   shared offsite repo + pmxcfs config). Phase 1 = VM locally, Phase 2 = cluster.
-  Not started.
+  Not started. **Investigation done 2026-09-05:** the LXC-vs-VM code seam is mapped
+  file-by-line (ADR 0002 §7) and the multi-node data path (Model A per-node agent vs
+  Model B3 central ssh-stream, with an A-base + B3-for-remote-VM hybrid) is worked
+  out (ADR 0002 §3).
 
 ## Hardening (open)
 - **Repo-password rotation** to a user-chosen key: `restic key add` → verify →
