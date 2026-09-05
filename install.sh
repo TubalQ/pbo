@@ -22,7 +22,7 @@ if [[ "${#need[@]}" -gt 0 ]]; then
 else
     echo "    all present (restic jq zstd flock curl)"
 fi
-for b in vzdump pct zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing — required on a real Proxmox host."; done
+for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing — required on a real Proxmox host."; done
 
 echo "==> Program files → $LIBDIR"
 install -d -m 0755 "$LIBDIR" "$LIBDIR/lib"

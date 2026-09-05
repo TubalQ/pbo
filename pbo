@@ -16,6 +16,8 @@ set -Eeuo pipefail
 SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
+# shellcheck source=lib/guest.sh  (LXC-vs-QEMU type awareness — used across the engine)
+source "${SELF_DIR}/lib/guest.sh"
 # shellcheck source=lib/notify.sh  (replaces the notify stubs in common.sh)
 source "${SELF_DIR}/lib/notify.sh"
 # shellcheck source=lib/lock.sh

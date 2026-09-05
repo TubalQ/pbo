@@ -51,24 +51,36 @@ _pf_pool_for_storeid() {
 # and collect (pool, dataset) for the volumes that will actually be backed up.
 # Fills the global PF_BACKUP_VOLUMES=("pool|dataset" ...).
 _pf_parse_volumes() {
-    local vmid="$1" conf
-    if ! conf="$(pct config "$vmid" 2>/dev/null)"; then
-        _pf_add_check "container_exists" "false" "vmid $vmid: pct config failed"
+    local vmid="$1" conf gtype
+    gtype="$(_guest_type "$vmid")" || {
+        _pf_add_check "container_exists" "false" "vmid $vmid: not found (neither qm nor pct)"
+        return 1
+    }
+    if ! conf="$(_g_config "$gtype" "$vmid" 2>/dev/null)"; then
+        _pf_add_check "container_exists" "false" "vmid $vmid: config read failed"
         return 1
     fi
-    _pf_add_check "container_exists" "true" "vmid $vmid exists"
+    _pf_add_check "container_exists" "true" "vmid $vmid exists ($gtype)"
 
     PF_BACKUP_VOLUMES=()
     local line key val volspec opts
     while IFS= read -r line; do
         key="${line%%:*}"
-        [[ "$key" == "rootfs" || "$key" =~ ^mp[0-9]+$ ]] || continue
+        if [[ "$gtype" == qemu ]]; then
+            [[ "$key" =~ ^(scsi|virtio|sata|ide|efidisk|tpmstate)[0-9]*$ ]] || continue
+        else
+            [[ "$key" == "rootfs" || "$key" =~ ^mp[0-9]+$ ]] || continue
+        fi
         val="${line#*: }"
         volspec="${val%%,*}"        # "storeid:volume" OR "/host/path"
         opts=",${val#*,},"          # wrap with commas for safe matching
 
-        # Bind mount: volspec is an absolute path, not storeid:volume.
-        if [[ "$volspec" == /* ]]; then
+        # qemu: cdrom / cloudinit drives are not data disks — skip them.
+        if [[ "$gtype" == qemu && ( "$opts" == *",media=cdrom,"* || "$volspec" == *cloudinit* ) ]]; then
+            continue
+        fi
+        # Bind mount (lxc only): volspec is an absolute path, not storeid:volume.
+        if [[ "$gtype" != qemu && "$volspec" == /* ]]; then
             PF_WARNINGS+=("$key is a bind mount ($volspec) — NEVER backed up by vzdump")
             PF_BINDMOUNTS+=("$key=$volspec")
             continue

@@ -7,28 +7,30 @@
 # This is the only command that truly proves an offsite backup can be
 # restored AND booted — the rest just verify bytes.
 
+# Best-effort teardown — the throwaway may be either an LXC or a VM, so try both.
 _tr_destroy() {
     local id="$1"
     [[ -n "$id" ]] || return 0
-    pct stop "$id" >/dev/null 2>&1 || true
-    pct destroy "$id" --purge >/dev/null 2>&1 || true
+    pct stop "$id" >/dev/null 2>&1 || true; pct destroy "$id" --purge >/dev/null 2>&1 || true
+    qm  stop "$id" >/dev/null 2>&1 || true; qm  destroy "$id" --purge >/dev/null 2>&1 || true
 }
 
-# Wait until the CT responds to exec (or timeout).
+# Wait until the guest responds (or timeout). qemu → guest-agent ping (via _g_alive,
+# which accepts `running` when no agent is configured); lxc → a command runs inside.
 _tr_wait() {
-    local id="$1" i
+    local id="$1" gtype="${2:-lxc}" i
     for (( i=0; i < ${TR_WAIT_TRIES:-30}; i++ )); do
-        pct exec "$id" -- true >/dev/null 2>&1 && return 0
+        _g_alive "$gtype" "$id" && return 0
         sleep "${TR_WAIT_SLEEP:-2}"
     done
     return 1
 }
 
-# Pick the highest free throwaway vmid in 9000–9099.
+# Pick the highest free throwaway vmid in 9000–9099 (free = neither an LXC nor a VM).
 _tr_pick_target() {
     local n
     for (( n=9099; n >= 9000; n-- )); do
-        pct config "$n" >/dev/null 2>&1 || { printf '%s' "$n"; return 0; }
+        _g_exists "$n" || { printf '%s' "$n"; return 0; }
     done
     return 1
 }

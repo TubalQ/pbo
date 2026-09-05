@@ -26,6 +26,15 @@ _restic() {                    # _restic <repo> <args...>
         "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
 }
 
+# Newest vzdump archive for a vmid in a dumpdir — .tar (lxc) or .vma (qemu).
+# Uses find (returns 0 on no match) instead of a two-glob `ls` (which returns
+# non-zero when one glob misses → trips set -e/pipefail on the assignment).
+_newest_dump() {               # <dir> <vmid> → path (empty if none)
+    find "$1" -maxdepth 1 -type f \
+        \( -name "vzdump-*-$2-*.tar" -o -name "vzdump-*-$2-*.vma" \) \
+        -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-
+}
+
 # Primary READ repo (list/restore/prune): offsite if enabled, otherwise cache.
 _restic_read_repo() {
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
@@ -71,7 +80,7 @@ restic_init() {
 rdo_backup() {
     local vmid="$1"
     local mode; mode="$(_effective_mode "$vmid")"
-    local gtype="lxc"                     # TODO qemu (ADR 0002): qm config detection
+    local gtype; gtype="$(_guest_type "$vmid")" || gtype="lxc"   # lxc | qemu
     local dumpdir="${CACHE_DIR}/${vmid}"
     local job_id="backup-${vmid}-$(date +%Y%m%d-%H%M%S)"
     local jobfile="${JOBS_DIR}/${job_id}.log"
@@ -93,12 +102,13 @@ rdo_backup() {
             vzdump "$vmid" --mode "$mode" --compress 0 --dumpdir "$dumpdir"; then
         die "$EX_SOFTWARE" "vzdump failed for vmid $vmid (see $jobfile)"
     fi
-    local archive; archive="$(ls -1t "${dumpdir}"/vzdump-*-"${vmid}"-*.tar 2>/dev/null | head -1)"
-    [[ -n "$archive" && -f "$archive" ]] || die "$EX_SOFTWARE" "no uncompressed vzdump tar in $dumpdir"
+    # lxc → .tar, qemu → .vma (both uncompressed via --compress 0)
+    local archive; archive="$(_newest_dump "$dumpdir" "$vmid")"
+    [[ -n "$archive" && -f "$archive" ]] || die "$EX_SOFTWARE" "no uncompressed vzdump archive (.tar/.vma) in $dumpdir"
     local base; base="$(basename "$archive")"
     local ts; ts="$(_archive_ts "$base")"; [[ -n "$ts" ]] || ts="$(date +%Y_%m_%d-%H_%M_%S)"
-    # config sidecar for restore (unprivileged/bind-mounts)
-    pct config "$vmid" > "${archive}.conf" 2>/dev/null || true
+    # config sidecar for restore (lxc: unprivileged/bind-mounts; qemu: disks)
+    _g_config "$gtype" "$vmid" > "${archive}.conf" 2>/dev/null || true
 
     # 2. restic backup of the DIRECTORY (stable path → grouping-friendly)
     local wrepo; wrepo="$(_restic_write_repo)"
@@ -149,7 +159,7 @@ rdo_list() {
           | ((.tags // []) | map(select(startswith("type="))) | .[0] // "type=lxc" | sub("type=";"")) as $typ
           | select($vmid != "" and ($only == "" or $vmid == $only))
           | { vmid:$vmid,
-              archive:("vzdump-\($typ)-\($vmid)-\($ts).tar"),
+              archive:("vzdump-\($typ)-\($vmid)-\($ts)." + (if $typ=="qemu" then "vma" else "tar" end)),
               size_bytes:((.summary.total_bytes_processed) // (.summary.data_added) // 0),
               modtime:.time, age_seconds:0, snapshot:.short_id } ]' 2>/dev/null || echo '[]')"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
@@ -177,8 +187,8 @@ _restic_extract() {            # _restic_extract <vmid> <ts> <target> → RX_TAR
     log_info "restic restore snapshot $id → $target (verifies on read-out)"
     _restic "$repo" restore "$id" --target "$target" >/dev/null 2>&1 \
         || { log_error "restic restore failed (snap $id)"; return 1; }
-    RX_TAR="$(find "$target" -type f -name 'vzdump-*.tar' | head -1)"
-    [[ -n "$RX_TAR" ]] || { log_error "restic: no tar in restored snapshot $id"; return 1; }
+    RX_TAR="$(find "$target" -type f \( -name 'vzdump-*.tar' -o -name 'vzdump-*.vma' \) | head -1)"
+    [[ -n "$RX_TAR" ]] || { log_error "restic: no vzdump archive (.tar/.vma) in restored snapshot $id"; return 1; }
     return 0
 }
 
@@ -194,7 +204,7 @@ _conf_unpriv() {               # _conf_unpriv <tar>
 # ---------------------------------------------------------------------------
 rdo_restore() {
     local src="$1" ts="$2" newid="$3" storage="$4" yes="$5"
-    pct config "$newid" >/dev/null 2>&1 && die "$EX_USAGE" "target vmid $newid already exists — refusing"
+    _g_exists "$newid" && die "$EX_USAGE" "target vmid $newid already exists — refusing"
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
         log_info "[dry-run] restic restore $src ($ts) → new vmid $newid"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$src" "target_vmid" "$newid"
@@ -203,9 +213,15 @@ rdo_restore() {
     local rdir="${CACHE_DIR}/restore-${newid}"; rm -rf "$rdir"
     _restic_extract "$src" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
-    local unpriv; unpriv="$(_conf_unpriv "$tar")"
+    local gtype; gtype="$(_guest_type_from_archive "$tar")"
     [[ -n "$storage" ]] || storage="nvmepool"
-    local cmd=(pct restore "$newid" "$tar" --storage "$storage" --unprivileged "$unpriv")
+    local cmd=() unpriv=""
+    if [[ "$gtype" == qemu ]]; then
+        cmd=(qmrestore "$tar" "$newid" --storage "$storage")            # <archive> <vmid>; no --unprivileged
+    else
+        unpriv="$(_conf_unpriv "$tar")"
+        cmd=(pct restore "$newid" "$tar" --storage "$storage" --unprivileged "$unpriv")
+    fi
     if [[ "$yes" != "1" ]]; then
         log_info "restore (preview, run with --yes): ${cmd[*]}"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "planned" "true" "vmid" "$src" \
@@ -215,14 +231,14 @@ rdo_restore() {
     fi
     local jobfile="${JOBS_DIR}/restore-${newid}-$(date +%Y%m%d-%H%M%S).log"
     audit_log "restore src=$src ts=$ts target=$newid storage=$storage unprivileged=$unpriv engine=restic"
-    if ! run_stream "$jobfile" "pct-restore[$newid]" -- "${cmd[@]}"; then
-        die "$EX_SOFTWARE" "pct restore failed for target $newid (see $jobfile)"
+    if ! run_stream "$jobfile" "${gtype}-restore[$newid]" -- "${cmd[@]}"; then
+        die "$EX_SOFTWARE" "${gtype} restore failed for target $newid (see $jobfile)"
     fi
     rm -rf "$rdir" 2>/dev/null || true
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        json_result "restored" "true" "vmid" "$src" "target_vmid" "$newid" "storage" "$storage" "engine" "restic"
+        json_result "restored" "true" "vmid" "$src" "target_vmid" "$newid" "storage" "$storage" "type" "$gtype" "engine" "restic"
     else
-        log_info "restore: DONE → CT $newid (restic, unprivileged=$unpriv, storage=$storage)"
+        log_info "restore: DONE → $( [[ "$gtype" == qemu ]] && echo VM || echo CT ) $newid (restic, $gtype, storage=$storage)"
     fi
     return "$EX_OK"
 }
@@ -248,13 +264,14 @@ rdo_test_restore() {
     local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
     _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
-    local unpriv; unpriv="$(_conf_unpriv "$tar")"
+    local gtype; gtype="$(_guest_type_from_archive "$tar")"
     local storage="${TR_STORAGE:-nvmepool}"
-    local ok=1 stage=""
-    if ! run_stream "$jobfile" "pct-restore[$target]" -- \
-            pct restore "$target" "$tar" --storage "$storage" --unprivileged "$unpriv"; then ok=0; stage="restore"; fi
-    if (( ok )) && ! run_stream "$jobfile" "pct-start[$target]" -- pct start "$target"; then ok=0; stage="start"; fi
-    if (( ok )); then log_info "test-restore: waiting for CT $target to respond…"; _tr_wait "$target" || { ok=0; stage="respond"; }; fi
+    local ok=1 stage="" rcmd=()
+    if [[ "$gtype" == qemu ]]; then rcmd=(qmrestore "$tar" "$target" --storage "$storage")
+    else rcmd=(pct restore "$target" "$tar" --storage "$storage" --unprivileged "$(_conf_unpriv "$tar")"); fi
+    if ! run_stream "$jobfile" "${gtype}-restore[$target]" -- "${rcmd[@]}"; then ok=0; stage="restore"; fi
+    if (( ok )) && ! run_stream "$jobfile" "${gtype}-start[$target]" -- _g_start "$gtype" "$target"; then ok=0; stage="start"; fi
+    if (( ok )); then log_info "test-restore: waiting for $gtype $target to respond…"; _tr_wait "$target" "$gtype" || { ok=0; stage="respond"; }; fi
     _tr_destroy "$target"; rm -rf "$rdir" 2>/dev/null || true
     if (( ok )); then
         notify_success "test-restore OK: vmid $vmid ($ts) booted on throwaway-$target (restic)"
@@ -357,7 +374,18 @@ rdo_verify() {
 
 # Estimated tar size for a guest (ZFS used if possible, otherwise config size).
 _guest_bytes() {
-    local vmid="$1" spec volid ds used szg
+    local vmid="$1" spec volid ds used szg gt total=0 line
+    gt="$(_guest_type "$vmid")" || gt="lxc"
+    if [[ "$gt" == qemu ]]; then                 # sum VM disk sizes (skip cdrom/cloudinit)
+        while IFS= read -r line; do
+            [[ "$line" =~ ^(scsi|virtio|sata|ide|efidisk|tpmstate)[0-9]*: ]] || continue
+            [[ "$line" == *media=cdrom* || "$line" == *cloudinit* ]] && continue
+            szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$line")"
+            [[ "$szg" =~ ^[0-9]+$ ]] && total=$(( total + szg * 1073741824 ))
+        done < <(qm config "$vmid" 2>/dev/null)
+        (( total > 0 )) || total=$(( 8 * 1073741824 ))
+        printf '%s' "$total"; return
+    fi
     spec="$(pct config "$vmid" 2>/dev/null | awk '/^rootfs:/{print $2}')"
     volid="${spec%%,*}"                         # storeid:volume
     ds="${volid/:/\/}"                          # storeid/volume (ZFS dataset)
@@ -389,21 +417,22 @@ rdo_run_batch() {
 
     # --- PHASE 1: dump all → cache ---
     log_info "batch: PHASE 1 — dumping ${#vmids[@]} guests to cache…"
-    local dumped=() v mode dumpdir base ts jobfile
-    declare -A TS_OF=()
+    local dumped=() v mode dumpdir base ts jobfile gt
+    declare -A TS_OF=() GT_OF=()
     for v in "${vmids[@]}"; do
         [[ -n "$v" ]] || continue
         if ! run_preflight "$v"; then log_warn "batch: preflight failed for $v — skipping"; continue; fi
         mode="$(_effective_mode "$v")"; dumpdir="${CACHE_DIR}/${v}"
+        gt="$(_guest_type "$v")" || gt="lxc"
         rm -f "$dumpdir"/vzdump-* 2>/dev/null; mkdir -p "$dumpdir" "$JOBS_DIR"
         jobfile="${JOBS_DIR}/batch-dump-${v}-$(date +%Y%m%d-%H%M%S).log"
-        log_info "batch: vzdump $v ($mode)…"
+        log_info "batch: vzdump $v ($mode, $gt)…"
         if run_stream "$jobfile" "vzdump[$v]" -- vzdump "$v" --mode "$mode" --compress 0 --dumpdir "$dumpdir"; then
-            base="$(ls -1t "$dumpdir"/vzdump-*-"$v"-*.tar 2>/dev/null | head -1)"
+            base="$(_newest_dump "$dumpdir" "$v")"
             if [[ -n "$base" && -f "$base" ]]; then
                 ts="$(_archive_ts "$(basename "$base")")"; [[ -n "$ts" ]] || ts="$(date +%Y_%m_%d-%H_%M_%S)"
-                pct config "$v" > "${base}.conf" 2>/dev/null || true
-                dumped+=("$v"); TS_OF[$v]="$ts"
+                _g_config "$gt" "$v" > "${base}.conf" 2>/dev/null || true
+                dumped+=("$v"); TS_OF[$v]="$ts"; GT_OF[$v]="$gt"
             else
                 log_warn "batch: no tar found for $v after vzdump — skipping"
             fi
@@ -419,7 +448,7 @@ rdo_run_batch() {
         ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
         jobfile="${JOBS_DIR}/backup-${v}-$(date +%Y%m%d-%H%M%S).log"
         if ! run_stream "$jobfile" "restic-backup[$v]" -- \
-                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=lxc" --host "$(hostname -s)"; then
+                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=${GT_OF[$v]:-lxc}" --host "$(hostname -s)"; then
             failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v FAILED"; continue
         fi
         if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
