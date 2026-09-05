@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # lib/menu.sh — interactive prompt-CLI (rclone config style). Pure bash, zero
 # dependencies, no alternate-screen → behaves identically over SSH/serial/tmux.
-# Launched with `lxc-offsite menu`. This is the primary interactive interface.
+# Launched with `pbo menu`. This is the primary interactive interface.
 #
-# No business logic lives here; the menu shells out to `$LXCO_BIN` (or reads
+# No business logic lives here; the menu shells out to `$PBO_BIN` (or reads
 # --json). Config changes (BACKUP_ORDER) are written atomically, mode 0600.
 
-LXCO_BIN="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}"
+PBO_BIN="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
 
 # --- colors (off when not a tty) ---
 if [[ -t 1 ]]; then
@@ -23,7 +23,7 @@ _yn()    { local a; a="$(_ask "$1 (y/n)" "${2:-n}")"; [[ "$a" == [yYjJ]* ]]; }
 
 # Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
 _cfg_set() {
-    local k="$1" v="$2" cfg="${LXCO_CONFIG_LOADED:-${LXCO_CONFIG:-/etc/lxc-offsite/config}}" tmp
+    local k="$1" v="$2" cfg="${PBO_CONFIG_LOADED:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
     [[ -f "$cfg" ]] || { printf 'config not found: %s\n' "$cfg" >&2; return 1; }
     tmp="$(mktemp)"
     if grep -qE "^${k}=" "$cfg"; then sed "s|^${k}=.*|${k}=${v}|" "$cfg" > "$tmp"
@@ -98,10 +98,10 @@ menu_backup() {
     printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
     local c; c="$(_ask "Choice")"
     case "$c" in
-        1) _yn "Back up all protected guests (stream)?" y && { "$LXCO_BIN" run-schedule --stream; _pause; } ;;
-        2) _yn "Back up all protected guests (batch)?" y && { "$LXCO_BIN" run-schedule --batch; _pause; } ;;
+        1) _yn "Back up all protected guests (stream)?" y && { "$PBO_BIN" run-schedule --stream; _pause; } ;;
+        2) _yn "Back up all protected guests (batch)?" y && { "$PBO_BIN" run-schedule --batch; _pause; } ;;
         3) local id; id="$(_ask "VMID to back up")"
-           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Back up $id now?" y && { "$LXCO_BIN" backup "$id"; _pause; } ;;
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Back up $id now?" y && { "$PBO_BIN" backup "$id"; _pause; } ;;
         *) : ;;
     esac
 }
@@ -111,17 +111,17 @@ menu_status() {
     _menu_header
     printf '%s Status%s\n\n' "$C_B" "$C_0"
     printf '  Reading from the repo…\n'
-    "$LXCO_BIN" --json list 2>/dev/null | jq -r '
+    "$PBO_BIN" --json list 2>/dev/null | jq -r '
         .archives as $a | "  guests with snapshots: \($a|map(.vmid)|unique|length)\n  snapshots total:       \($a|length)\n  logical size:          \(($a|map(.size_bytes|tonumber)|add // 0)/1e9*10|floor/10) GB"' 2>/dev/null \
         || echo "  (could not read list)"
     if [[ "${ENGINE:-tar}" == "restic" ]]; then
-        "$LXCO_BIN" --json usage 2>/dev/null | jq -r '"  physical offsite:      \(.physical_bytes/1e9*10|floor/10) GB (dedup \(.compression_ratio)×)"' 2>/dev/null
+        "$PBO_BIN" --json usage 2>/dev/null | jq -r '"  physical offsite:      \(.physical_bytes/1e9*10|floor/10) GB (dedup \(.compression_ratio)×)"' 2>/dev/null
     fi
-    printf '\n  next scheduled run:\n'; systemctl list-timers lxc-offsite.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
+    printf '\n  next scheduled run:\n'; systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
     echo; _pause
 }
 
-# --- SETUP WIZARD (used by `lxc-offsite setup`, install.sh, and the menu) ---
+# --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
 run_setup_wizard() {
     set +e +u
     printf '\n%s=== PBO · Proxmox Backup Offsite — setup ===%s\n\n' "$C_B" "$C_0"
@@ -133,14 +133,14 @@ run_setup_wizard() {
     printf '\n%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
     local cdir
     if _yn "Do you have local cache space you want to use?" n; then
-        cdir="$(_ask "Where should the cache live? (path)" "/var/cache/lxc-offsite")"
+        cdir="$(_ask "Where should the cache live? (path)" "/var/cache/pbo")"
         mkdir -p "$cdir" 2>/dev/null
         _cfg_set LOCAL_REPO true
         _cfg_set CACHE_DIR "$cdir"
         _cfg_set RESTIC_CACHE_REPO "$cdir/repo"
         echo "  Cached mode: local repo at $cdir/repo + copy to offsite."
     else
-        cdir="$(_ask "Path for temporary dump staging" "/var/cache/lxc-offsite")"
+        cdir="$(_ask "Path for temporary dump staging" "/var/cache/pbo")"
         mkdir -p "$cdir" 2>/dev/null
         _cfg_set LOCAL_REPO false
         _cfg_set CACHE_DIR "$cdir"
@@ -162,7 +162,7 @@ run_setup_wizard() {
 
     # --- restic password (DR key) ---
     printf '\n'
-    local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}"
+    local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
     if _yn "Generate a random repo password (recommended)?" y; then
         pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
         echo "  Generated — export it afterwards (menu → Export DR key) and store it safely."
@@ -182,7 +182,7 @@ run_setup_wizard() {
     if _yn "Enable ntfy notifications (alert on failure)?" n; then
         local nurl ntopic
         nurl="$(_ask "ntfy base URL (e.g. https://ntfy.example.com)")"
-        ntopic="$(_ask "ntfy topic" "lxc-offsite")"
+        ntopic="$(_ask "ntfy topic" "pbo")"
         _cfg_set NTFY_URL "$nurl"
         _cfg_set NTFY_TOPIC "$ntopic"
         echo "  ntfy enabled (add a token to NTFY_CREDS_FILE if your server needs auth)."
@@ -193,10 +193,10 @@ run_setup_wizard() {
 
     # --- init ---
     printf '\n  Creating/verifying the restic repo…\n'
-    "$LXCO_BIN" init
+    "$PBO_BIN" init
     printf '\n%s  Setup complete.%s Next steps:\n' "$C_G" "$C_0"
-    printf '    1) Protect guests:  lxc-offsite menu → Guests (scan/add)\n'
-    printf '    2) Test a backup:   lxc-offsite menu → Backup\n'
+    printf '    1) Protect guests:  pbo menu → Guests (scan/add)\n'
+    printf '    2) Test a backup:   pbo menu → Backup\n'
     printf '    3) %sExport your DR key%s → password manager (menu → Export DR key)\n' "$C_B" "$C_0"
     return 0
 }
@@ -209,7 +209,7 @@ menu_export() {
     _menu_header
     printf '%s Export DR key%s\n\n' "$C_B" "$C_0"
     _yn "This shows SECRETS (repo password on screen). Continue?" n || return
-    local pf="${RESTIC_PASSWORD_FILE:-/etc/lxc-offsite/restic-pass}" pw
+    local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}" pw
     pw="$(cat "$pf" 2>/dev/null || echo '<no password file>')"
     echo; echo "  ${C_Y}# PBO DR key — SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
     echo "  ENGINE=restic"
@@ -230,7 +230,7 @@ menu_restore() {
     _menu_header
     printf '%s Restore%s\n\n' "$C_B" "$C_0"
     echo "  Fetching offsite archives…"
-    local listing; listing="$("$LXCO_BIN" --json list 2>/dev/null)"
+    local listing; listing="$("$PBO_BIN" --json list 2>/dev/null)"
     local vmids; vmids="$(jq -r '[.archives[].vmid]|unique|.[]' <<<"$listing" 2>/dev/null)"
     [[ -n "$vmids" ]] || { echo "  No offsite archives."; _pause; return; }
     echo "  Guests with backups: ${C_C}$(echo $vmids | tr '\n' ' ')${C_0}"
@@ -248,7 +248,7 @@ menu_restore() {
     echo "  Storage: ${C_C}$(echo $stores | tr '\n' ' ')${C_0}"
     local storage; storage="$(_ask "Storage" "$(echo "$stores" | head -1)")"
     _yn "Restore $src ($ts) → NEW vmid $newid on $storage?" y || return
-    "$LXCO_BIN" restore "$src" "$ts" --to "$newid" --storage "$storage" --yes
+    "$PBO_BIN" restore "$src" "$ts" --to "$newid" --storage "$storage" --yes
     _pause
 }
 
@@ -261,11 +261,11 @@ menu_maint() {
     printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
     local c; c="$(_ask "Choice")"
     case "$c" in
-        1) "$LXCO_BIN" --dry-run prune; _pause ;;
-        2) _yn "Run a REAL prune (deletes snapshots outside the policy)?" n && { "$LXCO_BIN" prune; _pause; } ;;
-        3) echo "  Verifying (this can take a while)…"; "$LXCO_BIN" verify; _pause ;;
+        1) "$PBO_BIN" --dry-run prune; _pause ;;
+        2) _yn "Run a REAL prune (deletes snapshots outside the policy)?" n && { "$PBO_BIN" prune; _pause; } ;;
+        3) echo "  Verifying (this can take a while)…"; "$PBO_BIN" verify; _pause ;;
         4) local id; id="$(_ask "VMID to test-restore")"
-           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (fetch→boot→destroy a throwaway copy)?" y && { "$LXCO_BIN" test-restore "$id"; _pause; } ;;
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (fetch→boot→destroy a throwaway copy)?" y && { "$PBO_BIN" test-restore "$id"; _pause; } ;;
         *) : ;;
     esac
 }

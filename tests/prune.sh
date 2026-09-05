@@ -2,7 +2,7 @@
 # tests/prune.sh — step 7 tests (prune: cache KEEP_LOCAL + offsite GFS).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite
+BIN=./pbo
 ROOT="$PWD"; export PATH="$ROOT/tests/mocks:$PATH"
 rm -rf "$ROOT/run"; mkdir -p "$ROOT/run/cache"
 
@@ -12,7 +12,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 mkcfg() { local f="$1"; shift; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/run/log"; echo "STATE_DIR=$ROOT/run/state"; echo "LOCK_DIR=$ROOT/run/lock"; echo "RCLONE_REMOTE=hetzner-crypt"; echo "REMOTE_PATH=lxc"; echo "KEEP_LOCAL=2"; for l in "$@"; do echo "$l"; done; } > "$f"; chmod 600 "$f"; }
 
 # --- CACHE: 4 archives for 8001, KEEP_LOCAL=2 → 2 oldest deleted ---
-mkcfg "$ROOT/run/cfg" "OFFSITE_ENABLED=false"; export LXCO_CONFIG="$ROOT/run/cfg"
+mkcfg "$ROOT/run/cfg" "OFFSITE_ENABLED=false"; export PBO_CONFIG="$ROOT/run/cfg"
 mkdir -p "$ROOT/run/cache/8001" "$ROOT/run/cache/restore"
 for ts in 2026_09_01-03_00_00 2026_09_02-03_00_00 2026_09_03-03_00_00 2026_09_04-03_00_00; do
     a="$ROOT/run/cache/8001/vzdump-lxc-8001-$ts.tar.zst"; : > "$a"; : > "$a.sha256"; : > "$a.meta.json"
@@ -36,7 +36,7 @@ after="$(ls "$ROOT/run/cache/8001"/*.tar.zst | wc -l)"
 
 # --- OFFSITE GFS: two archives same day → older intraday deleted, latest kept ---
 mkcfg "$ROOT/run/cfgO" "KEEP_OFFSITE_DAILY=7" "KEEP_OFFSITE_WEEKLY=4" "KEEP_OFFSITE_MONTHLY=6"
-export LXCO_CONFIG="$ROOT/run/cfgO"
+export PBO_CONFIG="$ROOT/run/cfgO"
 printf '8002/\n' > "$ROOT/run/dirs"; export MOCK_LSF_DIRS="$ROOT/run/dirs"
 # archive + sha256 for each
 { for ts in 2026_09_04-15_00_00 2026_09_04-03_00_00 2026_09_03-03_00_00 2026_08_25-03_00_00; do

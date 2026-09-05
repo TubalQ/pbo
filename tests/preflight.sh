@@ -4,7 +4,7 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite
+BIN=./pbo
 
 ROOT="$PWD"; MOCKS="$ROOT/tests/mocks"
 export PATH="$MOCKS:$PATH"
@@ -65,11 +65,11 @@ rootfs: nvmepool:subvol-8003-disk-0,size=400G
 unprivileged: 0
 EOF
 
-printf 'lxc-offsite — step 2 tests (preflight, mocked)\n'
+printf 'pbo — step 2 tests (preflight, mocked)\n'
 
 # --- A: healthy state → ready, exit 0 ---
 mkcfg "$ROOT/run/cfgA"
-out="$(LXCO_CONFIG=$ROOT/run/cfgA $BIN --json preflight 8001 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgA $BIN --json preflight 8001 2>/dev/null)"; rc=$?
 grep -q '"status":"ready"' <<<"$out" && [[ $rc == 0 ]] && ok "healthy state: ready (exit 0)" || bad "A ready ($rc: $out)"
 grep -q '"name":"container_exists","ok":true' <<<"$out" && ok "A: container_exists OK" || bad "A container_exists"
 grep -q '"name":"zfs_space","ok":true' <<<"$out" && ok "A: zfs_space OK" || bad "A zfs_space"
@@ -77,7 +77,7 @@ grep -q '"name":"rclone_remote","ok":true' <<<"$out" && ok "A: rclone_remote OK"
 
 # --- B: bind-mount + backup=0 → warnings, but still ready ---
 mkcfg "$ROOT/run/cfgB"
-out="$(LXCO_CONFIG=$ROOT/run/cfgB $BIN --json preflight 8002 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgB $BIN --json preflight 8002 2>/dev/null)"; rc=$?
 grep -q '"status":"ready"' <<<"$out" && [[ $rc == 0 ]] && ok "B: ready despite warnings" || bad "B ready ($rc)"
 grep -q 'bind mount' <<<"$out" && ok "B: bind-mount gives warning" || bad "B bind-mount-warning ($out)"
 grep -q 'backup=0' <<<"$out" && ok "B: backup=0 gives warning" || bad "B backup=0-warning"
@@ -85,29 +85,29 @@ grep -q 'backup=0' <<<"$out" && ok "B: backup=0 gives warning" || bad "B backup=
 # --- C: too little ZFS space → not_ready, exit 69 ---
 # 8003 uses 400G on nvmepool; need 1.5×=600G > free 452G → FAIL.
 mkcfg "$ROOT/run/cfgC"
-out="$(LXCO_CONFIG=$ROOT/run/cfgC $BIN --json preflight 8003 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgC $BIN --json preflight 8003 2>/dev/null)"; rc=$?
 grep -q '"name":"zfs_space","ok":false' <<<"$out" && ok "C: zfs_space FAIL when too little space" || bad "C zfs_space ($out)"
 [[ $rc == 69 ]] && ok "C: exit EX_UNAVAILABLE (69)" || bad "C exit ($rc)"
 
 # --- D: container does not exist → not_ready ---
 mkcfg "$ROOT/run/cfgD"
-out="$(LXCO_CONFIG=$ROOT/run/cfgD $BIN --json preflight 8099 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgD $BIN --json preflight 8099 2>/dev/null)"; rc=$?
 grep -q '"name":"container_exists","ok":false' <<<"$out" && [[ $rc == 69 ]] && ok "D: unknown container FAIL" || bad "D ($rc: $out)"
 
 # --- E: rclone remote down → FAIL ---
 mkcfg "$ROOT/run/cfgE"
-out="$(MOCK_RCLONE_OK=0 LXCO_CONFIG=$ROOT/run/cfgE $BIN --json preflight 8001 2>/dev/null)"; rc=$?
+out="$(MOCK_RCLONE_OK=0 PBO_CONFIG=$ROOT/run/cfgE $BIN --json preflight 8001 2>/dev/null)"; rc=$?
 grep -q '"name":"rclone_remote","ok":false' <<<"$out" && ok "E: rclone down → FAIL" || bad "E rclone ($out)"
 
 # --- F: cache not writable → FAIL (CACHE_DIR under a regular file) ---
 touch "$ROOT/run/afile"
 mkcfg "$ROOT/run/cfgF" "CACHE_DIR=$ROOT/run/afile/omojligt"
-out="$(LXCO_CONFIG=$ROOT/run/cfgF $BIN --json preflight 8001 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgF $BIN --json preflight 8001 2>/dev/null)"; rc=$?
 grep -q '"name":"cache_writable","ok":false' <<<"$out" && ok "F: non-writable cache → FAIL" || bad "F cache ($out)"
 
 # --- G: backup aborts if preflight fails (integration against low level) ---
 mkcfg "$ROOT/run/cfgG"
-LXCO_CONFIG=$ROOT/run/cfgG $BIN backup 8003 >/dev/null 2>&1; rc=$?
+PBO_CONFIG=$ROOT/run/cfgG $BIN backup 8003 >/dev/null 2>&1; rc=$?
 [[ $rc == 69 ]] && ok "G: backup aborts on failed preflight (exit 69)" || bad "G backup-abort ($rc)"
 
 # --- H: rootfs on non-ZFS storage (local-lvm) → zfs_space skipped, still ready ---
@@ -117,7 +117,7 @@ rootfs: local-lvm:vm-8004-disk-0,size=8G
 unprivileged: 1
 C
 mkcfg "$ROOT/run/cfgH"
-out="$(LXCO_CONFIG=$ROOT/run/cfgH $BIN --json preflight 8004 2>/dev/null)"; rc=$?
+out="$(PBO_CONFIG=$ROOT/run/cfgH $BIN --json preflight 8004 2>/dev/null)"; rc=$?
 grep -q '"name":"zfs_space","ok":true' <<<"$out" && [[ $rc == 0 ]] && ok "H: non-ZFS storage → zfs_space skipped (ready)" || bad "H ($rc: $out)"
 grep -q 'ZFS space check skipped' <<<"$out" && ok "H: explanatory detail" || bad "H detail"
 

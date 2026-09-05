@@ -78,8 +78,8 @@ filesystem if the mount fails — a documented way to fill the system disk witho
 warning.
 
 ```bash
-pvesm add dir lxc-offsite-cache \
-  --path /var/cache/lxc-offsite \
+pvesm add dir pbo-cache \
+  --path /var/cache/pbo \
   --content backup \
   --is_mountpoint 1 \
   --shared 0

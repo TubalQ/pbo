@@ -2,7 +2,7 @@
 # tests/schedule.sh — step 9 (run-schedule + status), fake backup binary.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite; ROOT="$PWD"
+BIN=./pbo; ROOT="$PWD"
 rm -rf "$ROOT/run"; mkdir -p "$ROOT/run/state/jobs"
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -17,10 +17,10 @@ echo "$*" >> "$MOCK_LOG"
 [ "$3" = "$FAILV" ] && exit 1 || exit 0
 F
 chmod +x "$ROOT/run/fakebin"
-export LXCO_SELF_BIN="$ROOT/run/fakebin"
+export PBO_SELF_BIN="$ROOT/run/fakebin"
 
 # --- A: all OK, order preserved ---
-mkcfg "$ROOT/run/cfg" "BACKUP_ORDER=110,111,113"; export LXCO_CONFIG="$ROOT/run/cfg"
+mkcfg "$ROOT/run/cfg" "BACKUP_ORDER=110,111,113"; export PBO_CONFIG="$ROOT/run/cfg"
 : > "$MOCK_LOG"; FAILV="" out="$($BIN --json run-schedule 2>/dev/null)"; rc=$?
 grep -q '"status":"ok"' <<<"$out" && [[ $rc == 0 ]] && ok "run-schedule: all OK (exit 0)" || bad "A ($rc: $out)"
 grep -q '"backups_ok":"3"' <<<"$out" && ok "A: 3 backups run" || bad "A count ($out)"
@@ -34,16 +34,16 @@ grep -q '"backups_failed":"1"' <<<"$out" && ok "B: 1 error counted" || bad "B fa
 [[ $rc != 0 ]] && ok "B: exit != 0 on error" || bad "B exit ($rc)"
 
 # --- C: empty BACKUP_ORDER → EX_CONFIG ---
-mkcfg "$ROOT/run/cfgC" "BACKUP_ORDER="; LXCO_CONFIG="$ROOT/run/cfgC" $BIN run-schedule >/dev/null 2>&1; rc=$?
+mkcfg "$ROOT/run/cfgC" "BACKUP_ORDER="; PBO_CONFIG="$ROOT/run/cfgC" $BIN run-schedule >/dev/null 2>&1; rc=$?
 [[ $rc == 78 ]] && ok "C: empty BACKUP_ORDER → EX_CONFIG" || bad "C exit ($rc)"
 
 # --- D: status shows lock holder + liveness ---
 mkdir -p "$ROOT/run/state"
 printf '111|backup|%s|%s\n' "$$" "$(date +%s)" > "$ROOT/run/state/global.holder"
-out="$(LXCO_CONFIG=$ROOT/run/cfg $BIN --json status 2>/dev/null)"
+out="$(PBO_CONFIG=$ROOT/run/cfg $BIN --json status 2>/dev/null)"
 grep -q '"lock_state":"active"' <<<"$out" && ok "D: live holder → active" || bad "D active ($out)"
 printf '111|backup|999999|%s\n' "$(date +%s)" > "$ROOT/run/state/global.holder"
-out="$(LXCO_CONFIG=$ROOT/run/cfg $BIN --json status 2>/dev/null)"
+out="$(PBO_CONFIG=$ROOT/run/cfg $BIN --json status 2>/dev/null)"
 grep -q 'stale' <<<"$out" && ok "D: dead pid → stale holder" || bad "D stale ($out)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

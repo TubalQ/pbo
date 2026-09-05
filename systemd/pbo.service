@@ -1,12 +1,12 @@
 [Unit]
-Description=lxc-offsite — offsite backup of LXCs (run-schedule)
-Documentation=https://github.com/ai-pvet440/lxc-offsite
+Description=pbo — offsite backup of LXCs (run-schedule)
+Documentation=https://github.com/ai-pvet440/pbo
 After=network-online.target pve-cluster.service pveproxy.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/lxc-offsite/lxc-offsite run-schedule
+ExecStart=/usr/local/lib/pbo/pbo run-schedule
 # Backup + upload (restic over sftp) can take a long time — let it finish.
 TimeoutStartSec=infinity
 # Be gentle to running containers (I/O).

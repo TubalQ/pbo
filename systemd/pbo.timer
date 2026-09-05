@@ -1,6 +1,6 @@
 [Unit]
-Description=Daily lxc-offsite offsite backup
-Documentation=https://github.com/ai-pvet440/lxc-offsite
+Description=Daily pbo offsite backup
+Documentation=https://github.com/ai-pvet440/pbo
 
 [Timer]
 # 05:00 every night.

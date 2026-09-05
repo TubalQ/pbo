@@ -23,8 +23,8 @@ _ntfy_publish() {
     curl -fsS -m 10 "${hdr[@]}" -d "$3" "$url" >/dev/null 2>&1 || true
 }
 
-notify_failure() { _ntfy_publish high    "lxc-offsite: FAILURE" "$1"; }
+notify_failure() { _ntfy_publish high    "pbo: FAILURE" "$1"; }
 notify_success() {
     [[ "${NTFY_ON_SUCCESS:-false}" == "true" ]] || return 0
-    _ntfy_publish default "lxc-offsite: OK" "$1"
+    _ntfy_publish default "pbo: OK" "$1"
 }

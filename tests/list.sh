@@ -2,7 +2,7 @@
 # tests/list.sh — step 5 tests (list + fetch), mocked rclone.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite
+BIN=./pbo
 ROOT="$PWD"; export PATH="$ROOT/tests/mocks:$PATH"
 rm -rf "$ROOT/run"; mkdir -p "$ROOT/run/cache"
 
@@ -10,7 +10,7 @@ pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 mkcfg() { local f="$1"; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/run/log"; echo "STATE_DIR=$ROOT/run/state"; echo "LOCK_DIR=$ROOT/run/lock"; echo "RCLONE_REMOTE=hetzner-crypt"; echo "REMOTE_PATH=lxc"; } > "$f"; chmod 600 "$f"; }
-mkcfg "$ROOT/run/cfg"; export LXCO_CONFIG="$ROOT/run/cfg"
+mkcfg "$ROOT/run/cfg"; export PBO_CONFIG="$ROOT/run/cfg"
 
 # --- list: mock lsjson for vmid 9003 ---
 cat > "$ROOT/run/lsjson" <<'EOF'

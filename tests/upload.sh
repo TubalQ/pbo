@@ -2,7 +2,7 @@
 # tests/upload.sh — step 4 tests (upload + offsite verification), mocked rclone.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite
+BIN=./pbo
 ROOT="$PWD"; MOCKS="$ROOT/tests/mocks"
 export PATH="$MOCKS:$PATH"
 export MOCK_CONF_DIR="$ROOT/run/conf" MOCK_ZFS_USED="$ROOT/run/zfs_used" MOCK_ZPOOL_FREE="$ROOT/run/zpool_free"
@@ -24,7 +24,7 @@ mkcfg() { local f="$1"; shift; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR
 # --- A: happy path (crypt-remote → cryptcheck) ---
 mkcfg "$ROOT/run/cfgA"
 export MOCK_LOG="$ROOT/run/rclone.calls"; : > "$MOCK_LOG"
-out="$(MOCK_REMOTE_TYPE=crypt LXCO_CONFIG=$ROOT/run/cfgA $BIN --json backup 8002 2>/dev/null)"; rc=$?
+out="$(MOCK_REMOTE_TYPE=crypt PBO_CONFIG=$ROOT/run/cfgA $BIN --json backup 8002 2>/dev/null)"; rc=$?
 grep -q '"status":"uploaded"' <<<"$out" && [[ $rc == 0 ]] && ok "upload: status uploaded (exit 0)" || bad "A status ($rc: $out)"
 grep -q '"verified":"offsite"' <<<"$out" && ok "A: verified=offsite" || bad "A verified"
 grep -q '^copy ' "$MOCK_LOG" && ok "A: rclone copy called" || bad "A copy not called"
@@ -33,19 +33,19 @@ grep -q -- '--include 8002' "$MOCK_LOG" 2>/dev/null || grep -q 'include' "$MOCK_
 
 # --- B: non-crypt remote → check --checksum ---
 mkcfg "$ROOT/run/cfgB"; : > "$MOCK_LOG"
-MOCK_REMOTE_TYPE=sftp LXCO_CONFIG=$ROOT/run/cfgB $BIN --json backup 8002 >/dev/null 2>&1
+MOCK_REMOTE_TYPE=sftp PBO_CONFIG=$ROOT/run/cfgB $BIN --json backup 8002 >/dev/null 2>&1
 grep -q '^check ' "$MOCK_LOG" && ok "B: sftp-remote → check --checksum" || bad "B check not chosen ($(cat "$MOCK_LOG"))"
 grep -q 'checksum' "$MOCK_LOG" && ok "B: --checksum flag included" || bad "B checksum-flag"
 
 # --- C: verification fails → delete + abort (EX_DATAERR 65) ---
 mkcfg "$ROOT/run/cfgC"; : > "$MOCK_LOG"
-MOCK_REMOTE_TYPE=crypt MOCK_VERIFY_OK=0 LXCO_CONFIG=$ROOT/run/cfgC $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
+MOCK_REMOTE_TYPE=crypt MOCK_VERIFY_OK=0 PBO_CONFIG=$ROOT/run/cfgC $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
 [[ $rc == 65 ]] && ok "C: verification error → EX_DATAERR (65)" || bad "C exit ($rc)"
 grep -q '^delete ' "$MOCK_LOG" && ok "C: uploaded file deleted on verification error" || bad "C delete ($(cat "$MOCK_LOG"))"
 
 # --- D: upload fails → abort (EX_UNAVAILABLE 69), no verification ---
 mkcfg "$ROOT/run/cfgD"; : > "$MOCK_LOG"
-MOCK_UPLOAD_OK=0 LXCO_CONFIG=$ROOT/run/cfgD $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
+MOCK_UPLOAD_OK=0 PBO_CONFIG=$ROOT/run/cfgD $BIN --json backup 8002 >/dev/null 2>&1; rc=$?
 [[ $rc == 69 ]] && ok "D: upload error → EX_UNAVAILABLE (69)" || bad "D exit ($rc)"
 grep -qE '^(check|cryptcheck) ' "$MOCK_LOG" && bad "D: verification ran despite upload error" || ok "D: no verification after upload error"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lxc-offsite — offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
+# pbo — offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
 # Storage Box), using restic as the backup engine.
 # Copyright (C) 2026  ai-pvet440
 # License: AGPL-3.0-or-later (see LICENSE).
@@ -12,7 +12,7 @@
 set -Eeuo pipefail
 
 # Resolve our own directory so lib/ works both from the repo and when installed
-# (follow the symlink /usr/local/sbin/lxc-offsite → /usr/local/lib/lxc-offsite/lxc-offsite).
+# (follow the symlink /usr/local/sbin/pbo → /usr/local/lib/pbo/pbo).
 SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
@@ -38,9 +38,9 @@ source "${SELF_DIR}/lib/testrestore.sh"
 source "${SELF_DIR}/lib/schedule.sh"
 # shellcheck source=lib/restic.sh  (the restic engine, enabled with ENGINE=restic)
 source "${SELF_DIR}/lib/restic.sh"
-# shellcheck source=lib/tui.sh  (legacy Textual TUI, `lxc-offsite tui` — frozen)
+# shellcheck source=lib/tui.sh  (legacy Textual TUI, `pbo tui` — frozen)
 source "${SELF_DIR}/lib/tui.sh"
-# shellcheck source=lib/menu.sh  (interactive prompt-CLI, `lxc-offsite menu`)
+# shellcheck source=lib/menu.sh  (interactive prompt-CLI, `pbo menu`)
 source "${SELF_DIR}/lib/menu.sh"
 
 readonly VERSION="0.1.0-dev"
@@ -51,14 +51,14 @@ readonly VERSION="0.1.0-dev"
 # ---------------------------------------------------------------------------
 JSON_OUTPUT=0
 DRY_RUN=0
-LXCO_COMMAND=""
+PBO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-lxc-offsite — offsite backup of Proxmox LXCs to any SFTP target, via restic.
+pbo — offsite backup of Proxmox LXCs to any SFTP target, via restic.
 
 Usage:
-  lxc-offsite [global flags] <command> [arguments]
+  pbo [global flags] <command> [arguments]
 
 Global flags:
   --json              machine-readable output on stdout
@@ -97,7 +97,7 @@ parse_global_flags() {
             --json)     JSON_OUTPUT=1; shift ;;
             --dry-run)  DRY_RUN=1; shift ;;
             -h|--help)  usage; exit "$EX_OK" ;;
-            -V|--version) printf 'lxc-offsite %s\n' "$VERSION"; exit "$EX_OK" ;;
+            -V|--version) printf 'pbo %s\n' "$VERSION"; exit "$EX_OK" ;;
             --) shift; break ;;
             -*) printf 'unknown global flag: %s\n' "$1" >&2; usage >&2; exit "$EX_USAGE" ;;
             *)  break ;;
@@ -215,14 +215,14 @@ main() {
     parse_global_flags "$@"
     set -- "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 
-    LXCO_COMMAND="${1:-}"
-    [[ -n "$LXCO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
+    PBO_COMMAND="${1:-}"
+    [[ -n "$PBO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
     shift || true
 
     load_config
     trap cleanup_locks EXIT
 
-    case "$LXCO_COMMAND" in
+    case "$PBO_COMMAND" in
         init)          cmd_init "$@" ;;
         setup)         cmd_setup "$@" ;;
         menu)          cmd_menu "$@" ;;
@@ -239,7 +239,7 @@ main() {
         prune)         cmd_prune "$@" ;;
         test-restore)  cmd_test_restore "$@" ;;
         help)          usage ;;
-        *) printf 'unknown command: %s\n' "$LXCO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
+        *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
     esac
 }
 

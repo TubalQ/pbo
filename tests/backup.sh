@@ -2,7 +2,7 @@
 # tests/backup.sh — step 3 tests (dump/sha256/structure check/meta), mocked vzdump.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-BIN=./lxc-offsite
+BIN=./pbo
 ROOT="$PWD"; MOCKS="$ROOT/tests/mocks"
 export PATH="$MOCKS:$PATH"
 export MOCK_CONF_DIR="$ROOT/run/conf"
@@ -28,7 +28,7 @@ unprivileged: 1
 C
 mkcfg() { local f="$1"; { echo "CACHE_DIR=$ROOT/run/cache"; echo "LOG_DIR=$ROOT/run/log"; echo "STATE_DIR=$ROOT/run/state"; echo "LOCK_DIR=$ROOT/run/lock"; echo "RCLONE_REMOTE=dev-mock"; echo "OFFSITE_ENABLED=false"; } > "$f"; chmod 600 "$f"; }
 mkcfg "$ROOT/run/cfg"
-export LXCO_CONFIG="$ROOT/run/cfg"
+export PBO_CONFIG="$ROOT/run/cfg"
 
 # --- run backup ---
 out="$($BIN --json backup 8002 2>/dev/null)"; rc=$?
@@ -81,7 +81,7 @@ grep -q '"mode": "stop"' "$a.meta.json" && ok "fuse-CT → --mode stop (auto-gua
 grep -q '"mode": "snapshot"' "$archive.meta.json" && ok "non-fuse CT → snapshot" || bad "8002 mode"
 # VZDUMP_STOP_VMIDS override
 mkcfg "$ROOT/run/cfg2"; echo "VZDUMP_STOP_VMIDS=8002" >> "$ROOT/run/cfg2"
-out="$(LXCO_CONFIG=$ROOT/run/cfg2 $BIN --json backup 8002 2>/dev/null)"
+out="$(PBO_CONFIG=$ROOT/run/cfg2 $BIN --json backup 8002 2>/dev/null)"
 a2="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["archive"])' <<<"$out" 2>/dev/null)"
 grep -q '"mode": "stop"' "$a2.meta.json" && ok "VZDUMP_STOP_VMIDS override → stop" || bad "override mode"
 

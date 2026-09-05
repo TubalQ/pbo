@@ -1,4 +1,4 @@
-# lxc-offsite — plan
+# pbo — plan
 
 A new tool, built from scratch. It takes a local, verified `vzdump` archive file of
 an LXC, ships it offsite via SFTP, and can fetch it back to a local cache for
@@ -57,7 +57,7 @@ space on Storage Box is cheap.
 LXC (running)
   │  vzdump --mode snapshot            ZFS snapshot, ~seconds frozen
   ▼
-/var/cache/lxc-offsite/<vmid>/
+/var/cache/pbo/<vmid>/
   vzdump-lxc-<vmid>-<ts>.tar.zst       the artifact
   vzdump-lxc-<vmid>-<ts>.tar.zst.sha256
   vzdump-lxc-<vmid>-<ts>.meta.json     vmid, hostname, storage, size, pve-version
@@ -80,7 +80,7 @@ offsite:lxc/<vmid>/
   │  rclone lsjson              list available archives
   │  rclone copy → cache        only the selected archive
   ▼
-/var/cache/lxc-offsite/restore/
+/var/cache/pbo/restore/
   │  sha256 -c                  against the sidecar file
   │  zstd -t                    structure check
   ▼
@@ -95,23 +95,23 @@ a script is how you lose production data.
 ## 3. Components
 
 ```
-/usr/local/lib/lxc-offsite/
-  lxc-offsite            main script (bash, set -Eeuo pipefail)
+/usr/local/lib/pbo/
+  pbo            main script (bash, set -Eeuo pipefail)
   lib/backup.sh
   lib/restore.sh
   lib/verify.sh
   lib/notify.sh          ntfy
   api/                   FastAPI app, thin shell around the CLI
   web/                   static frontend, no build step
-/etc/lxc-offsite/
+/etc/pbo/
   config                 KEY=VALUE, chmod 600
   rclone.conf            chmod 600, root:root
   api.env                bind address, OIDC settings, chmod 600
-/var/cache/lxc-offsite/  ZFS dataset, own quota
-/var/log/lxc-offsite/
-  lxc-offsite.log
+/var/cache/pbo/  ZFS dataset, own quota
+/var/log/pbo/
+  pbo.log
   audit.log              who did what via the GUI
-/var/lib/lxc-offsite/
+/var/lib/pbo/
   state.json
   jobs/                  one file per asynchronous job
 ```
@@ -135,8 +135,8 @@ Subcommands:
 ## 4. Configuration
 
 ```ini
-# /etc/lxc-offsite/config
-CACHE_DIR=/var/cache/lxc-offsite
+# /etc/pbo/config
+CACHE_DIR=/var/cache/pbo
 RCLONE_REMOTE=hetzner-crypt
 REMOTE_PATH=lxc
 VZDUMP_MODE=snapshot
@@ -151,27 +151,27 @@ KEEP_LOCAL=2
 KEEP_OFFSITE_DAILY=7
 KEEP_OFFSITE_WEEKLY=4
 KEEP_OFFSITE_MONTHLY=6
-NTFY_URL=https://ntfy.example/lxc-offsite
+NTFY_URL=https://ntfy.example/pbo
 NTFY_ON_SUCCESS=false      # alert on failure, not on success
 ```
 
 rclone remote, best practice for Hetzner Storage Box:
 
 ```ini
-# /etc/lxc-offsite/rclone.conf
+# /etc/pbo/rclone.conf
 [hetzner]
 type = sftp
 host = uXXXXX.your-storagebox.de
 user = uXXXXX
 port = 23
-key_file = /etc/lxc-offsite/id_ed25519
+key_file = /etc/pbo/id_ed25519
 shell_type = unix
 md5sum_command = md5sum
 sha1sum_command = sha1sum
 
 [hetzner-crypt]
 type = crypt
-remote = hetzner:lxc-offsite
+remote = hetzner:pbo
 filename_encryption = standard
 directory_name_encryption = true
 password = <rclone obscure>
@@ -244,7 +244,7 @@ the containers that are running.
 
 Two locks, not one:
 
-- **Global lock** (`/var/lock/lxc-offsite.global`) — lets through exactly one
+- **Global lock** (`/var/lock/pbo.global`) — lets through exactly one
   backup or push operation at a time, regardless of vmid.
 - **Per-vmid lock** — prevents the same container from being queued twice.
 
@@ -295,8 +295,8 @@ own backup interface for free** for everything already present locally: list, da
 size, restore button, prune settings, protected backups.
 
 ```bash
-pvesm add dir lxc-offsite-cache \
-  --path /var/cache/lxc-offsite \
+pvesm add dir pbo-cache \
+  --path /var/cache/pbo \
   --content backup \
   --is_mountpoint 1 \
   --shared 0
@@ -336,7 +336,7 @@ what is running now, what is waiting, and for how long. Without it, a queued bac
 looks like a backup that is not happening. Manually starting a container that is
 already queued must give a clear message, not silently add it again.
 
-**Configuration.** A form against `/etc/lxc-offsite/config`: retention policy per
+**Configuration.** A form against `/etc/pbo/config`: retention policy per
 tier, bandwidth limit, schedule, ntfy URL, cache quota. Validation before writing,
 and the configuration is versioned — every change is saved with a timestamp and
 user so that a faulty retention change can be traced and rolled back.
@@ -351,7 +351,7 @@ No business logic in the API layer. If the GUI and the CLI can give different
 answers, we have built it wrong.
 
 Long-running operations (backup, push, fetch, restore, verify) are started as
-transient systemd units via `systemd-run --unit=lxc-offsite-job-<id>` and return a
+transient systemd units via `systemd-run --unit=pbo-job-<id>` and return a
 job ID immediately. The GUI polls status. **No HTTP request may wait on an rclone
 upload** — that produces timeouts that look like failures but are not.
 
@@ -383,17 +383,17 @@ Instead, a single timer that starts one job which works through the containers i
 the configured order, sequentially.
 
 ```ini
-# /etc/systemd/system/lxc-offsite.timer
+# /etc/systemd/system/pbo.timer
 [Timer]
 OnCalendar=*-*-* 03:30:00
 Persistent=true
 ```
 
 ```ini
-# /etc/systemd/system/lxc-offsite.service
+# /etc/systemd/system/pbo.service
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/lxc-offsite/lxc-offsite run-schedule
+ExecStart=/usr/local/lib/pbo/pbo run-schedule
 TimeoutStartSec=infinity
 ```
 
@@ -423,7 +423,7 @@ The tool is not done until:
    refuses to delete the latest archive regardless of policy.
 8. The cache shows up as storage in PVE's own backup interface and restore can be
    run from there.
-9. The GUI shows the same numbers as `lxc-offsite list --json`. If they differ, it
+9. The GUI shows the same numbers as `pbo list --json`. If they differ, it
    is a blocking bug.
 10. A push that takes 40 minutes produces no HTTP timeout and shows a live log.
 11. The API runs as non-root and cannot run anything outside the sudoers list.

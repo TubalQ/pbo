@@ -1,11 +1,11 @@
-# Implementation prompt — lxc-offsite
+# Implementation prompt — pbo
 
 Paste the following into Claude Code in an empty repo directory.
 Attach `PLAN.md` in the same directory before you run it.
 
 ---
 
-You are to build `lxc-offsite` from scratch — a new production tool for Proxmox VE
+You are to build `pbo` from scratch — a new production tool for Proxmox VE
 that takes vzdump archives of LXC containers, ships them to Hetzner Storage Box via
 rclone over SFTP, and can fetch them back for restore. With a PBS-style web
 interface.
@@ -36,13 +36,13 @@ section 1 so you know which mistakes not to repeat, but import nothing.
 ## Language and style
 
 - CLI: Bash, `#!/usr/bin/env bash`, `set -Eeuo pipefail`
-- API: Python 3 + FastAPI, in its own venv under `/opt/lxc-offsite`
+- API: Python 3 + FastAPI, in its own venv under `/opt/pbo`
 - Frontend: ExtJS + `proxmox-widget-toolkit` from `/usr/share/javascript/`
 - The project is licensed **AGPL-3.0**, LICENSE file in the repo root from commit one
 - No external dependencies beyond: `rclone`, `vzdump`, `pct`, `zstd`, `jq`,
   `sha256sum`, `flock`, `curl`, `systemd`
 - Every function that can fail returns a meaningful exit code
-- All output is logged to both stdout and `/var/log/lxc-offsite/lxc-offsite.log`
+- All output is logged to both stdout and `/var/log/pbo/pbo.log`
   with timestamp and level (INFO/WARN/ERROR)
 - No `echo` for errors — use a `log_error` function that also triggers a notification
 - Comments in Swedish, code and variable names in English
@@ -53,7 +53,7 @@ Build and test one step at a time. Stop and report after each step before moving
 on.
 
 **Step 1 — skeleton and configuration.** Argument parsing, subcommands, config
-reading from `/etc/lxc-offsite/config`, logging, lock handling, `--dry-run` and
+reading from `/etc/pbo/config`, logging, lock handling, `--dry-run` and
 `--json` globally.
 
 Locking is two-level and must be correct from the start: a **global** lock that
@@ -107,13 +107,13 @@ restore to a throwaway vmid in the range 9000–9099, start, wait for the contai
 to respond, stop, destroy. Report the result via ntfy.
 
 **Step 9 — systemd and scheduling.** **One** timer, not a template per container:
-`lxc-offsite.timer` + `lxc-offsite.service` that runs `lxc-offsite run-schedule`.
+`pbo.timer` + `pbo.service` that runs `pbo run-schedule`.
 That subcommand works through `BACKUP_ORDER` sequentially, one container at a time.
 `Type=oneshot`, `TimeoutStartSec=infinity`, `OnFailure=` that notifies. No
 `RandomizedDelaySec` — the run is sequential anyway and the start time should be
 predictable.
 
-Also implement `lxc-offsite status`: running jobs, queue length, and which vmid
+Also implement `pbo status`: running jobs, queue length, and which vmid
 holds the global lock.
 
 **Step 10 — PVE storage for the cache.** Register the cache as a directory storage
@@ -137,7 +137,7 @@ hook.
 
 **Step 13 — auth and audit.** An OIDC provider via a reverse proxy forward-auth. Destructive
 actions require the user to type the vmid manually as confirmation. All such
-actions are logged in `/var/log/lxc-offsite/audit.log` with the OIDC subject,
+actions are logged in `/var/log/pbo/audit.log` with the OIDC subject,
 timestamp, and parameters. The hook-script path is shown read-only — it requires
 root@pam and must never be editable via the web.
 

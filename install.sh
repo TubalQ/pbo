@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# install.sh — installs lxc-offsite on a Proxmox host. Idempotent.
+# install.sh — installs pbo on a Proxmox host. Idempotent.
 # NEVER enables the timer automatically (it prints how to do that yourself).
 #
 # Run as root on the host:  ./install.sh
 set -Eeuo pipefail
 
 SRC="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-LIBDIR=/usr/local/lib/lxc-offsite
-BIN=/usr/local/sbin/lxc-offsite
-CFGDIR=/etc/lxc-offsite
+LIBDIR=/usr/local/lib/pbo
+BIN=/usr/local/sbin/pbo
+CFGDIR=/etc/pbo
 UNITDIR=/etc/systemd/system
 
 die(){ printf 'install: %s\n' "$*" >&2; exit 1; }
@@ -26,13 +26,16 @@ for b in vzdump pct zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING
 
 echo "==> Program files → $LIBDIR"
 install -d -m 0755 "$LIBDIR" "$LIBDIR/lib"
-install -m 0755 "$SRC/lxc-offsite" "$LIBDIR/lxc-offsite"
+install -m 0755 "$SRC/pbo" "$LIBDIR/pbo"
 install -m 0644 "$SRC"/lib/*.sh "$LIBDIR/lib/"
-ln -sf "$LIBDIR/lxc-offsite" "$BIN"
-echo "    $BIN → $LIBDIR/lxc-offsite"
+ln -sf "$LIBDIR/pbo" "$BIN"
+echo "    $BIN → $LIBDIR/pbo"
+# Backward-compat: keep the old name working (pbo was formerly 'lxc-offsite').
+ln -sf "$LIBDIR/pbo" /usr/local/sbin/lxc-offsite
+echo "    /usr/local/sbin/lxc-offsite → $LIBDIR/pbo  (compat alias)"
 
 echo "==> Directories"
-install -d -m 0755 /var/log/lxc-offsite /var/lib/lxc-offsite /var/lib/lxc-offsite/jobs
+install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
 install -d -m 0700 "$CFGDIR"
 
 echo "==> Config"
@@ -45,17 +48,17 @@ else
 fi
 
 echo "==> systemd units (installed, NOT enabled)"
-install -m 0644 "$SRC/systemd/lxc-offsite.service" "$UNITDIR/lxc-offsite.service"
-install -m 0644 "$SRC/systemd/lxc-offsite.timer"   "$UNITDIR/lxc-offsite.timer"
+install -m 0644 "$SRC/systemd/pbo.service" "$UNITDIR/pbo.service"
+install -m 0644 "$SRC/systemd/pbo.timer"   "$UNITDIR/pbo.timer"
 systemctl daemon-reload
 
 cat <<EOF
 
-Installed: lxc-offsite (PBO · Proxmox Backup Offsite).
+Installed: pbo (PBO · Proxmox Backup Offsite).
 
   Setup:      $BIN setup     — guided config (engine/cache/sftp/password/mode/ntfy → init)
   Interface:  $BIN menu      — interactive prompt-CLI (guests/backup/restore/status)
-  Schedule:   systemctl enable --now lxc-offsite.timer   (runs 05:00 nightly)
+  Schedule:   systemctl enable --now pbo.timer   (runs 05:00 nightly)
 
 Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
 EOF

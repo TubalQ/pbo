@@ -1,7 +1,7 @@
 # ADR 0001 — restic as backup engine (Path A: vzdump tar in restic)
 
 - **Status:** Accepted — 2026-09-04
-- **Decision:** Adopt **restic** as lxc-offsite's storage/transport/encryption/
+- **Decision:** Adopt **restic** as pbo's storage/transport/encryption/
   verification/retention engine, in **Path A** (the vzdump archive is stored *in* restic).
   Keep the CLI's JSON envelope and the `pct restore` integration — change the engine, not the contract.
 - **Context tags:** SFTP-only · local-only · web-UI · no remote compute
@@ -14,7 +14,7 @@
 
 ## 1. Context and problem
 
-lxc-offsite is deliberately built for people who do **not** have a machine to run
+pbo is deliberately built for people who do **not** have a machine to run
 PBS on, but who do have a dumb **SFTP box** (Hetzner Storage Box, rsync.net, own
 ssh). The constraints are fixed: **transport = SFTP**, **operation = local-only on
 a Proxmox host, self-contained, with a web UI**, **no remote compute**.

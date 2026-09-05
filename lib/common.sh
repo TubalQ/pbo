@@ -23,9 +23,9 @@ readonly EX_CONFIG=78       # configuration error
 # Default values. Overridden by the config file (KEY=VALUE) sourced afterwards.
 # ---------------------------------------------------------------------------
 set_defaults() {
-    : "${CACHE_DIR:=/var/cache/lxc-offsite}"
-    : "${LOG_DIR:=/var/log/lxc-offsite}"
-    : "${STATE_DIR:=/var/lib/lxc-offsite}"
+    : "${CACHE_DIR:=/var/cache/pbo}"
+    : "${LOG_DIR:=/var/log/pbo}"
+    : "${STATE_DIR:=/var/lib/pbo}"
     : "${LOCK_DIR:=/var/lock}"
     : "${RCLONE_REMOTE:=hetzner-crypt}"
     : "${REMOTE_PATH:=lxc}"
@@ -61,16 +61,16 @@ set_defaults() {
     : "${LOCAL_REPO:=true}"                               # true=cached (local repo+copy), false=offsite-only
     : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # local restic repo (cache tier)
     : "${RESTIC_OFFSITE_REPO:=}"                          # sftp:user@host:port/path (native) or local dir (test)
-    : "${RESTIC_PASSWORD_FILE:=/etc/lxc-offsite/restic-pass}"  # repo password (DR key), 0600
+    : "${RESTIC_PASSWORD_FILE:=/etc/pbo/restic-pass}"  # repo password (DR key), 0600
     : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restic's own metadata cache
     : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # local repo: keep N latest per guest
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
     : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max) — speeds up restore considerably
 
     # Derived paths.
-    LOG_FILE="${LOG_DIR}/lxc-offsite.log"
+    LOG_FILE="${LOG_DIR}/pbo.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"
-    GLOBAL_LOCK_FILE="${LOCK_DIR}/lxc-offsite.global"
+    GLOBAL_LOCK_FILE="${LOCK_DIR}/pbo.global"
     GLOBAL_HOLDER_FILE="${STATE_DIR}/global.holder"
     JOBS_DIR="${STATE_DIR}/jobs"
 }
@@ -80,22 +80,22 @@ set_defaults() {
 # if it is group-/world-writable (it may contain paths but never secrets).
 # ---------------------------------------------------------------------------
 load_config() {
-    local cfg="${LXCO_CONFIG:-/etc/lxc-offsite/config}"
+    local cfg="${PBO_CONFIG:-/etc/pbo/config}"
     if [[ -f "$cfg" ]]; then
         # Refuse a config that is group-/world-WRITABLE — it controls what root runs.
         # (Readable by others is fine; the file contains no secrets.)
         local perms; perms="$(stat -c '%a' "$cfg")"
         local grp="${perms: -2:1}" oth="${perms: -1:1}"
         if (( (grp & 2) || (oth & 2) )); then
-            printf 'lxc-offsite: REFUSING to source group-/world-writable config (%s): %s\n' \
+            printf 'pbo: REFUSING to source group-/world-writable config (%s): %s\n' \
                 "$perms" "$cfg" >&2
             exit "$EX_CONFIG"
         fi
         # shellcheck disable=SC1090
         source "$cfg"
-        LXCO_CONFIG_LOADED="$cfg"
+        PBO_CONFIG_LOADED="$cfg"
     else
-        LXCO_CONFIG_LOADED=""
+        PBO_CONFIG_LOADED=""
     fi
     set_defaults
     # Point rclone at our own config if given (rclone reads the RCLONE_CONFIG env).
@@ -180,7 +180,7 @@ json_escape() {
 json_result() {
     local status="$1" ok="$2"; shift 2
     local out; out="$(printf '{"command":"%s","status":"%s","ok":%s' \
-        "$(json_escape "${LXCO_COMMAND:-}")" "$(json_escape "$status")" "$ok")"
+        "$(json_escape "${PBO_COMMAND:-}")" "$(json_escape "$status")" "$ok")"
     out+="$(printf ',"dry_run":%s' "$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )")"
     while [[ $# -ge 2 ]]; do
         out+="$(printf ',"%s":"%s"' "$(json_escape "$1")" "$(json_escape "$2")")"
@@ -192,7 +192,7 @@ json_result() {
 
 # Uniform "not yet implemented" response (step 1: all operations).
 not_implemented() {
-    local cmd="${LXCO_COMMAND:-?}"
+    local cmd="${PBO_COMMAND:-?}"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "not_implemented" "false"
     else

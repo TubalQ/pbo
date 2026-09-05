@@ -6,10 +6,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-BIN=./lxc-offsite
-export LXCO_CONFIG="$PWD/etc/config.dev"
+BIN=./pbo
+export PBO_CONFIG="$PWD/etc/config.dev"
 LOCKDIR="$PWD/run/lock"
-GLOBAL_LOCK="$LOCKDIR/lxc-offsite.global"
+GLOBAL_LOCK="$LOCKDIR/pbo.global"
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -22,7 +22,7 @@ check_exit() {
     [[ "$got" == "$want" ]] && ok "$desc (exit $got)" || bad "$desc (got $got, wanted $want)"
 }
 
-printf 'lxc-offsite — skeleton tests\n'
+printf 'pbo — skeleton tests\n'
 rm -rf "$PWD/run"
 
 # --- the tool must create LOCK_DIR itself (regression: ensure_dirs) ---
@@ -71,7 +71,7 @@ elapsed=$((SECONDS - t0))
 flock -u "$H"; exec {H}>&-
 
 # --- per-vmid lock: double-queueing the SAME vmid is rejected ---
-VLOCK="$LOCKDIR/lxc-offsite.vmid-9004.lock"
+VLOCK="$LOCKDIR/pbo.vmid-9004.lock"
 exec {V}>"$VLOCK"; flock -n "$V"
 check_exit "per-vmid lock prevents double-queueing" 75 $BIN backup 9004
 flock -u "$V"; exec {V}>&-
@@ -86,7 +86,7 @@ flock -u "$H"; exec {H}>&-
 
 # --- config: unsafe permissions are refused ---
 tmpcfg="$PWD/run/badcfg"; echo 'CACHE_DIR=/tmp/x' > "$tmpcfg"; chmod 666 "$tmpcfg"
-LXCO_CONFIG="$tmpcfg" $BIN status >/dev/null 2>&1
+PBO_CONFIG="$tmpcfg" $BIN status >/dev/null 2>&1
 [[ $? == 78 ]] && ok "config with 666 is refused (EX_CONFIG)" || bad "unsafe config not refused"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

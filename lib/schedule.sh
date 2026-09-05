@@ -12,7 +12,7 @@ do_run_schedule() {
     # Ransomware protection: SFTP provides no append-only. Remind about Storage Box snapshots.
     [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]] || \
         log_warn "run-schedule: Storage Box snapshots NOT confirmed — a compromised host can delete offsite. Enable Hetzner's snapshots and set STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
-    local self="${LXCO_SELF_BIN:-${SELF_DIR}/lxc-offsite}"
+    local self="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
     local ids=(); IFS=', ' read -ra ids <<<"$BACKUP_ORDER"
 
     # BATCH mode (restic): dump all → upload all, the SAME repo. Fallback→stream on space shortage.

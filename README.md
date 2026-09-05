@@ -1,9 +1,9 @@
-# lxc-offsite
+# pbo
 
 Offsite backup of Proxmox LXC containers to any SFTP target (for example a
 Hetzner Storage Box), using [restic](https://restic.net/) as the backup engine.
 
-Not everyone can run a Proxmox Backup Server. `lxc-offsite` gives you a similar
+Not everyone can run a Proxmox Backup Server. `pbo` gives you a similar
 result — deduplicated, encrypted, incremental offsite backups with easy
 restores — using nothing but SFTP storage and a single self-contained tool that
 runs on the Proxmox host itself.
@@ -11,7 +11,7 @@ runs on the Proxmox host itself.
 It takes a `vzdump` archive of each container, stores it inside a restic
 repository, ships it offsite over native SFTP, and can fetch it back and
 `pct restore` it to a brand-new VMID for disaster recovery. There is an
-interactive prompt-CLI (`lxc-offsite menu`) for day-to-day use.
+interactive prompt-CLI (`pbo menu`) for day-to-day use.
 
 > The tool should be debuggable at three in the morning by someone who did not
 > write it.
@@ -36,8 +36,8 @@ interactive prompt-CLI (`lxc-offsite menu`) for day-to-day use.
 ## Install
 
 ```bash
-git clone https://github.com/ai-pvet440/lxc-offsite
-cd lxc-offsite
+git clone https://github.com/ai-pvet440/pbo
+cd pbo
 sudo ./install.sh          # installs to /usr/local, offers the setup wizard
 ```
 
@@ -46,11 +46,11 @@ sudo ./install.sh          # installs to /usr/local, offers the setup wizard
 ## Quick start
 
 ```bash
-lxc-offsite setup          # interactive wizard: engine/cache/sftp/password/mode/ntfy → init
-lxc-offsite menu           # interactive prompt-CLI: guests / backup / restore / status
+pbo setup          # interactive wizard: engine/cache/sftp/password/mode/ntfy → init
+pbo menu           # interactive prompt-CLI: guests / backup / restore / status
 ```
 
-The wizard writes `/etc/lxc-offsite/config` (0600) and creates the restic repo.
+The wizard writes `/etc/pbo/config` (0600) and creates the restic repo.
 After setup, use the menu to protect guests (scan the cluster, add/remove
 VMIDs), run a backup, and — importantly — **export your DR key** to a password
 manager.
@@ -58,13 +58,13 @@ manager.
 ### Schedule nightly backups
 
 ```bash
-systemctl enable --now lxc-offsite.timer    # runs run-schedule at 05:00 nightly
+systemctl enable --now pbo.timer    # runs run-schedule at 05:00 nightly
 ```
 
 ## Command-line usage
 
 ```
-lxc-offsite [global flags] <command> [arguments]
+pbo [global flags] <command> [arguments]
 
 Global flags:
   --json              machine-readable output on stdout
@@ -98,8 +98,8 @@ Whatever the combination, everything ends up in **one** repo.
 ## Disaster recovery
 
 Backups are only as good as your restores. On a fresh host: install
-`lxc-offsite`, paste your exported DR key (menu → Export DR key), then
-`lxc-offsite menu` → Restore. It always restores to a **new** VMID and never
+`pbo`, paste your exported DR key (menu → Export DR key), then
+`pbo menu` → Restore. It always restores to a **new** VMID and never
 overwrites an existing guest. Test it with `test-restore`, which restores, boots
 and then destroys a throwaway copy.
 

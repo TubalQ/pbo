@@ -1,14 +1,14 @@
-# /etc/lxc-offsite/config — KEY=VALUE. chmod 600, root:root.
+# /etc/pbo/config — KEY=VALUE. chmod 600, root:root.
 # This is the example/template, copied by install.sh. It contains no secrets
 # (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
 #
 # The easiest way to fill this in is the interactive wizard:
-#   lxc-offsite setup
+#   pbo setup
 
 # --- paths ---
-CACHE_DIR=/var/cache/lxc-offsite
-LOG_DIR=/var/log/lxc-offsite
-STATE_DIR=/var/lib/lxc-offsite
+CACHE_DIR=/var/cache/pbo
+LOG_DIR=/var/log/pbo
+STATE_DIR=/var/lib/pbo
 LOCK_DIR=/var/lock
 
 # --- vzdump ---
@@ -35,18 +35,18 @@ NTFY_ON_SUCCESS=false      # alert on failure, silent on success
 MAX_AGE_WARN=172800        # 48h — flagged if the latest push is older
 
 # --- engine (ADR 0001): restic ---
-# restic is the backup engine. Onboarding: run `lxc-offsite setup` (or set the
-# keys below by hand + create the password file 0600 + run `lxc-offsite init`
+# restic is the backup engine. Onboarding: run `pbo setup` (or set the
+# keys below by hand + create the password file 0600 + run `pbo init`
 # once before the first backup).
 ENGINE=restic                                  # tar (legacy) | restic
 BACKUP_MODE=stream                             # stream (one-by-one) | batch (dump all→upload), same repo
 #RESTIC_BIN=restic                             # override in tests (scratch binary)
 #LOCAL_REPO=true                               # true=cached (local repo+copy), false=offsite-only
-#RESTIC_CACHE_REPO=/var/cache/lxc-offsite/repo # local restic repo (cache tier)
+#RESTIC_CACHE_REPO=/var/cache/pbo/repo # local restic repo (cache tier)
 #RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp — RELATIVE path (Storage Box is chrooted!)
 # The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name):
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
-#RESTIC_PASSWORD_FILE=/etc/lxc-offsite/restic-pass   # repo password (DR key), 0600
-#RESTIC_CACHE_DIR=/var/lib/lxc-offsite/restic-cache  # restic's own metadata cache
+#RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass   # repo password (DR key), 0600
+#RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache  # restic's own metadata cache
 #TR_STORAGE=nvmepool                           # throwaway storage for test-restore

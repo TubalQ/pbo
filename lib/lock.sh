@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # lib/lock.sh — two-level locking. Must be right from the start (PLAN.md §6).
 #
-#   Global lock  (/var/lock/lxc-offsite.global)
+#   Global lock  (/var/lock/pbo.global)
 #     Lets EXACTLY one backup/push operation through at a time, regardless of vmid.
 #     Reason: two concurrent vzdump --mode snapshot against raidz2 punish running
 #     containers. fetch/restore NEVER take this lock — they don't write from the pool.
 #
-#   Per-vmid lock (/var/lock/lxc-offsite.vmid-<vmid>.lock)
+#   Per-vmid lock (/var/lock/pbo.vmid-<vmid>.lock)
 #     Prevents the same container from being queued/run twice.
 #
 #   Modes:
@@ -67,7 +67,7 @@ acquire_global_lock() {
 # acquire_vmid_lock <vmid>  — non-blocking; double-queuing is always an error.
 acquire_vmid_lock() {
     local vmid="$1"
-    local f="${LOCK_DIR}/lxc-offsite.vmid-${vmid}.lock"
+    local f="${LOCK_DIR}/pbo.vmid-${vmid}.lock"
     exec {VMID_LOCK_FD}>"$f" \
         || die "$EX_CANTCREAT" "cannot open vmid lock file: $f"
     if ! flock -n "$VMID_LOCK_FD"; then

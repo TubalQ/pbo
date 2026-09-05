@@ -56,7 +56,7 @@ without the cluster complexity.
 
 ## 3. Decision — cluster: agent-per-node + shared repo + pmxcfs config
 
-**Model A (chosen):** install lxc-offsite on **every node**. Each node backs up
+**Model A (chosen):** install pbo on **every node**. Each node backs up
 **its own** guests (filter `cluster/resources` on `node == $localnode`) into the
 **same** offsite restic repo (native sftp) → **cluster-wide dedup** in one repo.
 
@@ -67,7 +67,7 @@ mesh, and PVE already provides the building blocks:
 - **Config cluster-wide for free:** put non-secret config in **`/etc/pve/`**
   (pmxcfs — replicated to all nodes automatically). `BACKUP_ORDER`, `KEEP_*`, and
   the schedule sync themselves. **Secrets NOT here** (pmxcfs replicates in plaintext)
-  → the repo password per node in `/etc/lxc-offsite/` 0600 + your password manager.
+  → the repo password per node in `/etc/pbo/` 0600 + your password manager.
 - **Migration-safe:** restic tags per **vmid** (not node). If a guest is moved, the
   new node backs it up on the next run; the history continues under the same vmid.
 - **Concurrent writers, one repo:** restic allows multiple parallel `backup`
@@ -122,5 +122,5 @@ backup — document and warn in the UI.
 - Prune owner in a cluster: a designated node vs an external janitor (ADR 0001 §7)?
 - UI: one console-per-node (MVP) vs central dispatch — when is the step worth it?
 - qemu app consistency: require a guest agent, or allow crash-consistent with a warning?
-- Config in pmxcfs: the exact file split (non-secret in `/etc/pve/lxc-offsite/`,
+- Config in pmxcfs: the exact file split (non-secret in `/etc/pve/pbo/`,
   secret per node).
