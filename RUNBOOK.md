@@ -1,14 +1,12 @@
 # Runbook
 
-This is the operations manual for `pbo`. It backs up Proxmox guests (LXC
-containers and QEMU VMs) offsite to an SFTP target, deduplicated and encrypted
-with restic. Run it on the Proxmox host, as root. If you also run a Proxmox
-Backup Server, `pbo` does not touch it. Think of `pbo` as the offsite copy, the
-third leg of a 3-2-1 setup.
+Operations manual for `pbo`. It backs up Proxmox guests (LXC containers and QEMU
+VMs) offsite to an SFTP target, deduplicated and encrypted with restic. Run it on
+the Proxmox host as root. If you also run a Proxmox Backup Server, pbo leaves it
+alone — it's the offsite leg of a 3-2-1 setup, not a replacement.
 
-The one rule to keep in mind: a backup you have never restored is not really a
-backup. `restic check` verifies the repo, and `test-restore` proves an actual
-restore by booting a throwaway copy.
+Two ways to trust it: `restic check` verifies the repo, and `test-restore` boots a
+throwaway copy to prove an actual restore works.
 
 ## Installing, including on a fresh host during recovery
 
