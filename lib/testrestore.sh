@@ -25,6 +25,24 @@ _tr_wait() {
     return 1
 }
 
+# Strip networking from the throwaway BEFORE booting it. The restored copy carries
+# the source guest's net config (same MAC + IP), so booting it on the bridge would
+# clash with the still-running original. Liveness is proven via `pct exec` / the
+# qemu guest-agent (namespace/virtio, not the network), so a net-less boot still
+# proves the guest came up.
+_tr_isolate_net() {
+    local t="$1" id="$2" k
+    if [[ "$t" == qemu ]]; then
+        for k in $(qm config "$id" 2>/dev/null | sed -n 's/^\(net[0-9]\+\):.*/\1/p'); do
+            qm set "$id" --delete "$k" >/dev/null 2>&1 || true
+        done
+    else
+        for k in $(pct config "$id" 2>/dev/null | sed -n 's/^\(net[0-9]\+\):.*/\1/p'); do
+            pct set "$id" --delete "$k" >/dev/null 2>&1 || true
+        done
+    fi
+}
+
 # Pick the highest free throwaway vmid in 9000-9099 (free = neither an LXC nor a VM).
 _tr_pick_target() {
     local n

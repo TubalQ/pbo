@@ -285,6 +285,9 @@ rdo_test_restore() {
     if [[ "$gtype" == qemu ]]; then rcmd=(qmrestore "$tar" "$target" --storage "$storage")
     else rcmd=(pct restore "$target" "$tar" --storage "$storage" --unprivileged "$(_conf_unpriv "$tar")"); fi
     if ! run_stream "$jobfile" "${gtype}-restore[$target]" -- "${rcmd[@]}"; then ok=0; stage="restore"; fi
+    # Isolate the throwaway's network before boot so its cloned MAC/IP can't clash
+    # with the still-running source guest.
+    (( ok )) && _tr_isolate_net "$gtype" "$target"
     if (( ok )) && ! run_stream "$jobfile" "${gtype}-start[$target]" -- _g_start "$gtype" "$target"; then ok=0; stage="start"; fi
     if (( ok )); then log_info "test-restore: waiting for $gtype $target to respond…"; _tr_wait "$target" "$gtype" || { ok=0; stage="respond"; }; fi
     _tr_destroy "$target"; rm -rf "$rdir" 2>/dev/null || true
