@@ -24,11 +24,10 @@ from `pbo menu`.
 ![The pbo main menu](docs/img/menu.png)
 
 Status shows both tiers side by side, the local cache and the offsite repo, each
-with its own guest count, snapshots, physical vs. logical size and dedup ratio:
+with its own guest count, snapshots, physical vs. logical size and dedup ratio,
+down to the next scheduled run:
 
-![Status, both tiers](docs/img/status.png)
-
-![Status, full view with the next scheduled run](docs/img/status-full.png)
+![Status, both tiers with the next scheduled run](docs/img/status-full.png)
 
 ## Why restic
 
