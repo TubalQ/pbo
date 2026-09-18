@@ -17,6 +17,19 @@ from `pbo menu`.
 > suite, but defaults and interfaces still move around. Try it on something you can
 > afford to lose, pin a commit if you rely on it, and open an issue when it breaks.
 
+## Screenshots
+
+`pbo menu` — the interactive prompt you drive it from day to day:
+
+![The pbo main menu](docs/img/menu.png)
+
+Status shows both tiers side by side, the local cache and the offsite repo, each
+with its own guest count, snapshots, physical vs. logical size and dedup ratio:
+
+![Status, both tiers](docs/img/status.png)
+
+![Status, full view with the next scheduled run](docs/img/status-full.png)
+
 ## Why restic
 
 Everything ends up in one repo, whether you back up a single guest or the whole
