@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/restic.sh: the restic engine (ADR 0001, Path A). Enabled with ENGINE=restic.
+# lib/restic.sh: the backup engine (ADR 0001, Path A). restic is the only engine.
 #
 # The vzdump archive (UNCOMPRESSED) is stored IN restic instead of being pushed as
 # tar.zst via rclone. restore goes via `restic restore` → `pct restore`.
@@ -98,6 +98,10 @@ rdo_backup() {
     fi
 
     restic_init
+    # A killed previous run can leave a stale restic lock; clear it if no live
+    # pbo run holds it, so one crash doesn't wedge every future backup.
+    _restic_stale_unlock "$(_restic_write_repo)"
+    [[ "${LOCAL_REPO:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
     # Clean dumpdir → snapshot content = exactly this run's archive+sidecar.
     rm -f "${dumpdir}"/vzdump-* 2>/dev/null || true
     mkdir -p "$dumpdir" "$JOBS_DIR"
@@ -121,7 +125,7 @@ rdo_backup() {
     log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts)"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
             _restic "$wrepo" backup "$dumpdir" \
-                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(hostname -s)"; then
+                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(_local_node)"; then
         die "$EX_SOFTWARE" "restic backup failed for $base (see $jobfile)"
     fi
 
@@ -320,10 +324,12 @@ rdo_prune() {
     local cache_removed='[]' offsite_removed='[]'
     # Local cache repo: keep-last (fast restore tier).
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
+        _restic_stale_unlock "$RESTIC_CACHE_REPO"
         cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")"
     fi
     # Offsite: pure GFS (daily/weekly/monthly), no keep-last (a cache concept).
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+        _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
         offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
             --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
             --keep-monthly "${KEEP_OFFSITE_MONTHLY}")"
@@ -336,6 +342,40 @@ rdo_prune() {
         local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length')"; no="$(printf '%s' "$offsite_removed" | jq 'length')"
         log_info "prune (restic): cache removed $nc, offsite removed $no$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
     fi
+    return "$EX_OK"
+}
+
+# rotate-key: rotate the repo password (the DR key) on ALL configured repos to a
+# new value. restic keys are wrapped copies of the master key, so this is instant
+# and re-encrypts nothing. Adds the new key, verifies it opens the repo, then
+# removes the old key, per repo, and finally repoints RESTIC_PASSWORD_FILE.
+rdo_rotate_key() {
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for rotate-key"
+    local newfile="$1" oldfile="$RESTIC_PASSWORD_FILE"
+    [[ -r "$oldfile" ]] || die "$EX_CONFIG" "rotate-key: current password file $oldfile unreadable"
+    [[ -r "$newfile" ]] || die "$EX_CONFIG" "rotate-key: new password file $newfile unreadable"
+    [[ -s "$newfile" ]] || die "$EX_CONFIG" "rotate-key: new password file is empty"
+    local repos=()
+    [[ "${LOCAL_REPO:-true}" == "true" ]] && repos+=("$RESTIC_CACHE_REPO")
+    [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && repos+=("$RESTIC_OFFSITE_REPO")
+    (( ${#repos[@]} )) || die "$EX_CONFIG" "rotate-key: no repos configured"
+    local opts=(); [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
+    [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && opts+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}")
+    local repo oldid
+    for repo in "${repos[@]}"; do
+        oldid="$(RESTIC_PASSWORD_FILE="$oldfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key list --json 2>/dev/null | jq -r '.[]|select(.current==true)|.id' 2>/dev/null)"
+        [[ -n "$oldid" ]] || die "$EX_SOFTWARE" "rotate-key: cannot read current key id for $repo (wrong password?)"
+        RESTIC_PASSWORD_FILE="$oldfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key add --new-password-file "$newfile" >/dev/null 2>&1 \
+            || die "$EX_SOFTWARE" "rotate-key: 'key add' failed on $repo (old key still valid)"
+        RESTIC_PASSWORD_FILE="$newfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" cat config >/dev/null 2>&1 \
+            || die "$EX_SOFTWARE" "rotate-key: the new key does not open $repo (aborted, old key still valid)"
+        RESTIC_PASSWORD_FILE="$newfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key remove "$oldid" >/dev/null 2>&1 \
+            || log_warn "rotate-key: could not remove old key $oldid on $repo (new key works; remove it by hand)"
+        log_info "rotate-key: $repo rotated (removed old key $oldid)"
+    done
+    install -m 0600 "$newfile" "$oldfile"
+    log_info "rotate-key: DONE. Export the new DR key and update your password manager."
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "repos" "${repos[*]}"
     return "$EX_OK"
 }
 
@@ -362,16 +402,141 @@ rdo_usage() {
     return "$EX_OK"
 }
 
-# verify, restic check (light) or --read-data (deep) via VERIFY_READ_DATA=1.
-rdo_verify() {
-    local repo; repo="$(_restic_read_repo)"
-    local args=(check); [[ "${VERIFY_READ_DATA:-0}" == 1 ]] && args+=(--read-data)
+# verify: restic check on BOTH tiers (cache + offsite), so a silent cache
+# corruption is caught too. Structure-only by default; VERIFY_READ_DATA=1 reads
+# every pack (expensive over SFTP), VERIFY_SUBSET=<n%|size> reads a cheap sample
+# (e.g. VERIFY_SUBSET=5% for an affordable periodic deep check).
+_rdo_verify_one() {                # <repo> → 0 ok, 1 fail (empty repo = skip, ok)
+    local repo="$1"
+    _restic "$repo" cat config >/dev/null 2>&1 || { log_warn "verify: $repo unreachable/absent, skipped"; return 0; }
+    local args=(check)
+    if [[ "${VERIFY_READ_DATA:-0}" == 1 ]]; then args+=(--read-data)
+    elif [[ -n "${VERIFY_SUBSET:-}" ]]; then args+=(--read-data-subset "${VERIFY_SUBSET}"); fi
     if _restic "$repo" "${args[@]}" >/dev/null 2>&1; then
-        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" "repo" "$repo" || log_info "verify: OK ($repo)"
+        log_info "verify: OK ($repo)"; return 0
+    fi
+    log_error "verify: restic check FAILED for $repo"; return 1
+}
+rdo_verify() {
+    local fail=0 checked=()
+    if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
+        _rdo_verify_one "$RESTIC_CACHE_REPO" || fail=1; checked+=("cache")
+    fi
+    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+        _rdo_verify_one "$RESTIC_OFFSITE_REPO" || fail=1; checked+=("offsite")
+    fi
+    if (( fail == 0 )); then
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" "tiers" "${checked[*]:-none}" || log_info "verify: OK (${checked[*]:-nothing to check})"
         return "$EX_OK"
     fi
-    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "repo" "$repo"
-    die "$EX_DATAERR" "restic check FAILED for $repo"
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "tiers" "${checked[*]:-none}"
+    die "$EX_DATAERR" "restic check FAILED (see log)"
+}
+
+# fetch: extract+verify one snapshot into the cache WITHOUT restoring. Proves the
+# snapshot restores to bytes on disk (restic verifies on read-out). No global lock.
+rdo_fetch() {
+    local vmid="$1" ts="$2"
+    local target="${CACHE_DIR}/fetch-${vmid}"; rm -rf "$target"
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then
+        log_info "[dry-run] would extract snapshot vmid=$vmid ts=$ts → $target"
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid"
+        return "$EX_OK"
+    fi
+    _restic_extract "$vmid" "$ts" "$target" || die "$EX_DATAERR" "fetch failed for vmid $vmid ts $ts"
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_result "fetched" "true" "vmid" "$vmid" "ts" "$ts" "archive" "$RX_TAR" "verified" "restic"
+    else
+        log_info "fetch $vmid: DONE, $RX_TAR (restic-verified on read-out)"
+    fi
+    return "$EX_OK"
+}
+
+# unlock: clear a stale restic lock left by a killed backup/prune. restic locks
+# are held for the life of a process; a SIGKILL/OOM/reboot leaves one behind and
+# the next run fails "repository is already locked". `unlock` removes stale (non-
+# live) locks only; a genuinely concurrent run keeps its lock.
+rdo_unlock() {
+    local rc=0 repo repos=()
+    [[ "${LOCAL_REPO:-true}" == "true" ]] && repos+=("$RESTIC_CACHE_REPO")
+    [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && repos+=("$RESTIC_OFFSITE_REPO")
+    for repo in "${repos[@]}"; do
+        if [[ "${DRY_RUN:-0}" == 1 ]]; then log_info "[dry-run] restic unlock $repo"; continue; fi
+        if _restic "$repo" unlock >/dev/null 2>&1; then log_info "unlock: cleared stale locks on $repo"
+        else log_warn "unlock: could not unlock $repo (unreachable?)"; rc=1; fi
+    done
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "$( ((rc==0)) && echo ok || echo partial )" "$( ((rc==0)) && echo true || echo false )" "repos" "${repos[*]:-none}"
+    return "$EX_OK"
+}
+
+# _restic_stale_unlock <repo>: auto-clear a lock ONLY if no pbo backup/prune is
+# actually running (our own global lock is free). Called before backup/prune so a
+# crashed previous run doesn't wedge every future run.
+_restic_stale_unlock() {
+    local repo="$1"
+    _restic "$repo" list locks 2>/dev/null | grep -q . || return 0   # no locks, nothing to do
+    # If pbo itself is mid-operation the lock is legitimate; leave it.
+    if [[ -f "$GLOBAL_HOLDER_FILE" ]]; then
+        local pid; pid="$(cut -d'|' -f3 "$GLOBAL_HOLDER_FILE" 2>/dev/null)"
+        [[ -n "$pid" && "$pid" != "$$" ]] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    log_warn "restic: stale lock on $repo (no live pbo run) → unlocking"
+    _restic "$repo" unlock >/dev/null 2>&1 || true
+}
+
+# doctor: a fast health check that surfaces the things that silently rot, repo
+# reachability, the DR key's permissions, the timer, provider snapshots, and, per
+# guest, how old the newest snapshot is (catches a guest that quietly stopped
+# being backed up, e.g. one whose data lives on a backup=0 mountpoint).
+rdo_doctor() {
+    command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for doctor"
+    local problems=0 warns=0 lines=()
+    local ok="  ${C_G:-}OK${C_0:-}" bad="  ${C_R:-}FAIL${C_0:-}" warn="  ${C_Y:-}WARN${C_0:-}"
+
+    # DR key present + 0600.
+    local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
+    if [[ -r "$pf" ]]; then
+        local perm; perm="$(stat -c '%a' "$pf" 2>/dev/null)"
+        if [[ "$perm" == "600" || "$perm" == "400" ]]; then lines+=("$ok  DR key $pf ($perm)")
+        else lines+=("$warn  DR key $pf is $perm, should be 0600"); warns=$((warns+1)); fi
+    else lines+=("$bad  DR key $pf missing or unreadable"); problems=$((problems+1)); fi
+
+    # Repo reachable.
+    local repo; repo="$(_restic_read_repo)"
+    if _restic "$repo" cat config >/dev/null 2>&1; then lines+=("$ok  repo $repo reachable")
+    else lines+=("$bad  repo $repo not reachable"); problems=$((problems+1)); fi
+
+    # Timer enabled.
+    if systemctl is-enabled pbo.timer >/dev/null 2>&1; then lines+=("$ok  pbo.timer enabled")
+    else lines+=("$warn  pbo.timer not enabled (no nightly backup)"); warns=$((warns+1)); fi
+
+    # Ransomware backstop.
+    if [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]]; then lines+=("$ok  provider snapshots confirmed")
+    else lines+=("$warn  STORAGE_BOX_SNAPSHOTS_CONFIRMED=false (no ransomware backstop)"); warns=$((warns+1)); fi
+
+    # Per-guest freshness: newest snapshot age vs DOCTOR_MAX_AGE, for every guest
+    # on this node. A live guest with NO snapshot at all is a hard finding.
+    local now; now="$(date +%s)"
+    local snaps; snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"
+    local id newest age hrs guests; guests="$(_backup_set || true)"
+    while read -r id; do
+        [[ -n "$id" ]] || continue
+        newest="$(printf '%s' "$snaps" | jq -r --arg v "$id" '[ .[] | select((.tags//[])|any(.=="vmid=\($v)")) | .time ] | sort | last // empty' 2>/dev/null)"
+        if [[ -z "$newest" ]]; then lines+=("$bad  guest $id has NO snapshot in the repo"); problems=$((problems+1)); continue; fi
+        age=$(( now - $(date -d "$newest" +%s 2>/dev/null || echo "$now") )); hrs=$(( age/3600 ))
+        if (( age > ${DOCTOR_MAX_AGE:-172800} )); then lines+=("$warn  guest $id newest snapshot ${hrs}h old (> $(( ${DOCTOR_MAX_AGE:-172800}/3600 ))h)"); warns=$((warns+1))
+        else lines+=("$ok  guest $id newest snapshot ${hrs}h old"); fi
+    done <<<"$guests"
+
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_result "$( ((problems==0)) && echo ok || echo problems )" "$( ((problems==0)) && echo true || echo false )" \
+            "problems" "$problems" "warnings" "$warns"
+    else
+        printf '%s\n' "${lines[@]}"
+        log_info "doctor: ${problems} problem(s), ${warns} warning(s)"
+    fi
+    (( problems == 0 )) || return "$EX_UNAVAILABLE"
+    return "$EX_OK"
 }
 
 # ---------------------------------------------------------------------------
@@ -394,13 +559,24 @@ _guest_bytes() {
         (( total > 0 )) || total=$(( 8 * 1073741824 ))
         printf '%s' "$total"; return
     fi
-    spec="$(pct config "$vmid" 2>/dev/null | awk '/^rootfs:/{print $2}')"
-    volid="${spec%%,*}"                         # storeid:volume
-    ds="${volid/:/\/}"                          # storeid/volume (ZFS dataset)
-    used="$(zfs list -Hpo used "$ds" 2>/dev/null)"
-    if [[ "$used" =~ ^[0-9]+$ ]]; then printf '%s' "$used"; return; fi
-    szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$spec")"   # fallback: config size
-    printf '%s' "$(( ${szg:-4} * 1073741824 ))"
+    # LXC: sum rootfs + every mpN that is actually backed up (skip bind mounts and
+    # backup=0). A big data mountpoint on mp0 counts, so batch-fit doesn't undershoot.
+    while IFS= read -r line; do
+        [[ "$line" =~ ^(rootfs|mp[0-9]+): ]] || continue
+        spec="${line#*: }"; volid="${spec%%,*}"
+        [[ "$volid" == /* ]] && continue                       # bind mount, never in the archive
+        [[ ",${spec#*,}," == *",backup=0,"* ]] && continue     # excluded volume
+        ds="${volid/:/\/}"                                     # storeid:volume → storeid/volume
+        used="$(zfs list -Hpo used "$ds" 2>/dev/null)"
+        if [[ "$used" =~ ^[0-9]+$ ]]; then
+            total=$(( total + used ))
+        else
+            szg="$(sed -n 's/.*size=\([0-9]\+\)G.*/\1/p' <<<"$spec")"
+            total=$(( total + ${szg:-4} * 1073741824 ))
+        fi
+    done < <(pct config "$vmid" 2>/dev/null)
+    (( total > 0 )) || total=$(( 4 * 1073741824 ))
+    printf '%s' "$total"
 }
 
 # Do all dumps fit in the cache? (requires 85% margin.)
@@ -456,7 +632,7 @@ rdo_run_batch() {
         ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
         jobfile="${JOBS_DIR}/backup-${v}-$(date +%Y%m%d-%H%M%S).log"
         if ! run_stream "$jobfile" "restic-backup[$v]" -- \
-                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=${GT_OF[$v]:-lxc}" --host "$(hostname -s)"; then
+                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=${GT_OF[$v]:-lxc}" --host "$(_local_node)"; then
             failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v FAILED"; continue
         fi
         if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then

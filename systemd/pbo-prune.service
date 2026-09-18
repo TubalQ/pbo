@@ -1,0 +1,14 @@
+[Unit]
+Description=pbo: apply retention (prune cache + offsite)
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --if-owner: in a cluster only PRUNE_OWNER prunes (prune takes an exclusive repo
+# lock). On a single node it always runs. Retention comes from KEEP_* in the config.
+ExecStart=/usr/local/lib/pbo/pbo prune --if-owner
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle

@@ -2,15 +2,15 @@
 # lib/preflight.sh: checks BEFORE a backup.
 #
 # Hard requirements (FAIL → abort backup):
-#   - the container exists      (pct config <vmid>)
+#   - the guest exists          (pct/qm config <vmid>)
 #   - ZFS pool free ≥ 1.5 × used size of the volumes to be backed up
 #   - the cache directory exists and is writable
-#   - the rclone remote responds (rclone about)
+#   - the restic repo responds  (restic cat config)
 # Warnings (WARN → continue, but record in meta):
 #   - bind mounts (NEVER backed up, silently skipped by vzdump)
 #   - volumes with backup=0 (excluded)
 #
-# All external commands (pct/zfs/zpool/rclone) go via PATH → mockable in tests.
+# All external commands (pct/qm/zfs/zpool/restic) go via PATH → mockable in tests.
 
 # Global result collectors (reset per run).
 PF_CHECKS_JSON=""       # array elements for --json
@@ -152,32 +152,19 @@ _pf_check_cache() {
     fi
 }
 
-# restic repo responds (ENGINE=restic) OR rclone remote responds (ENGINE=tar).
-_pf_check_rclone() {
-    if [[ "${ENGINE:-tar}" == "restic" ]]; then
-        if [[ "${OFFSITE_ENABLED:-true}" != "true" || -z "${RESTIC_OFFSITE_REPO:-}" ]]; then
-            _pf_add_check "restic_repo" "true" "offsite disabled, skipping repo check"
-            return
-        fi
-        if _restic "$(_restic_read_repo)" cat config >/dev/null 2>&1; then
-            _pf_add_check "restic_repo" "true" "repo '$(_restic_read_repo)' reachable"
-        else
-            _pf_add_check "restic_repo" "false" "repo '$(_restic_read_repo)' not responding / not initialized"
-        fi
+# The restic repo responds (cat config = a cheap read that proves reachability
+# and the password). In offsite-only mode with offsite disabled, nothing to check.
+_pf_check_repo() {
+    if [[ "${OFFSITE_ENABLED:-true}" != "true" || -z "${RESTIC_OFFSITE_REPO:-}" ]] \
+        && [[ "${LOCAL_REPO:-true}" != "true" ]]; then
+        _pf_add_check "restic_repo" "true" "offsite disabled and no local repo, skipping repo check"
         return
     fi
-    if ! command -v rclone >/dev/null 2>&1; then
-        _pf_add_check "rclone_remote" "false" "rclone not installed (required on the host)"
-        return
-    fi
-    # `rclone mkdir` on the target directory instead of `about`/`lsd`:
-    #   - about: the Storage Box's limited shell often lacks df → false failure.
-    #   - lsd: fails on the FIRST backup (crypt base dir doesn't exist yet → "not found").
-    # mkdir is idempotent, proves reachability + write access, and prepares the target.
-    if rclone mkdir "${RCLONE_REMOTE}:${REMOTE_PATH}" >/dev/null 2>&1; then
-        _pf_add_check "rclone_remote" "true" "remote '${RCLONE_REMOTE}:${REMOTE_PATH}' reachable + writable"
+    local repo; repo="$(_restic_read_repo)"
+    if _restic "$repo" cat config >/dev/null 2>&1; then
+        _pf_add_check "restic_repo" "true" "repo '$repo' reachable"
     else
-        _pf_add_check "rclone_remote" "false" "remote '${RCLONE_REMOTE}:${REMOTE_PATH}' not responding / not writable"
+        _pf_add_check "restic_repo" "false" "repo '$repo' not responding / not initialized"
     fi
 }
 
@@ -199,7 +186,7 @@ run_preflight() {
         _pf_check_zfs_space
     fi
     _pf_check_cache
-    _pf_check_rclone
+    _pf_check_repo
 
     # Warnings are logged (and included in meta in step 3).
     local w

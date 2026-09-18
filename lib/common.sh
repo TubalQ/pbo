@@ -27,15 +27,8 @@ set_defaults() {
     : "${LOG_DIR:=/var/log/pbo}"
     : "${STATE_DIR:=/var/lib/pbo}"
     : "${LOCK_DIR:=/var/lock}"
-    : "${RCLONE_REMOTE:=hetzner-crypt}"
-    : "${REMOTE_PATH:=lxc}"
     : "${VZDUMP_MODE:=snapshot}"
     : "${VZDUMP_STOP_VMIDS:=}"         # these (+ auto-detected fuse CTs) → --mode stop
-    : "${VZDUMP_COMPRESS:=zstd}"
-    : "${VZDUMP_ZSTD_THREADS:=4}"
-    : "${RCLONE_TRANSFERS:=4}"
-    : "${RCLONE_CHECKERS:=4}"
-    : "${RCLONE_BWLIMIT:=}"
     : "${BACKUP_ORDER:=auto}"          # auto = all guests on THIS node; or an explicit csv (critical-first)
     : "${PRUNE_OWNER:=}"               # cluster: restrict prune to this nodename (empty = any node may prune)
     : "${GLOBAL_LOCK_TIMEOUT:=7200}"
@@ -48,15 +41,13 @@ set_defaults() {
     : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file
     : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
     : "${NTFY_ON_SUCCESS:=false}"
-    : "${OFFSITE_ENABLED:=true}"       # false = dump+verify locally, skip upload
-    : "${RCLONE_CONFIG_FILE:=}"        # own rclone.conf (otherwise rclone's default)
-    : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach CT
+    : "${OFFSITE_ENABLED:=true}"       # false = local repo only, no offsite copy
+    : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach the guest
     : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
     : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
-    : "${MAX_AGE_WARN:=172800}"   # 48h, dashboard warns if the latest push is older
+    : "${DOCTOR_MAX_AGE:=172800}"      # 48h, doctor flags a guest whose newest snapshot is older
 
-    # --- engine (ADR 0001): tar (current) | restic (new track) ---
-    : "${ENGINE:=tar}"                                    # tar | restic
+    # --- restic engine ---
     : "${BACKUP_MODE:=stream}"                            # stream (one-by-one) | batch (dump all→upload), SAME repo
     : "${RESTIC_BIN:=restic}"                             # override in tests (scratch binary)
     : "${LOCAL_REPO:=true}"                               # true=cached (local repo+copy), false=offsite-only
@@ -107,8 +98,6 @@ load_config() {
     _source_config_file "$cfg" && loaded="$cfg"
     PBO_CONFIG_LOADED="$loaded"
     set_defaults
-    # Point rclone at our own config if given (rclone reads the RCLONE_CONFIG env).
-    [[ -n "${RCLONE_CONFIG_FILE:-}" ]] && export RCLONE_CONFIG="$RCLONE_CONFIG_FILE"
     ensure_dirs
 }
 
@@ -197,17 +186,6 @@ json_result() {
     done
     out+='}'
     printf '%s\n' "$out"
-}
-
-# Uniform "not yet implemented" response (step 1: all operations).
-not_implemented() {
-    local cmd="${PBO_COMMAND:-?}"
-    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        json_result "not_implemented" "false"
-    else
-        log_warn "'$cmd' is not yet implemented (step 1: skeleton only)."
-    fi
-    return "$EX_OK"
 }
 
 # Validate that an argument looks like a vmid (integer 100-999999999).

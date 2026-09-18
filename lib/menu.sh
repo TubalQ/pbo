@@ -43,11 +43,11 @@ _is_protected() { local v="$1"; [[ ",${BACKUP_ORDER//[[:space:]]/}," == *",$v,"*
 # --- header ---
 _menu_header() {
     clear 2>/dev/null || printf '\n'
-    local repo="${RESTIC_OFFSITE_REPO:-${RCLONE_REMOTE:-none}}"
+    local repo="${RESTIC_OFFSITE_REPO:-none}"
     local prot; prot="$(tr ',' ' ' <<<"${BACKUP_ORDER:-}" | wc -w)"
     printf '%s┌─ %sPBO%s%s · Proxmox Backup Offsite ────────────────────────┐%s\n' "$C_C" "$C_B" "$C_0$C_C" "" "$C_0"
-    printf '%s│%s engine %s%s%s · offsite %s%s%s · protected %s%s%s\n' \
-        "$C_C" "$C_0" "$C_B" "${ENGINE:-tar}" "$C_0" "$C_C" "$repo" "$C_0" "$C_B" "$prot" "$C_0"
+    printf '%s│%s engine %srestic%s · offsite %s%s%s · protected %s%s%s\n' \
+        "$C_C" "$C_0" "$C_B" "$C_0" "$C_C" "$repo" "$C_0" "$C_B" "$prot" "$C_0"
     printf '%s└───────────────────────────────────────────────────────────┘%s\n' "$C_C" "$C_0"
 }
 
@@ -120,10 +120,8 @@ _menu_status_tier() {           # <label> <cache|offsite>
     printf '%s' "$ls" | jq -r '
         .archives as $a
         | "    guests:    \($a|map(.vmid)|unique|length)\n    snapshots: \($a|length)"' 2>/dev/null
-    if [[ "${ENGINE:-tar}" == "restic" ]]; then
-        PBO_REPO="$which" "$PBO_BIN" --json usage 2>/dev/null | jq -r '
-            "    size:      \(.physical_bytes/1e9*10|floor/10) GB physical, \(.logical_bytes/1e9*10|floor/10) GB logical (dedup \(.compression_ratio)×)"' 2>/dev/null
-    fi
+    PBO_REPO="$which" "$PBO_BIN" --json usage 2>/dev/null | jq -r '
+        "    size:      \(.physical_bytes/1e9*10|floor/10) GB physical, \(.logical_bytes/1e9*10|floor/10) GB logical (dedup \(.compression_ratio)×)"' 2>/dev/null
     printf '%s' "$ls" | jq -r '
         (.archives | map(.modtime) | max) as $m
         | if $m then "    newest:    \($m | sub("\\..*";"") | sub("T";" "))" else empty end' 2>/dev/null
@@ -133,10 +131,6 @@ _menu_status_tier() {           # <label> <cache|offsite>
 menu_status() {
     _menu_header
     printf '%s Status%s\n\n' "$C_B" "$C_0"
-    if [[ "${ENGINE:-tar}" != "restic" ]]; then
-        "$PBO_BIN" status 2>/dev/null | sed 's/^/  /' || echo "  (could not read status)"
-        echo; _pause; return
-    fi
     printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         _menu_status_tier "Local  (cache: ${CACHE_DIR:-?})" cache
@@ -154,9 +148,6 @@ menu_status() {
 run_setup_wizard() {
     set +e +u
     printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n\n' "$C_B" "$C_0"
-    local eng; eng="$(_ask "Backup engine (restic/tar)" "restic")"
-    if [[ "$eng" != "restic" ]]; then _cfg_set ENGINE tar; echo "  ENGINE=tar set."; return 0; fi
-    _cfg_set ENGINE restic
 
     # --- cache tier ---
     printf '\n%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
@@ -241,13 +232,12 @@ menu_export() {
     local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}" pw
     pw="$(cat "$pf" 2>/dev/null || echo '<no password file>')"
     echo; echo "  ${C_Y}# PBO DR key, SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
-    echo "  ENGINE=restic"
     echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<not set>}"
     echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<not set>}"
     echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"
     echo
     if _yn "Save a copy to /root/pbo-dr-key.txt (0600)?" n; then
-        ( umask 077; { echo "ENGINE=restic"; echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
+        ( umask 077; { echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
           echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
         echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0}, move it offline and delete it from this host."
     fi
@@ -290,7 +280,8 @@ menu_maint() {
     printf '%s Maintenance%s\n\n' "$C_B" "$C_0"
     printf '  %s[1]%s Prune (dry run)          %s[2]%s Prune (for real)\n' "$C_B" "$C_0" "$C_B" "$C_0"
     printf '  %s[3]%s Verify (restic check)    %s[4]%s Test-restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
-    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    printf '  %s[5]%s Health check (doctor)    %s[6]%s Rotate DR key\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[7]%s Unlock repo (stale lock) %s[0]%s back\n\n' "$C_B" "$C_0" "$C_B" "$C_0"
     local c; c="$(_ask "Choice")"
     case "$c" in
         1) "$PBO_BIN" --dry-run prune; _pause ;;
@@ -298,8 +289,40 @@ menu_maint() {
         3) echo "  Verifying (this can take a while)…"; "$PBO_BIN" verify; _pause ;;
         4) local id; id="$(_ask "VMID to test-restore")"
            [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (fetch→boot→destroy a throwaway copy)?" y && { "$PBO_BIN" test-restore "$id"; _pause; } ;;
+        5) "$PBO_BIN" doctor; _pause ;;
+        6) menu_rotate_key ;;
+        7) _yn "Remove stale restic locks (only if no backup is running)?" n && { "$PBO_BIN" unlock; _pause; } ;;
         *) : ;;
     esac
+}
+
+# Rotate the repo password (DR key): generate or type a new one, rotate every
+# repo, then offer to export the new key. The old key stops working afterwards.
+menu_rotate_key() {
+    _menu_header
+    printf '%s Rotate DR key%s\n\n' "$C_B" "$C_0"
+    echo "  This changes the repo password on ALL repos. restic re-encrypts nothing"
+    echo "  (keys wrap the master key), but the OLD key stops working afterwards."
+    echo "  ${C_Y}Export the new key and update your password manager immediately.${C_0}"
+    echo
+    _yn "Rotate the DR key now?" n || return
+    local newpass tmp
+    if _yn "Generate a random new password (recommended)?" y; then
+        newpass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
+    else
+        newpass="$(_askpw "Enter the NEW repo password")"
+        [[ -n "$newpass" ]] || { echo "  ${C_R}empty password, aborted.${C_0}"; _pause; return; }
+    fi
+    tmp="$(mktemp)"; ( umask 077; printf '%s\n' "$newpass" > "$tmp" )
+    if "$PBO_BIN" rotate-key "$tmp"; then
+        echo "  ${C_G}rotation complete.${C_0} The new DR key:"
+        echo "    ${C_B}RESTIC_PASSWORD=${newpass}${C_0}"
+        echo "  Store it now, then export via menu → Export DR key."
+    else
+        echo "  ${C_R}rotation failed, the OLD key is still valid.${C_0} See the log."
+    fi
+    shred -u "$tmp" 2>/dev/null || rm -f "$tmp"
+    _pause
 }
 
 # --- main menu ---

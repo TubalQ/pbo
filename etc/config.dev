@@ -3,16 +3,21 @@
 #   PBO_CONFIG=$PWD/etc/config.dev ./pbo <command>
 # Real operations (vzdump/pct/restic) are NEVER run from here, only the
 # skeleton, lock and config logic is tested. Integration tests run against
-# temporary throwaway LXCs.
+# temporary throwaway guests.
 
 CACHE_DIR=./run/cache
 LOG_DIR=./run/log
 STATE_DIR=./run/state
 LOCK_DIR=./run/lock
 
-RCLONE_REMOTE=dev-mock
-REMOTE_PATH=lxc
 BACKUP_ORDER=9001,9002,9003
 GLOBAL_LOCK_TIMEOUT=5
 NTFY_URL=
 NTFY_ON_SUCCESS=false
+
+# restic engine: an isolated local repo under ./run so nothing hits a real host.
+LOCAL_REPO=true
+OFFSITE_ENABLED=false
+RESTIC_CACHE_REPO=./run/cache/repo
+RESTIC_PASSWORD_FILE=./run/restic-pass
+RESTIC_CACHE_DIR=./run/restic-cache

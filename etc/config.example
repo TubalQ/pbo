@@ -12,9 +12,10 @@ STATE_DIR=/var/lib/pbo
 LOCK_DIR=/var/lock
 
 # --- vzdump ---
+# Fuse containers (features fuse=1) are forced to --mode stop automatically.
+# Add extra vmids here to force stop mode for them too (comma-separated).
 VZDUMP_MODE=snapshot
-VZDUMP_COMPRESS=zstd
-VZDUMP_ZSTD_THREADS=4
+VZDUMP_STOP_VMIDS=
 
 # --- schedule ---
 # auto  = back up every guest ON THIS NODE (LXC + VM), auto-discovering new ones.
@@ -22,12 +23,13 @@ VZDUMP_ZSTD_THREADS=4
 # In a cluster: put the SAME config on every node, each node backs up only its
 # own guests into the shared repo (an explicit list is filtered to local guests).
 BACKUP_ORDER=auto
-GLOBAL_LOCK_TIMEOUT=7200   # seconds a scheduled run waits in the queue
+BACKUP_MODE=stream        # stream (one-by-one, low disk) | batch (dump all→upload)
+GLOBAL_LOCK_TIMEOUT=7200  # seconds a scheduled run waits in the queue
 # Cluster only: restrict `prune` to one node (prune needs an exclusive repo lock).
 # Empty = any node may prune (restic's lock keeps concurrent attempts safe).
 PRUNE_OWNER=
 
-# --- retention ---
+# --- retention (applied by the pbo-prune.timer, or `pbo prune`) ---
 KEEP_LOCAL=2
 KEEP_OFFSITE_DAILY=7
 KEEP_OFFSITE_WEEKLY=4
@@ -38,22 +40,20 @@ NTFY_URL=
 NTFY_TOPIC=
 NTFY_ON_SUCCESS=false      # alert on failure, silent on success
 
-# --- dashboard ---
-MAX_AGE_WARN=172800        # 48h, flagged if the latest push is older
+# --- health check ---
+DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapshot is older
 
-# --- engine (ADR 0001): restic ---
-# restic is the backup engine. Onboarding: run `pbo setup` (or set the
-# keys below by hand + create the password file 0600 + run `pbo init`
-# once before the first backup).
-ENGINE=restic                                  # tar (legacy) | restic
-BACKUP_MODE=stream                             # stream (one-by-one) | batch (dump all→upload), same repo
+# --- restic repo ---
+# Onboarding: run `pbo setup` (or set the keys below by hand + create the
+# password file 0600 + run `pbo init` once before the first backup).
 #RESTIC_BIN=restic                             # override in tests (scratch binary)
 #LOCAL_REPO=true                               # true=cached (local repo+copy), false=offsite-only
-#RESTIC_CACHE_REPO=/var/cache/pbo/repo # local restic repo (cache tier)
+#OFFSITE_ENABLED=true                          # false=local repo only (no offsite copy)
+#RESTIC_CACHE_REPO=/var/cache/pbo/repo         # local restic repo (cache tier)
 #RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp, RELATIVE path (Storage Box is chrooted!)
 # The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name):
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
-#RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass   # repo password (DR key), 0600
-#RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache  # restic's own metadata cache
+#RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
+#RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache
 #TR_STORAGE=nvmepool                           # throwaway storage for test-restore

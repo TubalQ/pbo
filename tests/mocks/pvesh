@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mock pvesh: no cluster view by default (empty array), so cluster filtering is a
+# no-op and the explicit BACKUP_ORDER is used as-is. Logs to $MOCK_LOG.
+[ -n "${MOCK_LOG:-}" ] && echo "pvesh $*" >> "$MOCK_LOG"
+cat "${MOCK_PVESH_JSON:-/dev/null}" 2>/dev/null || echo '[]'

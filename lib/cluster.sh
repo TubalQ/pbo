@@ -53,6 +53,7 @@ _backup_set() {
             for id in ${order//,/ }; do [[ -n "$id" ]] && printf '%s\n' "$id"; done
         fi
     fi
+    return 0   # a filtered-out last id must not make this generator "fail" under set -e
 }
 
 # _is_prune_owner → may THIS node run prune? Prune needs an exclusive repo lock,

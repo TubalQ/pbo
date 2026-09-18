@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 # mock: vzdump <vmid> --mode M --compress C --dumpdir DIR
-# Creates a REAL tiny tar.zst so sha256/zstd -t/tar -tf run for real.
-vmid=""; dumpdir=""
+# Honors --compress: 0/none → a REAL plain .tar (what the restic engine uses),
+# otherwise a .tar.zst. Restic stores the uncompressed .tar and dedups it.
+vmid=""; dumpdir=""; compress="zstd"
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dumpdir) dumpdir="$2"; shift 2 ;;
-        --mode|--compress) shift 2 ;;
-        [0-9]*) vmid="$1"; shift ;;
-        *) shift ;;
+        --dumpdir)  dumpdir="$2"; shift 2 ;;
+        --compress) compress="$2"; shift 2 ;;
+        --mode)     shift 2 ;;
+        [0-9]*)     vmid="$1"; shift ;;
+        *)          shift ;;
     esac
 done
 : "${dumpdir:=.}"; mkdir -p "$dumpdir"
 ts="$(date +%Y_%m_%d-%H_%M_%S)"
-arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar.zst"
 tmp="$(mktemp -d)"; echo "content for $vmid" > "$tmp/data.txt"; mkdir -p "$tmp/etc"; echo "k=v" > "$tmp/etc/conf"
-tar --zstd -cf "$arch" -C "$tmp" . && rm -rf "$tmp"
+if [[ "$compress" == "0" || "$compress" == "none" ]]; then
+    arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar"
+    tar -cf "$arch" -C "$tmp" .
+else
+    arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar.zst"
+    tar --zstd -cf "$arch" -C "$tmp" .
+fi
+rm -rf "$tmp"
 echo "INFO: starting new backup job"
 echo "INFO: creating vzdump archive '$arch'"
 echo "INFO: Total bytes written: $(stat -c %s "$arch")"

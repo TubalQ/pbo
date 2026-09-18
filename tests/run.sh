@@ -41,9 +41,9 @@ out="$($BIN --json status 2>/dev/null)"
 [[ "$out" == '{'*'}' ]] && ok "status --json returns a JSON object" || bad "status --json ($out)"
 grep -q '"status":"ok"' <<<"$out" && ok "status --json contains status:ok" || bad "status json field"
 
-# verify is not yet implemented → tests the not_implemented envelope.
-out="$($BIN --json verify 9001 2>/dev/null)"
-grep -q '"status":"not_implemented"' <<<"$out" && ok "verify returns not_implemented (json)" || bad "verify json ($out)"
+# verify returns a JSON envelope (dev repo is empty/absent → tiers skipped → ok).
+out="$($BIN --json verify 2>/dev/null)"
+grep -q '"command":"verify"' <<<"$out" && ok "verify returns a JSON envelope" || bad "verify json ($out)"
 # the dry_run field is tested via status (stable, implemented).
 out="$($BIN --json status 2>/dev/null)"
 grep -q '"dry_run":false' <<<"$out" && ok "dry_run field present (false)" || bad "dry_run field"

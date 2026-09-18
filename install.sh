@@ -48,8 +48,10 @@ else
 fi
 
 echo "==> systemd units (installed, NOT enabled)"
-install -m 0644 "$SRC/systemd/pbo.service" "$UNITDIR/pbo.service"
-install -m 0644 "$SRC/systemd/pbo.timer"   "$UNITDIR/pbo.timer"
+install -m 0644 "$SRC/systemd/pbo.service"       "$UNITDIR/pbo.service"
+install -m 0644 "$SRC/systemd/pbo.timer"         "$UNITDIR/pbo.timer"
+install -m 0644 "$SRC/systemd/pbo-prune.service" "$UNITDIR/pbo-prune.service"
+install -m 0644 "$SRC/systemd/pbo-prune.timer"   "$UNITDIR/pbo-prune.timer"
 systemctl daemon-reload
 
 cat <<EOF
@@ -58,7 +60,9 @@ Installed: pbo (Proxmox Backup Offsite).
 
   Setup:      $BIN setup      run the guided config wizard
   Interface:  $BIN menu       open the interactive prompt
-  Schedule:   systemctl enable --now pbo.timer   (runs 05:00 nightly)
+  Health:     $BIN doctor     check repo, timer, key perms, per-guest age
+  Backups:    systemctl enable --now pbo.timer         (runs 05:00 nightly)
+  Retention:  systemctl enable --now pbo-prune.timer   (prunes weekly, Sun 06:30)
 
 Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
 EOF

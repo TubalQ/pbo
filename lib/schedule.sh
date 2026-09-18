@@ -21,29 +21,34 @@ do_run_schedule() {
         return "$EX_OK"
     fi
 
-    # BATCH mode (restic): dump all → upload all, the SAME repo. Fallback→stream on space shortage.
-    if [[ "${ENGINE:-tar}" == "restic" && "${BACKUP_MODE:-stream}" == "batch" ]]; then
+    # BATCH mode: dump all → upload all, the SAME repo. Fallback→stream on space shortage.
+    if [[ "${BACKUP_MODE:-stream}" == "batch" ]]; then
         local brc=0; rdo_run_batch "${ids[@]}" || brc=$?
         (( brc == 2 )) || return "$brc"   # 2 = didn't fit → continue with stream below
         log_info "run-schedule: batch didn't fit in the cache → running stream (one-by-one) instead"
     fi
 
     local start okc=0 failc=0; start="$(date +%s)"
-    local failed=() id
+    local failed=() first_reason="" id out
     for id in "${ids[@]}"; do
         [[ -n "$id" ]] || continue
         log_info "run-schedule: → backup $id"
-        if "$self" backup --queue "$id" >/dev/null 2>&1; then
+        # Capture output so a failure carries WHY into the log and the alert,
+        # instead of just "$id FAILED" with the reason buried in the job file.
+        if out="$("$self" backup --queue "$id" 2>&1)"; then
             okc=$((okc+1))
         else
             failc=$((failc+1)); failed+=("$id")
-            log_warn "run-schedule: backup $id FAILED (continuing with next)"
+            local reason; reason="$(printf '%s\n' "$out" | grep -iE '\[ERROR\]|failed|denied|locked' | tail -1 || true)"
+            [[ -n "$reason" ]] || reason="$(printf '%s\n' "$out" | tail -1 || true)"
+            [[ -n "$first_reason" ]] || first_reason="$id: $reason"
+            log_warn "run-schedule: backup $id FAILED (continuing) - ${reason:-see job log}"
         fi
     done
     local dur=$(( $(date +%s) - start ))
 
     if (( failc > 0 )); then
-        notify_failure "run-schedule: ${failc}/$((okc+failc)) failed (${failed[*]}) in ${dur}s"
+        notify_failure "run-schedule: ${failc}/$((okc+failc)) failed (${failed[*]}) in ${dur}s. ${first_reason}"
     else
         notify_success "run-schedule: ${okc} backups OK in ${dur}s"
     fi

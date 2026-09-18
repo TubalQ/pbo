@@ -28,8 +28,6 @@ source "${SELF_DIR}/lib/lock.sh"
 source "${SELF_DIR}/lib/preflight.sh"
 # shellcheck source=lib/backup.sh
 source "${SELF_DIR}/lib/backup.sh"
-# shellcheck source=lib/upload.sh
-source "${SELF_DIR}/lib/upload.sh"
 # shellcheck source=lib/list.sh
 source "${SELF_DIR}/lib/list.sh"
 # shellcheck source=lib/restore.sh
@@ -40,10 +38,8 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/schedule.sh
 source "${SELF_DIR}/lib/schedule.sh"
-# shellcheck source=lib/restic.sh  (the restic engine, enabled with ENGINE=restic)
+# shellcheck source=lib/restic.sh  (the backup engine)
 source "${SELF_DIR}/lib/restic.sh"
-# shellcheck source=lib/tui.sh  (legacy Textual TUI, `pbo tui`, frozen)
-source "${SELF_DIR}/lib/tui.sh"
 # shellcheck source=lib/menu.sh  (interactive prompt-CLI, `pbo menu`)
 source "${SELF_DIR}/lib/menu.sh"
 
@@ -59,7 +55,7 @@ PBO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-pbo: offsite backup of Proxmox LXCs to any SFTP target, via restic.
+pbo: offsite backup of Proxmox guests (LXC + QEMU) to any SFTP target, via restic.
 
 Usage:
   pbo [global flags] <command> [arguments]
@@ -71,21 +67,24 @@ Global flags:
   -V, --version       version number
 
 Commands:
-  setup                       interactive setup wizard (engine/cache/sftp/password/mode/ntfy → init)
-  menu                        interactive prompt-CLI (rclone style), guests/backup/restore/status
-  tui                         (legacy) whiptail TUI, frozen in favor of `menu`
-  init                        (restic) create/verify repo(s)
-  backup <vmid>               dump→verify→upload→verify→prune (global lock)
+  setup                       interactive setup wizard (cache/sftp/password/mode/ntfy → init)
+  menu                        interactive prompt-CLI, guests/backup/restore/status
+  init                        create/verify the repo(s)
+  backup <vmid>               dump → restic backup → copy offsite (global lock)
   preflight <vmid>            run the preflight checks only (exists/space/cache/repo)
-  run-schedule [--stream|--batch]  back up everything in BACKUP_ORDER → the SAME repo
+  run-schedule [--stream|--batch]  back up this node's guests → the SAME repo
                               --stream: dump→upload one at a time (low disk, default)
                               --batch:  dump all to cache→upload (if there is room)
   status                      running jobs, queue length, who holds the global lock
+  doctor                      health check (repo, timer, key perms, per-guest age)
   list [vmid]                 list offsite archives (size, date)
-  fetch <vmid> <ts>           fetch one archive into cache, verify (no global lock)
-  restore <vmid> <ts> --to N  fetch + pct restore to a new vmid (no global lock)
-  verify <vmid>               verify repo integrity (restic check)
-  prune                       clean cache and offsite per policy
+  usage                       repo size, dedup ratio, snapshot count
+  fetch <vmid> <ts>           extract+verify one snapshot into the cache (no global lock)
+  restore <vmid> <ts> --to N  restore to a new vmid (no global lock)
+  verify                      verify repo integrity (restic check[, --read-data])
+  prune [--if-owner]          apply retention (cache keep-last, offsite GFS)
+  unlock                      remove a stale restic repo lock (after a killed run)
+  rotate-key <file>           rotate the repo password (DR key) to the value in <file>
   test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
 
 Exit codes: 0 ok, 64 usage error, 75 lock busy or queued, 78 config error.
@@ -196,20 +195,25 @@ cmd_restore() {
     do_restore "$src" "$ts" "$newid" "$storage" "$yes"
 }
 
-cmd_init()         { if [[ "${ENGINE:-tar}" == "restic" ]]; then restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; else log_warn "init: only meaningful with ENGINE=restic"; fi; }
+cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; }
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
-cmd_tui() {
-    # Legacy whiptail TUI, frozen in favor of `menu`. --selftest checks wiring (no TTY).
-    case "${1:-}" in
-        --selftest) _tui_selftest; return ;;
-    esac
-    tui_main
-}
+cmd_doctor()       { rdo_doctor; }
 cmd_list()         { do_list "${1:-}"; }
-cmd_usage()        { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_usage; else not_implemented; fi; }
-cmd_verify()       { if [[ "${ENGINE:-tar}" == "restic" ]]; then rdo_verify; else require_vmid "${1:-}"; not_implemented; fi; }
-cmd_prune()        { do_prune; }
+cmd_usage()        { rdo_usage; }
+cmd_verify()       { rdo_verify; }
+cmd_unlock()       { rdo_unlock; }
+cmd_rotate_key()   { [[ -n "${1:-}" ]] || die "$EX_USAGE" "rotate-key requires a file with the new password"; rdo_rotate_key "$1"; }
+# prune [--if-owner]: --if-owner skips silently unless this node is the prune owner
+# (cluster-safe scheduled prune; see lib/cluster.sh _is_prune_owner).
+cmd_prune() {
+    if [[ "${1:-}" == "--if-owner" ]] && ! _is_prune_owner; then
+        log_info "prune: node '$(_local_node)' is not the prune owner (PRUNE_OWNER=${PRUNE_OWNER:-}), skipping."
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "skipped" "true" "reason" "not_prune_owner"
+        return "$EX_OK"
+    fi
+    do_prune
+}
 cmd_test_restore() { require_vmid "${1:-}"; acquire_vmid_lock "$1"; do_test_restore "$1"; }
 
 # ---------------------------------------------------------------------------
@@ -230,17 +234,19 @@ main() {
         init)          cmd_init "$@" ;;
         setup)         cmd_setup "$@" ;;
         menu)          cmd_menu "$@" ;;
-        tui)           cmd_tui "$@" ;;
         backup)        cmd_backup "$@" ;;
         preflight)     cmd_preflight "$@" ;;
         run-schedule)  cmd_run_schedule "$@" ;;
         status)        cmd_status "$@" ;;
+        doctor)        cmd_doctor "$@" ;;
         list)          cmd_list "$@" ;;
         usage)         cmd_usage "$@" ;;
         fetch)         cmd_fetch "$@" ;;
         restore)       cmd_restore "$@" ;;
         verify)        cmd_verify "$@" ;;
         prune)         cmd_prune "$@" ;;
+        unlock)        cmd_unlock "$@" ;;
+        rotate-key)    cmd_rotate_key "$@" ;;
         test-restore)  cmd_test_restore "$@" ;;
         help)          usage ;;
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;

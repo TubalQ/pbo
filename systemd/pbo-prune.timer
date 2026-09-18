@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly pbo retention (prune)
+Documentation=https://github.com/TubalQ/PBO
+
+[Timer]
+# Sundays 06:30, after the nightly backups have run all week.
+OnCalendar=Sun *-*-* 06:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
