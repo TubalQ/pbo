@@ -49,23 +49,33 @@ gone for good.
 
 ```bash
 pbo status                     # the lock and the latest job
+pbo doctor                     # health check: repo, timer, key perms, per-guest age
 pbo backup <vmid>              # one guest: dump, store in restic, copy offsite
 pbo --dry-run backup <vmid>    # show the plan without touching anything
 pbo list [vmid]                # what is offsite (restic snapshots)
 pbo usage                      # repo size, dedup ratio, snapshot count
 pbo run-schedule               # back up this node's guests, what the timer runs
 pbo prune --dry-run            # show what retention would remove
-pbo verify                     # restic check for repo integrity
+pbo verify                     # restic check on BOTH tiers (cache + offsite)
+pbo unlock                     # clear a stale repo lock after a killed run
+pbo rotate-key <file>          # rotate the repo password (DR key) to a new value
 pbo test-restore <vmid>        # restore a throwaway copy, boot it, destroy it
 ```
 
-To run nightly at 05:00:
+`verify` is structure-only by default; `VERIFY_READ_DATA=1 pbo verify` reads every
+pack (slow over SFTP) and `VERIFY_SUBSET=5% pbo verify` reads a cheap sample.
+
+To run nightly backups at 05:00 and weekly retention on Sunday 06:30:
 
 ```bash
-systemctl enable --now pbo.timer
-systemctl list-timers pbo.timer
+systemctl enable --now pbo.timer         # run-schedule, 05:00 daily
+systemctl enable --now pbo-prune.timer   # prune --if-owner, Sunday 06:30
+systemctl list-timers 'pbo*'
 journalctl -u pbo.service -f
 ```
+
+Retention is not applied by the backup run, only by `pbo prune` (the prune timer),
+so without the prune timer the offsite repo grows until you prune by hand.
 
 ## Restore with the tool
 

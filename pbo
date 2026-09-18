@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# pbo: offsite backup of Proxmox LXCs to any SFTP target (e.g. Hetzner
-# Storage Box), using restic as the backup engine.
+# pbo: offsite backup of Proxmox guests (LXC + QEMU) to any SFTP target (e.g.
+# Hetzner Storage Box), using restic as the backup engine.
 # Copyright (C) 2026  TubalQ
 # License: AGPL-3.0-or-later (see LICENSE).
 #

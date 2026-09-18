@@ -63,11 +63,15 @@ pbo menu      # guests, backup, restore, status
 `setup` writes `/etc/pbo/config` and creates the repo. Then pick your guests, run a
 backup, and export the DR key somewhere safe. Don't skip that last step.
 
-Nightly:
+Nightly backups, plus weekly retention so the offsite repo doesn't grow forever:
 
 ```bash
-systemctl enable --now pbo.timer     # 05:00
+systemctl enable --now pbo.timer         # backups, 05:00 daily
+systemctl enable --now pbo-prune.timer   # prune, Sunday 06:30
 ```
+
+Then `pbo doctor` any time to check the repo is reachable, the timer is on, the
+DR key is 0600, and every guest has a recent snapshot.
 
 ## Clusters
 
@@ -112,10 +116,15 @@ Commands:
   backup <vmid>               back up one guest
   run-schedule [--stream|--batch]   back up this node's guests
   status                      running jobs and lock holder
+  doctor                      health check (repo, timer, key, per-guest age)
   list [vmid]                 offsite archives
+  usage                       repo size, dedup ratio, snapshot count
+  fetch <vmid> <ts>           extract+verify a snapshot into the cache
   restore <vmid> <ts> --to N  restore to a new vmid
-  verify                      restic integrity check
-  prune                       apply retention
+  verify                      restic integrity check (both tiers)
+  prune [--if-owner]          apply retention
+  unlock                      clear a stale repo lock after a killed run
+  rotate-key <file>           rotate the repo password to a new value
   test-restore <vmid>         restore to a throwaway vmid, boot, destroy
 ```
 
@@ -135,6 +144,27 @@ Install pbo, give it the same repo password (the DR key), and restore. It always
 restores to a new VMID and won't overwrite a running guest. And since a backup you've
 never tested isn't really a backup, `test-restore` runs the whole loop for you: it
 restores a throwaway copy, boots it, and throws it away.
+
+## Hardening
+
+Plain SFTP has no append-only mode, so a compromised host can delete its own offsite
+backups. Three things close that gap, in order of effort:
+
+- **Provider snapshots.** Turn on your Storage Box's scheduled snapshots and set
+  `STORAGE_BOX_SNAPSHOTS_CONFIRMED=true`. This is the real ransomware backstop: even if
+  the host wipes the repo, the provider keeps read-only copies. `pbo doctor` warns until
+  you've confirmed it.
+- **Pin the host key.** Setup uses `StrictHostKeyChecking=accept-new` (trust on first
+  use). Once connected, pin it: copy the box's line out of `~/.ssh/known_hosts` into a
+  file you control and point the ssh command at it with `-o UserKnownHostsFile=... -o
+  StrictHostKeyChecking=yes`.
+- **Append-only repo.** For a host that should never be able to delete, put a restic
+  REST server in append-only mode (or a restricted SFTP user) in front of the storage
+  and prune from elsewhere. More moving parts; worth it if the host is exposed.
+
+Rotate the repo password with `pbo rotate-key` (or menu → Rotate DR key). restic keys
+wrap the master key, so it's instant and re-encrypts nothing, but the old key stops
+working, so export the new one immediately.
 
 ## Configuration
 

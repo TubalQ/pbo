@@ -1,33 +1,29 @@
-# Backlog, wishes to build in
+# Backlog
 
-## Settled / shipped (no longer backlog)
-- **Engine = restic.** The tar.zst engine was replaced; restic is the production
-  engine (dedup + client-side encryption over native SFTP, one repo). See
+## Shipped
+- **restic is the only engine.** The tar.zst + rclone engine and the frozen
+  Textual/whiptail TUI were removed; there is one code path. See
   [`docs/adr/0001-restic-as-backup-engine.md`](adr/0001-restic-as-backup-engine.md).
-- **Interface = prompt-CLI.** The FastAPI web console and the Textual TUI were
-  removed. The shipped interface is `pbo menu` (rclone-style prompt-CLI), with a
-  whiptail TUI (`lib/tui.sh`) as a zero-dependency fallback. See
+- **Interface = `pbo menu`** (rclone-style prompt-CLI). See
   [`docs/adr/0003-tui.md`](adr/0003-tui.md).
-- **Export DR key**, done (`menu → Export DR key`): prints the restic repo
-  password (the whole DR key) with a treat-as-secret warning.
+- **VM + cluster.** QEMU VMs (`.vma`/`qmrestore`) and cluster awareness (each node
+  backs up its own guests into one shared repo, Model A) are implemented in
+  `lib/guest.sh` and `lib/cluster.sh`. See
+  [`docs/adr/0002-vm-and-cluster-support.md`](adr/0002-vm-and-cluster-support.md).
+- **Scheduled retention.** `pbo-prune.timer` prunes weekly, gated by
+  `_is_prune_owner` so one node prunes in a cluster.
+- **Repo-password rotation.** `pbo rotate-key` (menu → Rotate DR key): `restic key
+  add` → verify → `restic key remove`, instant, no re-encryption.
+- **Health check.** `pbo doctor`: repo reachable, DR key perms, timer, provider
+  snapshots, and per-guest newest-snapshot age.
+- **Stale-lock recovery.** `pbo unlock`, plus an auto-clear before backup/prune when
+  no live pbo run holds the lock.
+- **CI.** shellcheck + the test suite run on every push/PR.
 
-## VM + cluster (open)
-- **Direction set:** qemu VM support + cluster awareness, see
-  [`docs/adr/0002-vm-and-cluster-support.md`](adr/0002-vm-and-cluster-support.md)
-  (type branch `pct`/`qm`, `qmrestore` for `.vma`; cluster = agent-per-node +
-  shared offsite repo + pmxcfs config). Phase 1 = VM locally, Phase 2 = cluster.
-  Not started. **Investigation done 2026-09-05:** the LXC-vs-VM code seam is mapped
-  file-by-line (ADR 0002 §7) and the multi-node data path (Model A per-node agent vs
-  Model B3 central ssh-stream, with an A-base + B3-for-remote-VM hybrid) is worked
-  out (ADR 0002 §3).
-
-## Hardening (open)
-- **Repo-password rotation** to a user-chosen key: `restic key add` → verify →
-  `restic key remove` (immediate, no re-encryption). Wire it into the menu.
-- **Hardened janitor.** `prune` runs locally today, so the host holds the delete
-  key → the provider's scheduled snapshots are the real ransomware backstop. An
-  optional externalized/append-only janitor would remove that single point.
-
-## Other
-- Public GitHub release: `origin` currently points at the private Gitea repo
-  (`TubalQ/pbo`); add the public remote when ready.
+## Open
+- **Hardened / append-only offsite.** Prune runs locally, so the host holds the
+  delete key; the provider's scheduled snapshots are the real backstop. A restic
+  REST server in append-only mode (or a restricted SFTP user) would remove that
+  single point. See the Hardening section in the README.
+- **Deep-verify schedule.** `verify` supports `VERIFY_SUBSET=<n%>` for an affordable
+  `--read-data` sample; wire it into a periodic (monthly) timer.

@@ -1,6 +1,8 @@
 # ADR 0001, restic as backup engine (Path A: vzdump tar in restic)
 
-- **Status:** Accepted, 2026-09-04
+- **Status:** Accepted, 2026-09-04. **Superseding update:** the tar/rclone engine
+  and the `ENGINE=tar|restic` switch have since been removed; restic is the only
+  engine (see `docs/BACKLOG.md`).
 - **Decision:** Adopt **restic** as pbo's storage/transport/encryption/
   verification/retention engine, in **Path A** (the vzdump archive is stored *in* restic).
   Keep the CLI's JSON envelope and the `pct restore` integration, change the engine, not the contract.
