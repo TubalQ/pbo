@@ -16,11 +16,11 @@ set -Eeuo pipefail
 SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SELF_DIR}/lib/common.sh"
-# shellcheck source=lib/guest.sh  (LXC-vs-QEMU type awareness, used across the engine)
+# shellcheck source=lib/guest.sh
 source "${SELF_DIR}/lib/guest.sh"
-# shellcheck source=lib/cluster.sh  (node/cluster awareness, back up local guests)
+# shellcheck source=lib/cluster.sh
 source "${SELF_DIR}/lib/cluster.sh"
-# shellcheck source=lib/notify.sh  (replaces the notify stubs in common.sh)
+# shellcheck source=lib/notify.sh
 source "${SELF_DIR}/lib/notify.sh"
 # shellcheck source=lib/lock.sh
 source "${SELF_DIR}/lib/lock.sh"
@@ -38,9 +38,9 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/schedule.sh
 source "${SELF_DIR}/lib/schedule.sh"
-# shellcheck source=lib/restic.sh  (the backup engine)
+# shellcheck source=lib/restic.sh
 source "${SELF_DIR}/lib/restic.sh"
-# shellcheck source=lib/menu.sh  (interactive prompt-CLI, `pbo menu`)
+# shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
 readonly VERSION="0.1.0-dev"
@@ -156,8 +156,8 @@ cmd_preflight() {
 # default) or --batch (dump all→upload), always to the SAME repo.
 cmd_run_schedule() {
     case "${1:-}" in
-        --batch)  BACKUP_MODE=batch ;;
-        --stream) BACKUP_MODE=stream ;;
+        --batch)  BACKUP_MODE="batch" ;;
+        --stream) BACKUP_MODE="stream" ;;
         "" ) : ;;
         *) die "$EX_USAGE" "unknown run-schedule flag: $1 (use --stream|--batch)" ;;
     esac

@@ -20,6 +20,9 @@ _restic() {                    # _restic <repo> <args...>
     local opts=()
     [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
     [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && opts+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}")
+    # The env prefixes below re-export config vars for the restic child; the RHS
+    # references the outer (config) values, not the sibling prefixes. Intended.
+    # shellcheck disable=SC2097,SC2098
     RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
     RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
@@ -88,7 +91,7 @@ rdo_backup() {
     local mode; mode="$(_effective_mode "$vmid")"
     local gtype; gtype="$(_guest_type "$vmid")" || gtype="lxc"   # lxc | qemu
     local dumpdir="${CACHE_DIR}/${vmid}"
-    local job_id="backup-${vmid}-$(date +%Y%m%d-%H%M%S)"
+    local job_id; job_id="backup-${vmid}-$(date +%Y%m%d-%H%M%S)"
     local jobfile="${JOBS_DIR}/${job_id}.log"
 
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
@@ -240,7 +243,7 @@ rdo_restore() {
         rm -rf "$rdir" 2>/dev/null || true
         return "$EX_OK"
     fi
-    local jobfile="${JOBS_DIR}/restore-${newid}-$(date +%Y%m%d-%H%M%S).log"
+    local jobfile; jobfile="${JOBS_DIR}/restore-${newid}-$(date +%Y%m%d-%H%M%S).log"
     audit_log "restore src=$src ts=$ts target=$newid storage=$storage unprivileged=$unpriv engine=restic"
     if ! run_stream "$jobfile" "${gtype}-restore[$newid]" -- "${cmd[@]}"; then
         die "$EX_SOFTWARE" "${gtype} restore failed for target $newid (see $jobfile)"
@@ -272,7 +275,7 @@ rdo_test_restore() {
         return "$EX_OK"
     fi
     local rdir="${CACHE_DIR}/restore-${target}"; rm -rf "$rdir"
-    local jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
+    local jobfile; jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
     _restic_extract "$vmid" "$ts" "$rdir" || die "$EX_DATAERR" "restic extraction failed"
     local tar="$RX_TAR"
     local gtype; gtype="$(_guest_type_from_archive "$tar")"

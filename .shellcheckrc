@@ -1,0 +1,6 @@
+# shellcheck config for pbo. The tool is one dispatcher that sources lib/*.sh,
+# so many symbols are defined in one file and used in another.
+external-sources=true
+# EX_* exit codes, PF_* preflight collectors and similar are set in one lib and
+# read in others; shellcheck can't see across the sourced boundary and flags them.
+disable=SC2034

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # mock: zfs list -Hpo used <dataset>
-ds="${@: -1}"
+ds="${*: -1}"
 awk -v d="$ds" '$1==d{print $2; f=1} END{exit !f}' "$MOCK_ZFS_USED" 2>/dev/null
