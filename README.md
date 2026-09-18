@@ -1,48 +1,45 @@
 # pbo
 
-Offsite backup for Proxmox guests (LXC and QEMU) to any SFTP target — a Hetzner
-Storage Box, say. It uses [restic](https://restic.net/) under the hood, so backups
-are deduplicated, encrypted and incremental.
+This backs up Proxmox guests (LXC and QEMU) to an SFTP server using
+[restic](https://restic.net/). That's it. It is not trying to be Proxmox Backup
+Server, and if PBS works for you, go use PBS.
 
-If you can't or won't run a full Proxmox Backup Server, this gets you most of the
-way there — dedup, encryption, quick restores, an offsite copy — with just SFTP
-storage and one script on the host.
+It exists because I wanted an encrypted offsite copy without running yet another
+server for it. restic already does dedup, encryption and incremental backups over
+plain SFTP, so pbo is mostly glue: it runs `vzdump`, throws the archive into a restic
+repo, and pushes it offsite. Restore does the reverse and feeds the archive to
+`pct restore` or `qmrestore`, always into a new VMID. No daemon, no web service. You
+run `pbo menu`, or the individual commands if you'd rather type.
 
-For each guest it runs `vzdump`, stashes the archive in a restic repo and pushes it
-offsite over plain SFTP. Restores pull the archive back and hand it to `pct restore`
-(containers) or `qmrestore` (VMs), always into a fresh VMID. Day to day you drive it
-from `pbo menu`.
-
-> **Beta.** It backs up and restores real containers and VMs, and there's a test
-> suite, but defaults and interfaces still move around. Try it on something you can
-> afford to lose, pin a commit if you rely on it, and open an issue when it breaks.
+> This is beta. It backs up and restores real machines and there's a test suite, but I
+> still change things. If you put the only copy of something important in here and it
+> eats it, that's on you.
 
 ## Screenshots
 
-`pbo menu` — the interactive prompt you drive it from day to day:
+It's a text menu, so here's the menu and the status screen. Now you know what you're
+getting before you clone it.
 
 ![The pbo main menu](docs/img/menu.png)
 
-Status shows both tiers side by side, the local cache and the offsite repo, each
-with its own guest count, snapshots, physical vs. logical size and dedup ratio,
-down to the next scheduled run:
-
 ![Status, both tiers with the next scheduled run](docs/img/status-full.png)
 
-## Why restic
+## Why restic, and not something clever
 
-Everything ends up in one repo, whether you back up a single guest or the whole
-node, cached locally or not. restic does the dedup and encryption; the repo password
-is your recovery key, so export it and keep it somewhere safe. No FUSE, no rclone —
-restic speaks SFTP directly and you hand it a full ssh command, which is what a
-chrooted Storage Box needs.
+Because restic already solved the hard parts and I'm not going to reinvent them badly.
+It speaks SFTP itself, so there's no FUSE mount and no rclone in the middle.
+Everything goes into one repo no matter how many guests or nodes you have. The repo
+password is both the encryption key and the recovery key. Lose it and the data is gone
+for good, and no, I can't get it back for you. Back it up.
 
 ## Requirements
 
-- A Proxmox VE host (for `pct`, `qm`, `vzdump`).
-- `restic`, `jq`, `zstd`, `flock`, `curl` — `install.sh` grabs whatever's missing.
-- An SFTP target you can reach with a key. Storage Box paths are relative (the
-  account is chrooted to its own directory).
+Nothing exotic:
+
+- A Proxmox host, obviously (`pct`, `qm`, `vzdump`).
+- `restic`, `jq`, `zstd`, `flock`, `curl`. `install.sh` installs whatever you're missing.
+- An SFTP target you can log into with a key. Storage Box paths are relative because the
+  account is chrooted. That's not a bug.
 
 ## Install
 
@@ -52,8 +49,8 @@ cd PBO
 sudo ./install.sh
 ```
 
-Installs into `/usr/local`, offers to run the setup wizard, and leaves the timer
-disabled (it prints how to enable it).
+Goes into `/usr/local`. It offers to run setup. It does not enable the timer, because
+turning on background jobs behind your back is rude.
 
 ## Quick start
 
@@ -62,42 +59,41 @@ pbo setup     # engine, cache, sftp, password, mode
 pbo menu      # guests, backup, restore, status
 ```
 
-The wizard writes `/etc/pbo/config` (0600) and creates the repo. Then pick which
-guests to protect, run a backup, and — do this — export your DR key to a password
-manager.
+`setup` writes `/etc/pbo/config` and creates the repo. Then pick your guests, run a
+backup, and export the DR key somewhere safe. I mean it about that last one.
 
-Nightly schedule:
+Nightly:
 
 ```bash
-systemctl enable --now pbo.timer     # 05:00 every night
+systemctl enable --now pbo.timer     # 05:00
 ```
 
 ## Clusters
 
-Run `pbo` on each node; each node backs up its own guests into the same shared repo.
-No central coordinator, no cross-node SSH — same idea as Proxmox's own backup jobs.
-Per node:
+There is no cluster magic. You install it on every node and each node backs up its own
+guests into the same repo. That is exactly how Proxmox's own backup jobs work, and it's
+fine. No coordinator, no node SSHing into another node, none of that.
 
 ```bash
-git clone https://github.com/TubalQ/PBO && cd PBO
 sudo ./install.sh
 pbo setup                            # same repo, same password
 systemctl enable --now pbo.timer
 ```
 
-With `BACKUP_ORDER=auto` (the default) each node finds its own guests. Move a guest
-to another node and that node picks it up next run — restic tags every snapshot with
-the vmid, so its history follows it. A single node is just this with one node.
+With `BACKUP_ORDER=auto` each node works out its own guests. Move a guest to another
+node and that node backs it up on the next run; restic tags snapshots by vmid, so the
+history isn't lost.
 
-Three things to get right:
+Three things, and if you get them wrong it's your own fault:
 
-- Use the same repo password on every node. Paste it into `/etc/pbo/restic-pass`
-  (0600). Keep it out of `/etc/pve` — pmxcfs replicates that in cleartext.
-- To edit config once for the whole cluster, put the non-secret bits in
-  `/etc/pve/pbo/config`; pmxcfs syncs it, and each node's local config just adds the
-  password (and wins where they differ).
-- Prune from one node only — it needs an exclusive lock on the repo. Run it in one
-  place or set `PRUNE_OWNER=<nodename>`.
+- Same repo password on every node, in `/etc/pbo/restic-pass`. Do NOT put it in
+  `/etc/pve`. pmxcfs replicates that directory in cleartext, which defeats the whole
+  point.
+- If you hate editing the config N times, put the non-secret parts in
+  `/etc/pve/pbo/config` and let pmxcfs sync it. The local file still holds the password
+  and wins on conflicts.
+- Prune from one node only. It takes an exclusive lock. Set `PRUNE_OWNER` if you can't
+  keep track.
 
 ## Commands
 
@@ -126,30 +122,29 @@ Commands:
 
 | Setting | Effect |
 |---|---|
-| `LOCAL_REPO=true`  | Keep a local repo, copy each snapshot offsite. Local restores are fast. |
+| `LOCAL_REPO=true`  | Keep a local repo, copy each snapshot offsite. Fast local restores. |
 | `LOCAL_REPO=false` | Straight to SFTP. Barely touches local disk. |
 | `BACKUP_MODE=stream` | One guest at a time (default). Low disk. |
 | `BACKUP_MODE=batch`  | Dump everything to cache first, then upload, if it fits. |
 
-It all lands in one repo either way.
-
 ## Disaster recovery
 
-On a fresh host: install pbo, paste your DR key (menu → Export DR key), then
-menu → Restore. It only ever restores to a new VMID, never over an existing guest.
-`test-restore` proves the path end to end — it restores a throwaway copy, boots it,
-and destroys it.
+The point of a backup is the restore, so: the host is dead, you have a clean machine.
+Install pbo, give it the same repo password (the DR key), restore. It always restores to
+a new VMID and refuses to overwrite a running guest, on purpose. If you don't trust that
+it works, and you shouldn't trust a backup you've never tested, run `test-restore`. It
+restores a throwaway copy, boots it, and throws it away.
 
 ## Configuration
 
-`etc/config.example` documents every setting. The one secret is the repo password,
-in the file named by `RESTIC_PASSWORD_FILE` (0600). The config file holds nothing
-sensitive.
+Everything is documented in `etc/config.example`. The only secret is the repo password
+(`RESTIC_PASSWORD_FILE`, 0600). The config file itself has nothing sensitive in it, so
+stop worrying about it.
 
 ## Contributing
 
-PRs welcome, especially while it's beta — bugs, fixes, docs, ideas. It's plain bash
-with tests under `tests/`; if you change behaviour, cover it with a test.
+Patches welcome. It's plain bash with tests in `tests/`. If you change behaviour and
+don't add a test, I'm going to ask you to add a test.
 
 ## License
 
