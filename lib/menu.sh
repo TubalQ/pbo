@@ -21,6 +21,32 @@ _askpw() { local p="$1" a; read -r -s -p "$p: " a; echo >&2; printf '%s' "$a"; }
 _pause() { read -r -p "${C_D}press Enter to continue${C_0} " _; }
 _yn()    { local a; a="$(_ask "$1 (y/n)" "${2:-n}")"; [[ "$a" == [yYjJ]* ]]; }
 
+# _pick_index <prompt> <default-num> <label...>: print a numbered list of labels,
+# read a choice, echo ONLY the chosen 1-based index on stdout. Fails (non-zero, no
+# output) on an empty/invalid/out-of-range answer so callers can abort. The list is
+# printed to stderr so callers can capture the index with $(...) without swallowing it.
+_pick_index() {
+    local prompt="$1" def="$2"; shift 2
+    local i=1 lbl
+    for lbl in "$@"; do printf '    %s[%d]%s %s\n' "$C_B" "$i" "$C_0" "$lbl" >&2; ((i++)); done
+    local n; n="$(_ask "$prompt" "$def")"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= $# )) && { printf '%s' "$n"; return 0; }
+    return 1
+}
+
+# _ago <iso-time|epoch> <now-epoch>: coarse relative age, e.g. "5m ago", "8h ago".
+_ago() {
+    local t="$1" now="$2" s
+    [[ "$t" =~ ^[0-9]+$ ]] && s="$t" || s="$(date -d "$t" +%s 2>/dev/null || echo 0)"
+    local d=$(( now - s )); (( d < 0 )) && d=0
+    (( d < 3600  )) && { printf '%dm ago' $(( d/60 ));   return; }
+    (( d < 86400 )) && { printf '%dh ago' $(( d/3600 )); return; }
+    printf '%dd ago' $(( d/86400 ))
+}
+
+# _hsize <bytes>: human-readable size, falls back to raw bytes without numfmt.
+_hsize() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${1:-0}"; }
+
 # Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
 _cfg_set() {
     local k="$1" v="$2" cfg="${PBO_CONFIG_LOADED:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
@@ -250,15 +276,44 @@ menu_restore() {
     printf '%s Restore%s\n\n' "$C_B" "$C_0"
     echo "  Fetching offsite archives…"
     local listing; listing="$("$PBO_BIN" --json list 2>/dev/null)"
-    local vmids; vmids="$(jq -r '[.archives[].vmid]|unique|.[]' <<<"$listing" 2>/dev/null)"
-    [[ -n "$vmids" ]] || { echo "  No offsite archives."; _pause; return; }
-    echo "  Guests with backups: ${C_C}$(echo $vmids | tr '\n' ' ')${C_0}"
-    local src; src="$(_ask "VMID to restore")"
-    [[ "$src" =~ ^[0-9]+$ ]] || return
-    local tss; tss="$(jq -r --arg v "$src" '.archives[]|select(.vmid==$v)|.archive' <<<"$listing" | grep -oE '[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}' | sort -r)"
-    [[ -n "$tss" ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
-    echo "  Snapshots (newest first):"; echo "$tss" | sed 's/^/    /'
-    local ts; ts="$(_ask "Timestamp" "$(echo "$tss" | head -1)")"
+    jq -e '.archives|length>0' <<<"$listing" >/dev/null 2>&1 \
+        || { echo "  ${C_R}No offsite archives.${C_0}"; _pause; return; }
+
+    local now; now="$(date +%s)"
+    local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
+
+    # --- STEP 1: pick a guest (vmid · name · #snapshots · newest age) ---
+    local gv=() glabel=() vmid nsnap newest nm
+    while IFS=$'\t' read -r vmid nsnap newest; do
+        [[ -n "$vmid" ]] || continue
+        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
+        gv+=("$vmid")
+        glabel+=("$(printf '%-6s %-18s %2d snapshots · newest %s' \
+            "$vmid" "${nm:-–}" "$nsnap" "$(_ago "$newest" "$now")")")
+    done < <(jq -r '.archives | group_by(.vmid)[]
+        | [ .[0].vmid, length, ([.[].modtime]|max) ] | @tsv' <<<"$listing")
+
+    printf '\n  %sGuests with backups:%s\n' "$C_B" "$C_0"
+    local gi; gi="$(_pick_index "Guest" 1 "${glabel[@]}")" || { _pause; return; }
+    local src="${gv[gi-1]}"
+
+    # --- STEP 2: pick a snapshot of that guest (newest first) ---
+    local sv=() slabel=() ts size modt snap
+    while IFS=$'\t' read -r ts size modt snap; do
+        [[ -n "$ts" ]] || continue
+        sv+=("$ts")
+        slabel+=("$(printf '%-9s · %7s · %s' \
+            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")")")
+    done < <(jq -r --arg v "$src" '.archives[] | select(.vmid==$v)
+        | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
+            .size_bytes, .modtime, .snapshot ] | @tsv' <<<"$listing" | sort -rk3)
+    [[ ${#sv[@]} -gt 0 ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
+
+    printf '\n  %sSnapshots of %s · %s (newest first):%s\n' \
+        "$C_B" "$src" "$(awk -F'\t' -v v="$src" '$1==v{print $2}' <<<"$names")" "$C_0"
+    local si; si="$(_pick_index "Snapshot" 1 "${slabel[@]}")" || { _pause; return; }
+    local ts="${sv[si-1]}"
+
     local used free=9100
     used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"
     while grep -qx "$free" <<<"$used"; do free=$((free+1)); done
