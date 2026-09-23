@@ -358,7 +358,7 @@ menu_restore() {
     _menu_header
     printf '%s Restore%s\n\n' "$C_B" "$C_0"
     echo "  Fetching offsite archives…"
-    local listing; listing="$("$PBO_BIN" --json list 2>/dev/null)"
+    local listing; listing="$("$PBO_BIN" --json list --reasons 2>/dev/null)"
     jq -e '.archives|length>0' <<<"$listing" >/dev/null 2>&1 \
         || { echo "  ${C_R}No offsite archives.${C_0}"; _pause; return; }
 
@@ -382,15 +382,23 @@ menu_restore() {
     local src="${gv[gi-1]}"
 
     # --- STEP 2: pick a snapshot of that guest (newest first) ---
-    local sv=() slabel=() ts size modt snap
-    while IFS=$'\t' read -r ts size modt snap; do
+    # The [code] shows which retention bucket keeps it: d/w/m/y=daily/weekly/
+    # monthly/yearly, L=keep-last. Empty = the next prune would drop it.
+    local sv=() slabel=() ts size modt snap code
+    while IFS=$'\t' read -r ts size modt snap code; do
         [[ -n "$ts" ]] || continue
         sv+=("$ts")
-        slabel+=("$(printf '%-9s · %7s · %s' \
-            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")")")
+        slabel+=("$(printf '%-9s · %7s · %s · %s' \
+            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "[${code:-–}]")")
     done < <(jq -r --arg v "$src" '.archives[] | select(.vmid==$v)
+        | (.reasons // []) as $r
+        | ( [ (if any($r[];test("daily"))   then "d" else empty end),
+              (if any($r[];test("weekly"))  then "w" else empty end),
+              (if any($r[];test("monthly")) then "m" else empty end),
+              (if any($r[];test("yearly"))  then "y" else empty end),
+              (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
         | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
-            .size_bytes, .modtime, .snapshot ] | @tsv' <<<"$listing" | sort -rk3)
+            .size_bytes, .modtime, .snapshot, $code ] | @tsv' <<<"$listing" | sort -rk3)
     [[ ${#sv[@]} -gt 0 ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
 
     printf '\n  %sSnapshots of %s · %s (newest first):%s\n' \
