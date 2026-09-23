@@ -72,8 +72,18 @@ jq -e '.archives[0].archive|test("^vzdump-lxc-8001-.*\\.tar$")' "$RUN/ls.json" >
 # --- usage: fields present ---
 $BIN --json usage 2>/dev/null | jq -e '.snapshots>=1 and .physical_bytes>=0' >/dev/null && ok "usage: stats fields" || bad "usage fields"
 
-# --- second backup + prune keep-last=1 leaves exactly one ---
-sleep 1; $BIN backup 8001 >/dev/null 2>&1
+# --- list --reasons annotates each snapshot with its retention bucket + keep flag ---
+sleep 1; $BIN backup 8001 >/dev/null 2>&1   # now two snapshots of 8001
+$BIN --json list --reasons > "$RUN/lr.json" 2>/dev/null
+jq -e '.archives[0]|has("reasons") and has("keep")' "$RUN/lr.json" >/dev/null \
+    && ok "list --reasons: adds reasons + keep fields" || bad "list --reasons fields"
+jq -e '[.archives[]|select(.keep==true and (.reasons|length>0))]|length>=1' "$RUN/lr.json" >/dev/null \
+    && ok "list --reasons: a kept snapshot has a reason" || bad "list --reasons kept reason"
+# KEEP_LOCAL=1 → the older of the two is outside policy (keep=false)
+jq -e '[.archives[]|select(.keep==false)]|length>=1' "$RUN/lr.json" >/dev/null \
+    && ok "list --reasons: over-policy snapshot flagged keep=false" || bad "list --reasons keep=false"
+
+# --- second backup already ran above; prune keep-last=1 leaves exactly one ---
 $BIN --json prune >/dev/null 2>&1
 n="$($BIN --json list 2>/dev/null | jq '[.archives[]|select(.vmid=="8001")]|length')"
 [[ "$n" == 1 ]] && ok "prune: keep-last=1 (one snapshot remains)" || bad "prune keep-last ($n)"

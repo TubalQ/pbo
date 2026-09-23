@@ -90,6 +90,20 @@ eq "detail: guest groups" "$(wc -l <<<"$det")" "2"
 first="$(jq -r --arg v 108 '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' <<<"$LIST" | sort -r | head -1 | cut -f3)"
 eq "detail: 108 newest snapshot id" "$first" "aaaa"
 
+# --- detailed view: reasons -> policy letter code (d/w/m/y/L) ---
+polcode() {
+    jq -r '(.reasons//[]) as $r
+        | [ (if any($r[];test("daily"))   then "d" else empty end),
+            (if any($r[];test("weekly"))  then "w" else empty end),
+            (if any($r[];test("monthly")) then "m" else empty end),
+            (if any($r[];test("yearly"))  then "y" else empty end),
+            (if any($r[];test("last"))    then "L" else empty end) ] | join("")' <<<"$1"
+}
+eq "polcode: daily+weekly+monthly" "$(polcode '{"reasons":["daily snapshot","weekly snapshot","monthly snapshot"]}')" "dwm"
+eq "polcode: oldest monthly"       "$(polcode '{"reasons":["oldest monthly snapshot"]}')" "m"
+eq "polcode: keep-last"            "$(polcode '{"reasons":["last snapshot"]}')" "L"
+eq "polcode: empty reasons"        "$(polcode '{"reasons":[]}')" ""
+
 # --- menu_help renders and covers the key actions ---
 help="$(printf '\n' | menu_help 2>&1)"
 helpok=1

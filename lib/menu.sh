@@ -168,7 +168,7 @@ _menu_status_tier() {           # <label> <cache|offsite>
 _menu_status_detail_tier() {    # <label> <cache|offsite>
     local label="$1" which="$2" ls
     printf '  %s%s%s\n' "$C_B" "$label" "$C_0"
-    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list 2>/dev/null)"
+    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list --reasons 2>/dev/null)"
     if [[ -z "$ls" ]] || ! printf '%s' "$ls" | jq -e '.archives' >/dev/null 2>&1; then
         printf '    %s(unreachable)%s\n\n' "$C_R" "$C_0"; return
     fi
@@ -177,18 +177,31 @@ _menu_status_detail_tier() {    # <label> <cache|offsite>
     fi
     local now; now="$(date +%s)"
     local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
-    local vmid nsnap nm modt size snap
+    local vmid nsnap nm modt size snap code keep
     while IFS=$'\t' read -r vmid nsnap; do
         [[ -n "$vmid" ]] || continue
         nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
         [[ "$vmid" == host-* ]] && nm="host config"
         printf '    %s%-14s%s %-18s %s(%s)%s\n' "$C_C" "$vmid" "$C_0" "${nm:-–}" "$C_D" "$nsnap" "$C_0"
-        while IFS=$'\t' read -r modt size snap; do
+        while IFS=$'\t' read -r modt size snap code keep; do
             [[ -n "$modt" ]] || continue
-            printf '        %s  %-8s  %8s  %s\n' \
-                "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "$(_ago "$modt" "$now")" "$(_hsize "$size")" "${snap:0:8}"
-        done < <(printf '%s' "$ls" | jq -r --arg v "$vmid" \
-            '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' | sort -r)
+            local tag; tag="[${code:-?}]"
+            local row; row="$(printf '        %-19s  %-8s  %8s  %-6s %s' \
+                "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$tag" "${snap:0:8}")"
+            if [[ "$keep" == "false" ]]; then
+                printf '%s%s%s %s(prunes next)%s\n' "$C_D" "$row" "$C_0" "$C_Y" "$C_0"
+            else
+                printf '%s\n' "$row"
+            fi
+        done < <(printf '%s' "$ls" | jq -r --arg v "$vmid" '
+            .archives[]|select(.vmid==$v)
+            | (.reasons // []) as $r
+            | ( [ (if any($r[];test("daily"))   then "d" else empty end),
+                  (if any($r[];test("weekly"))  then "w" else empty end),
+                  (if any($r[];test("monthly")) then "m" else empty end),
+                  (if any($r[];test("yearly"))  then "y" else empty end),
+                  (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
+            | [.modtime,.size_bytes,.snapshot,$code,(.keep//true)]|@tsv' | sort -r)
     done < <(printf '%s' "$ls" | jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' | sort)
     printf '\n'
 }
@@ -220,6 +233,7 @@ _menu_status_summary() {
 _menu_status_detailed() {
     _menu_header
     printf '%s Status — every snapshot%s\n\n' "$C_B" "$C_0"
+    printf '  %sretention: d=daily w=weekly m=monthly y=yearly L=last · %sdimmed = prunes next run%s\n' "$C_D" "$C_Y" "$C_0"
     printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
     _menu_status_tiers _menu_status_detail_tier
     _pause

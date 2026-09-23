@@ -79,7 +79,7 @@ Commands:
                               --batch:  dump all to cache→upload (if there is room)
   status                      running jobs, queue length, who holds the global lock
   doctor                      health check (repo, timer, key perms, per-guest age)
-  list [vmid]                 list offsite archives (size, date)
+  list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
   usage                       repo size, dedup ratio, snapshot count
   fetch <vmid> <ts>           extract+verify one snapshot into the cache (no global lock)
   restore <vmid> <ts> --to N  restore to a new vmid (no global lock)
@@ -204,7 +204,16 @@ cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result 
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
 cmd_doctor()       { rdo_doctor; }
-cmd_list()         { do_list "${1:-}"; }
+cmd_list() {
+    local reasons=0 vmid=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --reasons) reasons=1; shift ;;
+            *) vmid="$1"; shift ;;
+        esac
+    done
+    LIST_WITH_REASONS="$reasons" do_list "$vmid"
+}
 cmd_usage()        { rdo_usage; }
 cmd_verify()       { rdo_verify; }
 cmd_unlock()       { rdo_unlock; }

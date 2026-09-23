@@ -175,6 +175,28 @@ rdo_list() {
               archive:("vzdump-\($typ)-\($vmid)-\($ts)." + (if $typ=="qemu" then "vma" else "tar" end)),
               size_bytes:((.summary.total_bytes_processed) // (.summary.data_added) // 0),
               modtime:.time, age_seconds:0, snapshot:.short_id } ]' 2>/dev/null || echo '[]')"
+    # Optional: annotate each snapshot with the retention bucket(s) keeping it
+    # (daily/weekly/monthly/…) and whether the next prune would drop it. Runs a
+    # dry-run forget with THIS repo's policy (cache=keep-last, offsite=GFS) and
+    # merges the reasons in by short_id. Off by default (extra round-trip).
+    if [[ "${LIST_WITH_REASONS:-0}" == 1 ]]; then
+        local pol
+        if [[ "$repo" == "$RESTIC_CACHE_REPO" ]]; then
+            pol=(--keep-last "${RESTIC_KEEP_LAST:-2}")
+        else
+            pol=(--keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" --keep-monthly "${KEEP_OFFSITE_MONTHLY}")
+        fi
+        local fj; fj="$(_restic "$repo" forget --group-by paths "${pol[@]}" --dry-run --json 2>/dev/null || echo '[]')"
+        [[ -n "$fj" ]] || fj='[]'
+        # Merge via --slurpfile over a process substitution: the forget JSON can be
+        # hundreds of KB (every snapshot), which overflows argv with --argjson.
+        archives="$(printf '%s' "$archives" | jq -c --slurpfile fj <(printf '%s' "$fj") '
+            ($fj[0] // []) as $g
+            | ( [ $g[]? | (.reasons // [])[] | {key:(.snapshot.short_id), value:(.matches // [])} ] | from_entries ) as $why
+            | ( [ $g[]? | (.remove // [])[]? | .short_id ] ) as $rem
+            | map( .snapshot as $sid | . + { reasons:($why[$sid] // []), keep:(($rem | index($sid)) == null) } )
+        ' 2>/dev/null || printf '%s' "$archives")"
+    fi
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         printf '{"command":"list","status":"ok","ok":true,"dry_run":false,"archives":%s}\n' "$archives"
     else
