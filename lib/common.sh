@@ -59,6 +59,13 @@ set_defaults() {
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
     : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max), speeds up restore considerably
 
+    # --- host backup (config + rebuild metadata, manual: `pbo backup-host`) ---
+    # Curated, space-separated. Missing paths are skipped (not an error).
+    : "${HOST_BACKUP_PATHS:=/etc/pve /etc/network/interfaces /etc/network/interfaces.d /etc/hosts /etc/hostname /etc/resolv.conf /etc/fstab /etc/vzdump.conf /etc/pbo /etc/systemd/system /etc/cron.d /etc/apt/sources.list /etc/apt/sources.list.d}"
+    # SSH keys and the DR key are deliberately excluded (secrets never go in the
+    # repo they protect / the host must keep its own offline key copy).
+    : "${HOST_BACKUP_EXCLUDES:=${RESTIC_PASSWORD_FILE} /root/.ssh **/.ssh **/id_rsa **/id_ed25519 **/id_ecdsa}"
+
     # Derived paths.
     LOG_FILE="${LOG_DIR}/pbo.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"

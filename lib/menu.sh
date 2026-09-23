@@ -121,6 +121,7 @@ menu_backup() {
     printf '  %s[1]%s All protected, one by one (stream)\n' "$C_B" "$C_0"
     printf '  %s[2]%s All protected, all at once (batch)\n' "$C_B" "$C_0"
     printf '  %s[3]%s Pick a single guest\n' "$C_B" "$C_0"
+    printf '  %s[4]%s This host (config + rebuild metadata)\n' "$C_B" "$C_0"
     printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
     local c; c="$(_ask "Choice")"
     case "$c" in
@@ -128,6 +129,9 @@ menu_backup() {
         2) _yn "Back up all protected guests (batch)?" y && { "$PBO_BIN" run-schedule --batch; _pause; } ;;
         3) local id; id="$(_ask "VMID to back up")"
            [[ "$id" =~ ^[0-9]+$ ]] && _yn "Back up $id now?" y && { "$PBO_BIN" backup "$id"; _pause; } ;;
+        4) printf '  %sSSH keys and the DR key are excluded for security — keep your own\n' "$C_Y"
+           printf '  offline copy; they will NOT be in this backup.%s\n' "$C_0"
+           _yn "Back up this host now?" y && { "$PBO_BIN" backup-host; _pause; } ;;
         *) : ;;
     esac
 }
@@ -287,8 +291,9 @@ menu_restore() {
     while IFS=$'\t' read -r vmid nsnap newest; do
         [[ -n "$vmid" ]] || continue
         nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
+        [[ "$vmid" == host-* ]] && nm="host config"
         gv+=("$vmid")
-        glabel+=("$(printf '%-6s %-18s %2d snapshots · newest %s' \
+        glabel+=("$(printf '%-14s %-18s %2d snapshots · newest %s' \
             "$vmid" "${nm:-–}" "$nsnap" "$(_ago "$newest" "$now")")")
     done < <(jq -r '.archives | group_by(.vmid)[]
         | [ .[0].vmid, length, ([.[].modtime]|max) ] | @tsv' <<<"$listing")
@@ -313,6 +318,19 @@ menu_restore() {
         "$C_B" "$src" "$(awk -F'\t' -v v="$src" '$1==v{print $2}' <<<"$names")" "$C_0"
     local si; si="$(_pick_index "Snapshot" 1 "${slabel[@]}")" || { _pause; return; }
     local ts="${sv[si-1]}"
+
+    # Host snapshots restore to a directory (file restore), never pct/qmrestore.
+    if [[ "$src" == host-* ]]; then
+        local dir; dir="$(_ask "Extract to directory" "/var/tmp/pbo-restore-${src}-${ts}")"
+        local onefile; onefile="$(_ask "Single path to restore (blank = everything)" "")"
+        _yn "Restore host snapshot $src ($ts) → files under $dir?" y || return
+        if [[ -n "$onefile" ]]; then
+            "$PBO_BIN" restore-host "$src" "$ts" --to "$dir" --path "$onefile"
+        else
+            "$PBO_BIN" restore-host "$src" "$ts" --to "$dir"
+        fi
+        _pause; return
+    fi
 
     local used free=9100
     used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"

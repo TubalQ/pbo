@@ -19,6 +19,12 @@
 - **Stale-lock recovery.** `pbo unlock`, plus an auto-clear before backup/prune when
   no live pbo run holds the lock.
 - **CI.** shellcheck + the test suite run on every push/PR.
+- **Host backup.** `pbo backup-host` stores the host's own config + rebuild
+  metadata into the same repo (`type=host`, shown as `host-<node>`); manual, not
+  scheduled. SSH keys and the DR key are excluded on purpose. `restore-host`
+  does a file restore to a directory (never `pct restore`).
+- **Numbered restore pickers.** `pbo menu` → Restore now picks the guest and the
+  snapshot from numbered lists (age/size), instead of typing a raw timestamp.
 
 ## Open
 - **Hardened / append-only offsite.** Prune runs locally, so the host holds the

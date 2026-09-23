@@ -60,7 +60,17 @@ pbo verify                     # restic check on BOTH tiers (cache + offsite)
 pbo unlock                     # clear a stale repo lock after a killed run
 pbo rotate-key <file>          # rotate the repo password (DR key) to a new value
 pbo test-restore <vmid>        # restore a throwaway copy, boot it, destroy it
+pbo backup-host                # back up THIS host's config + rebuild metadata
+pbo restore-host <node> <ts> --to <dir> [--path <p>]   # extract host files
 ```
+
+Host backup (`backup-host`) is manual and captures the host's own config into
+the same repo (`type=host`, shown as `host-<node>`): `/etc/pve`, networking,
+`/etc/pbo`, systemd units, cron and apt sources (`HOST_BACKUP_PATHS`), plus
+rebuild metadata (`pveversion -v`, the manual package list, storage/network
+layout). SSH keys and the DR key are excluded on purpose (`HOST_BACKUP_EXCLUDES`),
+so keep your own offline copy of those. `restore-host` extracts the files to a
+directory; you copy them back to live paths (e.g. `/etc/pve`) by hand.
 
 `verify` is structure-only by default; `VERIFY_READ_DATA=1 pbo verify` reads every
 pack (slow over SFTP) and `VERIFY_SUBSET=5% pbo verify` reads a cheap sample.

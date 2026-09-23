@@ -40,6 +40,8 @@ source "${SELF_DIR}/lib/testrestore.sh"
 source "${SELF_DIR}/lib/schedule.sh"
 # shellcheck source=lib/restic.sh
 source "${SELF_DIR}/lib/restic.sh"
+# shellcheck source=lib/host.sh
+source "${SELF_DIR}/lib/host.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
@@ -86,6 +88,9 @@ Commands:
   unlock                      remove a stale restic repo lock (after a killed run)
   rotate-key <file>           rotate the repo password (DR key) to the value in <file>
   test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
+  backup-host                 back up THIS host's config + rebuild metadata (SSH/DR keys excluded)
+  restore-host <node> <ts> --to <dir> [--path <p>]
+                              extract a host snapshot's files to <dir> (copy back by hand)
 
 Exit codes: 0 ok, 64 usage error, 75 lock busy or queued, 78 config error.
 EOF
@@ -216,6 +221,30 @@ cmd_prune() {
 }
 cmd_test_restore() { require_vmid "${1:-}"; acquire_vmid_lock "$1"; do_test_restore "$1"; }
 
+# backup-host, back up the HOST itself (config + rebuild metadata). Manual only;
+# takes the global lock like a guest backup (it writes to the same repo).
+cmd_backup_host() {
+    acquire_global_lock "now" "backup-host" "$(_local_node)"
+    rdo_backup_host
+}
+
+# restore-host <node> <ts> --to <dir> [--path <p>], extract host files to a dir
+# (never overwrites live host paths). No global lock (read-only on the repo).
+cmd_restore_host() {
+    local who="${1:-}" ts="${2:-}"; shift 2 2>/dev/null || true
+    [[ -n "$who" && -n "$ts" ]] || die "$EX_USAGE" "restore-host requires <node> <ts> --to <dir> [--path <p>]"
+    local target="" path=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --to)   target="$2"; shift 2 ;;
+            --path) path="$2";   shift 2 ;;
+            *) die "$EX_USAGE" "unknown restore-host flag: $1" ;;
+        esac
+    done
+    [[ -n "$target" ]] || die "$EX_USAGE" "restore-host requires --to <dir>"
+    rdo_restore_host "$who" "$ts" "$target" "$path"
+}
+
 # ---------------------------------------------------------------------------
 # Main.
 # ---------------------------------------------------------------------------
@@ -248,6 +277,8 @@ main() {
         unlock)        cmd_unlock "$@" ;;
         rotate-key)    cmd_rotate_key "$@" ;;
         test-restore)  cmd_test_restore "$@" ;;
+        backup-host)   cmd_backup_host "$@" ;;
+        restore-host)  cmd_restore_host "$@" ;;
         help)          usage ;;
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
     esac

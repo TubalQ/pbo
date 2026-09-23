@@ -57,3 +57,10 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 #RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
 #RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache
 #TR_STORAGE=nvmepool                           # throwaway storage for test-restore
+
+# --- host backup (`pbo backup-host`, manual only, tagged type=host) ---
+# Space-separated. Missing paths are skipped silently (not an error).
+#HOST_BACKUP_PATHS=/etc/pve /etc/network/interfaces /etc/network/interfaces.d /etc/hosts /etc/hostname /etc/resolv.conf /etc/fstab /etc/vzdump.conf /etc/pbo /etc/systemd/system /etc/cron.d /etc/apt/sources.list /etc/apt/sources.list.d
+# SSH keys and the DR key are excluded by default: secrets never go in the repo
+# they protect, and the host must keep its own offline copy of its keys.
+#HOST_BACKUP_EXCLUDES=/etc/pbo/restic-pass /root/.ssh **/.ssh **/id_rsa **/id_ed25519 **/id_ecdsa

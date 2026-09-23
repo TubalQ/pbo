@@ -126,7 +126,31 @@ Commands:
   unlock                      clear a stale repo lock after a killed run
   rotate-key <file>           rotate the repo password to a new value
   test-restore <vmid>         restore to a throwaway vmid, boot, destroy
+  backup-host                 back up this host's config + rebuild metadata
+  restore-host <node> <ts> --to <dir> [--path <p>]   extract host files to a dir
 ```
+
+## Backing up the host itself
+
+`pbo backup-host` captures the Proxmox host's own configuration into the same
+repo, tagged `type=host`, so a rebuild is not starting from a blank machine. It
+stores a curated set of paths (`/etc/pve`, networking, `/etc/pbo`, systemd units,
+cron, apt sources — see `HOST_BACKUP_PATHS`) plus collected rebuild metadata
+(`pveversion -v`, the manual package list, storage and network layout). It is
+manual, not part of the nightly schedule, and appears in `list`/`status`/the menu
+like a guest under `host-<node>`.
+
+SSH keys and the restic DR key are **deliberately excluded** (`HOST_BACKUP_EXCLUDES`):
+a secret never belongs in the repo it protects, and the host must keep its own
+offline copy of its keys. Restore is a file restore, never `pct restore`:
+
+```bash
+pbo restore-host <node> <ts> --to /var/tmp/dr          # extract everything
+pbo restore-host <node> <ts> --to /var/tmp/dr --path /etc/pve   # one path
+```
+
+Nothing is written to live host paths; you review the extracted tree and copy
+what you need back by hand.
 
 ## Modes
 
