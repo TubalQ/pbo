@@ -398,6 +398,49 @@ menu_rotate_key() {
     _pause
 }
 
+# --- HELP: what every menu action does ---
+menu_help() {
+    _menu_header
+    printf '%s Help — what each action does%s\n\n' "$C_B" "$C_0"
+    local B="$C_B" D="$C_D" Z="$C_0"
+    printf '  %sConcepts%s\n' "$B" "$Z"
+    printf '    %sTiers%s     Local = a cache repo on fast local disk; Offsite = the remote\n' "$D" "$Z"
+    printf '              restic repo over SFTP. Cached mode backs up locally, then copies offsite.\n'
+    printf '    %sDR key%s    The restic repo password (%s/etc/pbo/restic-pass%s). It is the ONLY\n' "$D" "$Z" "$D" "$Z"
+    printf '              thing that can decrypt the offsite data. Lose it and the backup is gone.\n'
+    printf '    %sSnapshot%s  One backup of one guest at one time, tagged by vmid. Restores never\n' "$D" "$Z"
+    printf '              overwrite: a guest is always restored to a NEW vmid.\n\n'
+
+    printf '  %sMain menu%s\n' "$B" "$Z"
+    printf '    %s1 Setup%s        Guided wizard: cache, SFTP target, repo password, mode, ntfy,\n' "$B" "$Z"
+    printf '                  then creates the repo. Run once to onboard, or to reconfigure.\n'
+    printf '    %s2 Guests%s       Scan the cluster and choose which guests are backed up\n' "$B" "$Z"
+    printf '                  (writes BACKUP_ORDER). "protected" = included in the nightly run.\n'
+    printf '    %s3 Back up%s      Run a backup now: all protected guests (stream/batch), a single\n' "$B" "$Z"
+    printf '                  guest, or THIS host (its config + rebuild metadata).\n'
+    printf '    %s4 Export DR key%s Show/save the repo password so you can store it offline. Do this\n' "$B" "$Z"
+    printf '                  once after setup; without it a restore on a new host is impossible.\n'
+    printf '    %s5 Status%s       Both tiers at a glance: guests, snapshots, size, dedup, newest\n' "$B" "$Z"
+    printf '                  backup, and the next scheduled run.\n'
+    printf '    %s6 Restore%s      Pick a guest, then a snapshot (newest first), then a new vmid and\n' "$B" "$Z"
+    printf '                  storage. A host snapshot instead extracts its files to a directory.\n'
+    printf '    %s7 Maintenance%s  See below.\n\n' "$B" "$Z"
+
+    printf '  %sMaintenance%s\n' "$B" "$Z"
+    printf '    %sPrune%s         Apply retention (KEEP_* policy). Dry run shows what would go.\n' "$B" "$Z"
+    printf '    %sVerify%s        restic check on both tiers: proves the repo is intact.\n' "$B" "$Z"
+    printf '    %sTest-restore%s  Restore a guest to a throwaway copy, boot it, destroy it — proves\n' "$B" "$Z"
+    printf '                  a restore actually works.\n'
+    printf '    %sDoctor%s        Health check: repo reachable, DR key perms, timer, provider\n' "$B" "$Z"
+    printf '                  snapshots, and per-guest snapshot age (catches a silently missed guest).\n'
+    printf '    %sRotate DR key%s Change the repo password (old one stops working). Export it after.\n' "$B" "$Z"
+    printf '    %sUnlock%s        Clear a stale repo lock left by a killed run.\n\n' "$B" "$Z"
+
+    printf '  %sHost backup%s excludes SSH keys and the DR key on purpose — keep your own\n' "$B" "$Z"
+    printf '  offline copy. Everything here is also a CLI command: run %spbo help%s.\n\n' "$D" "$Z"
+    _pause
+}
+
 # --- main menu ---
 menu_main() {
     # Interactive: read/grep/[[ ]] often return !=0, the dispatcher's set -Eeuo
@@ -410,7 +453,8 @@ menu_main() {
         printf '  %s[1]%s Setup / onboarding        %s[4]%s Export DR key\n' "$C_B" "$C_0" "$C_B" "$C_0"
         printf '  %s[2]%s Guests (scan/add/delete)  %s[5]%s Status\n' "$C_B" "$C_0" "$C_B" "$C_0"
         printf '  %s[3]%s Back up                    %s[6]%s Restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
-        printf '  %s[7]%s Maintenance (prune/verify) %s[0]%s Quit\n\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[7]%s Maintenance (prune/verify) %s[8]%s Help\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[0]%s Quit\n\n' "$C_B" "$C_0"
         local c; c="$(_ask "Choice")"
         case "$c" in
             1) menu_setup ;;
@@ -420,6 +464,7 @@ menu_main() {
             5) menu_status ;;
             6) menu_restore ;;
             7) menu_maint ;;
+            8|h|H|help|\?) menu_help ;;
             0|q|"") clear 2>/dev/null || true; return "$EX_OK" ;;
             *) : ;;
         esac

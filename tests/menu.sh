@@ -72,6 +72,14 @@ snaps="$(jq -r --arg v 108 '.archives[] | select(.vmid==$v)
 eq "snapshot pipeline: newest-first ts" "$(head -1 <<<"$snaps" | cut -f1)" "2026_09_23-05_12_51"
 eq "snapshot pipeline: oldest-last ts"  "$(tail -1 <<<"$snaps" | cut -f1)" "2026_09_21-05_10_44"
 
+# --- menu_help renders and covers the key actions ---
+help="$(printf '\n' | menu_help 2>&1)"
+helpok=1
+for want in "DR key" "Host backup" "Test-restore" "Restore" "Maintenance" "Tiers"; do
+    grep -qF "$want" <<<"$help" || { helpok=0; bad "menu_help missing: $want"; }
+done
+(( helpok )) && ok "menu_help covers the key actions"
+
 rm -f /tmp/pbo-pick.err
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]
