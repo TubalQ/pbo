@@ -72,6 +72,24 @@ snaps="$(jq -r --arg v 108 '.archives[] | select(.vmid==$v)
 eq "snapshot pipeline: newest-first ts" "$(head -1 <<<"$snaps" | cut -f1)" "2026_09_23-05_12_51"
 eq "snapshot pipeline: oldest-last ts"  "$(tail -1 <<<"$snaps" | cut -f1)" "2026_09_21-05_10_44"
 
+# --- status summary: dedup/compression label math ---
+USAGE='{"physical_bytes":26900000000,"logical_bytes":210000000000,"uncompressed_bytes":62700000000,"compression_ratio":2.323}'
+sz="$(jq -r '
+  (.physical_bytes // 0) as $p | (.logical_bytes // 0) as $l | (.uncompressed_bytes // 0) as $u
+  | ($p/1e9*10|floor/10) as $pg | ($l/1e9*10|floor/10) as $lg
+  | (if $p>0 then ($l/$p*10|floor/10) else 0 end) as $tot
+  | (if $u>0 then ($l/$u*10|floor/10) else 0 end) as $dd
+  | ((.compression_ratio // 0)*10|floor/10) as $cc
+  | "\($pg) GB physical, \($lg) GB logical (\($tot)× total: dedup \($dd)× · compress \($cc)×)"' <<<"$USAGE")"
+eq "status: dedup/compress label math" "$sz" \
+   "26.9 GB physical, 210 GB logical (7.8× total: dedup 3.3× · compress 2.3×)"
+
+# --- status detailed: per-guest grouping + newest-first snapshot rows ---
+det="$(jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' <<<"$LIST" | sort)"
+eq "detail: guest groups" "$(wc -l <<<"$det")" "2"
+first="$(jq -r --arg v 108 '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' <<<"$LIST" | sort -r | head -1 | cut -f3)"
+eq "detail: 108 newest snapshot id" "$first" "aaaa"
+
 # --- menu_help renders and covers the key actions ---
 help="$(printf '\n' | menu_help 2>&1)"
 helpok=1

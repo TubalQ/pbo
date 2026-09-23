@@ -151,27 +151,92 @@ _menu_status_tier() {           # <label> <cache|offsite>
         .archives as $a
         | "    guests:    \($a|map(.vmid)|unique|length)\n    snapshots: \($a|length)"' 2>/dev/null
     PBO_REPO="$which" "$PBO_BIN" --json usage 2>/dev/null | jq -r '
-        "    size:      \(.physical_bytes/1e9*10|floor/10) GB physical, \(.logical_bytes/1e9*10|floor/10) GB logical (dedup \(.compression_ratio)×)"' 2>/dev/null
+        (.physical_bytes // 0) as $p | (.logical_bytes // 0) as $l | (.uncompressed_bytes // 0) as $u
+        | ($p/1e9*10|floor/10) as $pg | ($l/1e9*10|floor/10) as $lg
+        | (if $p>0 then ($l/$p*10|floor/10) else 0 end) as $tot
+        | (if $u>0 then ($l/$u*10|floor/10) else 0 end) as $dd
+        | ((.compression_ratio // 0)*10|floor/10) as $cc
+        | "    size:      \($pg) GB physical, \($lg) GB logical (\($tot)× total: dedup \($dd)× · compress \($cc)×)"' 2>/dev/null
     printf '%s' "$ls" | jq -r '
         (.archives | map(.modtime) | max) as $m
         | if $m then "    newest:    \($m | sub("\\..*";"") | sub("T";" "))" else empty end' 2>/dev/null
     printf '\n'
 }
 
-menu_status() {
-    _menu_header
-    printf '%s Status%s\n\n' "$C_B" "$C_0"
-    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+# One tier, DETAILED: every snapshot listed individually, grouped by guest
+# (newest first within each guest). Reads the tier via the PBO_REPO override.
+_menu_status_detail_tier() {    # <label> <cache|offsite>
+    local label="$1" which="$2" ls
+    printf '  %s%s%s\n' "$C_B" "$label" "$C_0"
+    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list 2>/dev/null)"
+    if [[ -z "$ls" ]] || ! printf '%s' "$ls" | jq -e '.archives' >/dev/null 2>&1; then
+        printf '    %s(unreachable)%s\n\n' "$C_R" "$C_0"; return
+    fi
+    if ! printf '%s' "$ls" | jq -e '.archives|length>0' >/dev/null 2>&1; then
+        printf '    %s(no snapshots)%s\n\n' "$C_D" "$C_0"; return
+    fi
+    local now; now="$(date +%s)"
+    local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
+    local vmid nsnap nm modt size snap
+    while IFS=$'\t' read -r vmid nsnap; do
+        [[ -n "$vmid" ]] || continue
+        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
+        [[ "$vmid" == host-* ]] && nm="host config"
+        printf '    %s%-14s%s %-18s %s(%s)%s\n' "$C_C" "$vmid" "$C_0" "${nm:-–}" "$C_D" "$nsnap" "$C_0"
+        while IFS=$'\t' read -r modt size snap; do
+            [[ -n "$modt" ]] || continue
+            printf '        %s  %-8s  %8s  %s\n' \
+                "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "$(_ago "$modt" "$now")" "$(_hsize "$size")" "${snap:0:8}"
+        done < <(printf '%s' "$ls" | jq -r --arg v "$vmid" \
+            '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' | sort -r)
+    done < <(printf '%s' "$ls" | jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' | sort)
+    printf '\n'
+}
+
+# Run over the enabled tiers with a per-tier renderer (summary or detail).
+_menu_status_tiers() {          # <renderer-fn>
+    local render="$1"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
-        _menu_status_tier "Local  (cache: ${CACHE_DIR:-?})" cache
+        "$render" "Local  (cache: ${CACHE_DIR:-?})" cache
     else
         printf '  %sLocal%s\n    %s(offsite-only mode, no local cache repo)%s\n\n' "$C_B" "$C_0" "$C_D" "$C_0"
     fi
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
-        _menu_status_tier "Offsite (${RESTIC_OFFSITE_REPO})" offsite
+        "$render" "Offsite (${RESTIC_OFFSITE_REPO})" offsite
     fi
-    printf '  %snext scheduled run:%s\n' "$C_B" "$C_0"; systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
-    echo; _pause
+    printf '  %snext scheduled run:%s\n' "$C_B" "$C_0"
+    systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
+    echo
+}
+
+_menu_status_summary() {
+    _menu_header
+    printf '%s Status — summary%s\n\n' "$C_B" "$C_0"
+    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+    _menu_status_tiers _menu_status_tier
+    _pause
+}
+
+_menu_status_detailed() {
+    _menu_header
+    printf '%s Status — every snapshot%s\n\n' "$C_B" "$C_0"
+    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+    _menu_status_tiers _menu_status_detail_tier
+    _pause
+}
+
+menu_status() {
+    _menu_header
+    printf '%s Status%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s Summary (sizes, dedup, newest)\n' "$C_B" "$C_0"
+    printf '  %s[2]%s Detailed (every snapshot, both tiers)\n' "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "View" "1")"
+    case "$c" in
+        2)     _menu_status_detailed ;;
+        1|"")  _menu_status_summary ;;
+        *)     : ;;
+    esac
 }
 
 # --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
