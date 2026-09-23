@@ -314,13 +314,23 @@ _restic_forget_json() {
     # --prune here (it restructures the output); reclaim space separately below.
     local fflags=(forget --group-by paths "$@" --json)
     [[ "${DRY_RUN:-0}" == 1 ]] && fflags+=(--dry-run)
-    local out; out="$(_restic "$repo" "${fflags[@]}" 2>/dev/null || echo '[]')"
+    # Distinguish a FAILED forget (repo unreachable, lock, auth) from "nothing to
+    # remove". Swallowing the error made a failed offsite prune look like a clean
+    # "removed 0", so retention could silently stop applying. Return 1 on failure.
+    local out rc
+    out="$(_restic "$repo" "${fflags[@]}" 2>/dev/null)"; rc=$?
+    if (( rc != 0 )); then
+        log_warn "restic forget ($repo) FAILED (rc=$rc) — retention NOT applied this run"
+        printf '[]'
+        return 1
+    fi
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
     # Real run that actually removed snapshots → reclaim pack files separately.
     if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
         _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
     fi
     printf '%s' "$removed"
+    return 0
 }
 
 # prune, the cache repo is pruned keep-last, offsite is pruned PURE GFS. In cached mode
@@ -328,25 +338,37 @@ _restic_forget_json() {
 rdo_prune() {
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for prune"
     local cache_removed='[]' offsite_removed='[]'
+    local failed=()
     # Local cache repo: keep-last (fast restore tier).
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         _restic_stale_unlock "$RESTIC_CACHE_REPO"
-        cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")"
+        cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")" || failed+=("cache")
     fi
     # Offsite: pure GFS (daily/weekly/monthly), no keep-last (a cache concept).
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
         offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
             --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
-            --keep-monthly "${KEEP_OFFSITE_MONTHLY}")"
+            --keep-monthly "${KEEP_OFFSITE_MONTHLY}")" || failed+=("offsite")
     fi
     local dry; dry="$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )"
+    local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length' 2>/dev/null || echo 0)"
+    no="$(printf '%s' "$offsite_removed" | jq 'length' 2>/dev/null || echo 0)"
+    local ok=true status=ok
+    (( ${#failed[@]} == 0 )) || { ok=false; status=partial; }
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        printf '{"command":"prune","status":"ok","ok":true,"dry_run":%s,"cache_deleted":%s,"offsite_deleted":%s}\n' \
-            "$dry" "$cache_removed" "$offsite_removed"
+        printf '{"command":"prune","status":"%s","ok":%s,"dry_run":%s,"cache_deleted":%s,"offsite_deleted":%s,"failed_tiers":"%s"}\n' \
+            "$status" "$ok" "$dry" "$cache_removed" "$offsite_removed" "${failed[*]:-}"
+    elif (( ${#failed[@]} > 0 )); then
+        log_warn "prune (restic): retention FAILED on ${failed[*]} (repo unreachable/locked?) — cache removed $nc, offsite removed $no"
     else
-        local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length')"; no="$(printf '%s' "$offsite_removed" | jq 'length')"
         log_info "prune (restic): cache removed $nc, offsite removed $no$( [[ "${DRY_RUN:-0}" == 1 ]] && echo ' (dry-run)')"
+    fi
+    # A failed tier surfaces as a non-zero exit + ntfy, so a silent no-op (the
+    # offsite forget that quietly did nothing on 2026-09-20) cannot recur.
+    if (( ${#failed[@]} > 0 )); then
+        notify_failure "pbo prune: retention FAILED on ${failed[*]} — offsite may grow unbounded until fixed"
+        return "$EX_UNAVAILABLE"
     fi
     return "$EX_OK"
 }

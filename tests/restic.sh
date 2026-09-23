@@ -99,6 +99,24 @@ cp "$MOCK_CONF_DIR/8001.conf" "$MOCK_CONF_DIR/8002.conf"
 $BIN --json doctor > "$RUN/dr2.json" 2>/dev/null
 jq -e '(.problems|tonumber)>=1' "$RUN/dr2.json" >/dev/null && ok "doctor: flags a guest with no snapshot" || bad "doctor missing-guest"
 
+# --- prune surfaces a FAILED tier (non-zero exit + ok:false) instead of a silent 0 ---
+cat > "$RUN/config-fail" <<EOF
+CACHE_DIR=$RUN/cache
+LOG_DIR=$RUN/log
+STATE_DIR=$RUN/state
+LOCK_DIR=$RUN/lock
+OFFSITE_ENABLED=true
+LOCAL_REPO=false
+RESTIC_OFFSITE_REPO=$RUN/bogus-not-a-repo
+RESTIC_PASSWORD_FILE=$RUN/pass
+RESTIC_CACHE_DIR=$RUN/rcache
+EOF
+chmod 600 "$RUN/config-fail"
+PBO_CONFIG="$RUN/config-fail" PBO_NO_NOTIFY=1 $BIN --json prune > "$RUN/pf.json" 2>/dev/null; rc=$?
+[[ $rc != 0 ]] && ok "prune: unreachable tier → non-zero exit" || bad "prune failure exit ($rc)"
+jq -e '.ok==false and (.failed_tiers|test("offsite"))' "$RUN/pf.json" >/dev/null 2>&1 \
+    && ok "prune: failure surfaced in envelope (not a silent 0)" || bad "prune failure envelope ($(cat "$RUN/pf.json"))"
+
 rm -rf "$RUN"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]
