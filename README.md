@@ -56,14 +56,22 @@ start a nightly job you didn't ask for.
 ## Quick start
 
 ```bash
-pbo setup     # engine, cache, sftp, password, mode
-pbo menu      # guests, backup, restore, status
+pbo setup     # everything, in one pass
 ```
 
-`setup` writes `/etc/pbo/config` and creates the repo. Then pick your guests, run a
-backup, and export the DR key somewhere safe. Don't skip that last step.
+`setup` is a single guided pass that gets you from a clean clone to running backups.
+It generates an SSH key if you don't have one and shows you how to install it on the
+target, pins the target's host key, tests the SFTP connection before it commits
+anything, writes `/etc/pbo/config`, creates the repo, sets retention, confirms which
+guests to back up, and offers to enable the timers (nightly backup + weekly prune).
 
-Nightly backups, plus weekly retention so the offsite repo doesn't grow forever:
+The one thing it can't do for you is get the public key onto the target — it prints the
+key and the exact command, you run that once, and the connection test confirms it took.
+
+Afterwards, export the DR key somewhere safe (`pbo menu` → Export DR key). Don't skip
+that: it's the only thing that can decrypt the offsite data.
+
+If you'd rather enable the schedule by hand instead of from the wizard:
 
 ```bash
 systemctl enable --now pbo.timer         # backups, 05:00 daily
@@ -178,10 +186,10 @@ backups. Three things close that gap, in order of effort:
   `STORAGE_BOX_SNAPSHOTS_CONFIRMED=true`. This is the real ransomware backstop: even if
   the host wipes the repo, the provider keeps read-only copies. `pbo doctor` warns until
   you've confirmed it.
-- **Pin the host key.** Setup uses `StrictHostKeyChecking=accept-new` (trust on first
-  use). Once connected, pin it: copy the box's line out of `~/.ssh/known_hosts` into a
-  file you control and point the ssh command at it with `-o UserKnownHostsFile=... -o
-  StrictHostKeyChecking=yes`.
+- **Pin the host key.** Setup offers to pin it for you: it runs `ssh-keyscan` against
+  the target, writes the key to `/etc/pbo/known_hosts`, and points the ssh command at it
+  with `-o UserKnownHostsFile=... -o StrictHostKeyChecking=yes` instead of trust-on-first-
+  use. Decline it and the connection falls back to `accept-new`.
 - **Append-only repo.** For a host that should never be able to delete, put a restic
   REST server in append-only mode (or a restricted SFTP user) in front of the storage
   and prune from elsewhere. More moving parts; worth it if the host is exposed.

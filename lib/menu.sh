@@ -253,13 +253,44 @@ menu_status() {
     esac
 }
 
+# --- SETUP WIZARD helpers (pure, unit-tested in tests/menu.sh) ---
+
+# Build the ssh command restic uses as its sftp.command. When <khfile> is given
+# the host key is pinned (StrictHostKeyChecking=yes); otherwise it is trust-on-
+# first-use (accept-new). Emitted WITHOUT the outer quotes _cfg_set adds.
+_pbo_sftp_command() {   # <user> <host> <port> <key> [khfile]
+    local user="$1" host="$2" port="$3" key="$4" kh="${5:-}"
+    if [[ -n "$kh" ]]; then
+        printf 'ssh %s@%s -p %s -i %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -s sftp' \
+            "$user" "$host" "$port" "$key" "$kh"
+    else
+        printf 'ssh %s@%s -p %s -i %s -o StrictHostKeyChecking=accept-new -s sftp' \
+            "$user" "$host" "$port" "$key"
+    fi
+}
+
+# Probe the SFTP target with the sftp client, using the same key and known_hosts
+# restic will use. Returns 0 on a successful login. Pure network I/O, no writes.
+_pbo_sftp_probe() {     # <user> <host> <port> <key> [khfile]
+    local user="$1" host="$2" port="$3" key="$4" kh="${5:-}"
+    local opts=(-P "$port" -i "$key" -o BatchMode=yes -o ConnectTimeout=15)
+    if [[ -n "$kh" ]]; then opts+=(-o "UserKnownHostsFile=$kh" -o StrictHostKeyChecking=yes)
+    else opts+=(-o StrictHostKeyChecking=accept-new); fi
+    printf 'bye\n' | sftp "${opts[@]}" "${user}@${host}" >/dev/null 2>&1
+}
+
 # --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
+# One pass sets up EVERYTHING needed to back up: cache tier, an SSH key that
+# works against the target, a pinned host key, a tested SFTP connection, the
+# repo + DR key, retention, ntfy, the guest set, and (offered) the timers.
 run_setup_wizard() {
     set +e +u
-    printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n\n' "$C_B" "$C_0"
+    printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n' "$C_B" "$C_0"
+    printf '%sWalks through everything: SSH key, SFTP target, repo, retention, schedule.%s\n' "$C_D" "$C_0"
 
-    # --- cache tier ---
-    printf '\n%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
+    # --- 1. cache tier ---
+    printf '\n%s— Cache tier —%s\n' "$C_B" "$C_0"
+    printf '%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
     local cdir
     if _yn "Do you have local cache space you want to use?" n; then
         cdir="$(_ask "Where should the cache live? (path)" "/var/cache/pbo")"
@@ -276,21 +307,80 @@ run_setup_wizard() {
         echo "  Offsite-only mode: minimal local disk."
     fi
 
-    # --- SFTP / repo ---
-    printf '\n'
+    # --- 2. SFTP target ---
+    printf '\n%s— SFTP target —%s\n' "$C_B" "$C_0"
     local host user port key repo
     host="$(_ask "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)")"
     [[ -n "$host" ]] || { echo "  ${C_R}SFTP host required, aborting setup.${C_0}"; return 1; }
     user="$(_ask "SFTP user" "$host")"
     port="$(_ask "SFTP port" "23")"
-    key="$(_ask "SSH key file on this host" "/root/.ssh/id_rsa")"
+    key="$(_ask "SSH key file on this host" "/root/.ssh/id_ed25519")"
+
+    # --- 3. SSH key: generate if missing, then show how to install it ---
+    printf '\n%s— SSH key —%s\n' "$C_B" "$C_0"
+    if [[ ! -f "$key" ]]; then
+        local ktype=ed25519; case "$key" in *rsa*) ktype=rsa ;; *ed25519*) ktype=ed25519 ;; esac
+        if _yn "No key at $key. Generate a new ${ktype} keypair now?" y; then
+            mkdir -p "$(dirname "$key")" 2>/dev/null; chmod 700 "$(dirname "$key")" 2>/dev/null
+            ssh-keygen -q -t "$ktype" -N '' -C "pbo@$(hostname -s 2>/dev/null || echo host)" -f "$key" \
+                && echo "  ${C_G}created $key (+ ${key}.pub)${C_0}" \
+                || { echo "  ${C_R}ssh-keygen failed, aborting.${C_0}"; return 1; }
+        else
+            echo "  ${C_Y}Point the wizard at an existing key, or generate one and re-run setup.${C_0}"
+            return 1
+        fi
+    else
+        echo "  Using existing key $key."
+    fi
+
+    if [[ -f "${key}.pub" ]]; then
+        printf '\n  %sInstall this public key on the target so PBO can log in without a password:%s\n\n' "$C_B" "$C_0"
+        printf '  %s%s%s\n\n' "$C_C" "$(cat "${key}.pub")" "$C_0"
+        printf '  %sHetzner Storage Box%s (asks for the box password once):\n' "$C_D" "$C_0"
+        printf '      ssh-copy-id -s -p %s -i %s.pub %s@%s\n' "$port" "$key" "$user" "$host"
+        printf '  %sor pipe it to the box:%s  cat %s.pub | ssh -p%s %s@%s install-ssh-key\n' "$C_D" "$C_0" "$key" "$port" "$user" "$host"
+        printf '  %sAny other SFTP server:%s append the line above to ~/.ssh/authorized_keys there.\n' "$C_D" "$C_0"
+        _pause
+    fi
+
+    # --- 4. pin the host key (known_hosts), so the connection is not TOFU ---
+    printf '\n%s— Host key —%s\n' "$C_B" "$C_0"
+    local khfile=""
+    if _yn "Pin the target's host key (recommended, avoids trust-on-first-use)?" y; then
+        khfile="${PBO_KNOWN_HOSTS:-/etc/pbo/known_hosts}"
+        local scan; scan="$(ssh-keyscan -p "$port" -H "$host" 2>/dev/null)"
+        if [[ -n "$scan" ]]; then
+            ( umask 022; printf '%s\n' "$scan" >> "$khfile" )
+            # de-dupe in case setup is re-run
+            sort -u "$khfile" -o "$khfile" 2>/dev/null
+            echo "  ${C_G}pinned $host → $khfile${C_0}"
+        else
+            echo "  ${C_Y}ssh-keyscan returned nothing (host unreachable?), staying on accept-new.${C_0}"
+            khfile=""
+        fi
+    fi
+
+    # --- 5. test the connection BEFORE writing the repo config ---
+    printf '\n%s— Connection test —%s\n' "$C_B" "$C_0"
+    while true; do
+        printf '  probing sftp://%s@%s:%s … ' "$user" "$host" "$port"
+        if _pbo_sftp_probe "$user" "$host" "$port" "$key" "$khfile"; then
+            echo "${C_G}OK${C_0}"; break
+        fi
+        echo "${C_R}FAILED${C_0}"
+        echo "  The key is not accepted yet, or host/port/key is wrong."
+        _yn "Retry the connection?" y || { echo "  ${C_Y}Continuing without a verified connection — fix it before the first backup.${C_0}"; break; }
+    done
+
+    # --- 6. repo path + assemble the sftp command ---
+    printf '\n%s— Repo —%s\n' "$C_B" "$C_0"
     repo="$(_ask "Repo path (RELATIVE, Storage Box is chrooted)" "lxc-restic")"
     _cfg_set OFFSITE_ENABLED true
     _cfg_set RESTIC_OFFSITE_REPO "sftp:hetzner:${repo}"
-    _cfg_set RESTIC_SFTP_COMMAND "\"ssh ${user}@${host} -p ${port} -i ${key} -o StrictHostKeyChecking=accept-new -s sftp\""
+    _cfg_set RESTIC_SFTP_COMMAND "\"$(_pbo_sftp_command "$user" "$host" "$port" "$key" "$khfile")\""
 
-    # --- restic password (DR key) ---
-    printf '\n'
+    # --- 7. restic password (DR key) ---
+    printf '\n%s— DR key (repo password) —%s\n' "$C_B" "$C_0"
     local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
     if _yn "Generate a random repo password (recommended)?" y; then
         pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
@@ -301,13 +391,24 @@ run_setup_wizard() {
     ( umask 077; printf '%s\n' "$pass" > "$passfile" )
     _cfg_set RESTIC_PASSWORD_FILE "$passfile"
 
-    # --- backup mode ---
-    printf '\n'
+    # --- 8. backup mode ---
+    printf '\n%s— Backup mode —%s\n' "$C_B" "$C_0"
     local mode; mode="$(_ask "Back up all: one-by-one (stream) or all-at-once (batch)?" "stream")"
     if [[ "$mode" == "batch" ]]; then _cfg_set BACKUP_MODE batch; else _cfg_set BACKUP_MODE stream; fi
 
-    # --- ntfy ---
-    printf '\n'
+    # --- 9. retention ---
+    printf '\n%s— Retention —%s (how many snapshots the weekly prune keeps)\n' "$C_B" "$C_0"
+    if _yn "Set retention now (else keep defaults 2 local / 7d·4w·6m offsite)?" n; then
+        _cfg_set KEEP_LOCAL          "$(_ask "Local cache: keep last N"      "${KEEP_LOCAL:-2}")"
+        _cfg_set KEEP_OFFSITE_DAILY  "$(_ask "Offsite: keep N daily"         "${KEEP_OFFSITE_DAILY:-7}")"
+        _cfg_set KEEP_OFFSITE_WEEKLY "$(_ask "Offsite: keep N weekly"        "${KEEP_OFFSITE_WEEKLY:-4}")"
+        _cfg_set KEEP_OFFSITE_MONTHLY "$(_ask "Offsite: keep N monthly"      "${KEEP_OFFSITE_MONTHLY:-6}")"
+    else
+        echo "  Keeping defaults."
+    fi
+
+    # --- 10. ntfy ---
+    printf '\n%s— Notifications —%s\n' "$C_B" "$C_0"
     if _yn "Enable ntfy notifications (alert on failure)?" n; then
         local nurl ntopic
         nurl="$(_ask "ntfy base URL (e.g. https://ntfy.example.com)")"
@@ -320,13 +421,39 @@ run_setup_wizard() {
         echo "  ntfy disabled."
     fi
 
-    # --- init ---
-    printf '\n  Creating/verifying the restic repo…\n'
-    "$PBO_BIN" init
-    printf '\n%s  Setup complete.%s Next steps:\n' "$C_G" "$C_0"
-    printf '    1) Protect guests:  pbo menu → Guests (scan/add)\n'
-    printf '    2) Test a backup:   pbo menu → Backup\n'
-    printf '    3) %sExport your DR key%s → password manager (menu → Export DR key)\n' "$C_B" "$C_0"
+    # --- 11. create the repo ---
+    printf '\n%s— Repo init —%s\n' "$C_B" "$C_0"
+    printf '  Creating/verifying the restic repo…\n'
+    "$PBO_BIN" init || { echo "  ${C_R}init failed — fix the connection above and re-run setup.${C_0}"; return 1; }
+
+    # --- 12. confirm the guest set (BACKUP_ORDER) ---
+    printf '\n%s— Guests —%s (this node backs up its own guests into the shared repo)\n' "$C_B" "$C_0"
+    local ln; ln="$(_local_node 2>/dev/null)"
+    printf '  Discovered on %s:\n' "${ln:-this node}"
+    _menu_guests_tsv | awk -F'\t' -v n="$ln" 'n=="" || $4==n {printf "    %-6s %-22s %-4s %s\n",$1,$2,$3,$5}'
+    if _yn "Back up ALL of this node's guests automatically (BACKUP_ORDER=auto)?" y; then
+        _cfg_set BACKUP_ORDER auto
+        echo "  ${C_G}BACKUP_ORDER=auto${C_0} (new guests are picked up automatically)."
+    else
+        local order; order="$(_ask "Explicit vmid list (comma-separated, critical first)" "${BACKUP_ORDER:-auto}")"
+        _cfg_set BACKUP_ORDER "$order"
+        echo "  BACKUP_ORDER=$order"
+    fi
+
+    # --- 13. offer to enable the timers ---
+    printf '\n%s— Schedule —%s\n' "$C_B" "$C_0"
+    if _yn "Enable the nightly backup timer (pbo.timer, 05:00)?" y; then
+        systemctl enable --now pbo.timer 2>/dev/null \
+            && echo "  ${C_G}pbo.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo.timer (enable it by hand).${C_0}"
+    fi
+    if _yn "Enable the weekly prune timer (pbo-prune.timer, Sun 06:30)?" y; then
+        systemctl enable --now pbo-prune.timer 2>/dev/null \
+            && echo "  ${C_G}pbo-prune.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-prune.timer (enable it by hand).${C_0}"
+    fi
+
+    printf '\n%s  Setup complete.%s Recommended next step:\n' "$C_G" "$C_0"
+    printf '    %sExport your DR key%s → password manager (menu → Export DR key).\n' "$C_B" "$C_0"
+    printf '    Without it, a restore on a new host is impossible.\n'
     return 0
 }
 

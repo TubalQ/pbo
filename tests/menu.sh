@@ -104,6 +104,14 @@ eq "polcode: oldest monthly"       "$(polcode '{"reasons":["oldest monthly snaps
 eq "polcode: keep-last"            "$(polcode '{"reasons":["last snapshot"]}')" "L"
 eq "polcode: empty reasons"        "$(polcode '{"reasons":[]}')" ""
 
+# --- _pbo_sftp_command: assembles restic's sftp.command, pins host key when asked ---
+eq "sftp cmd: accept-new when no known_hosts" \
+   "$(_pbo_sftp_command user host.example 23 /root/.ssh/id_ed25519)" \
+   "ssh user@host.example -p 23 -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -s sftp"
+eq "sftp cmd: pinned when known_hosts given" \
+   "$(_pbo_sftp_command user host.example 23 /root/.ssh/id_ed25519 /etc/pbo/known_hosts)" \
+   "ssh user@host.example -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+
 # --- menu_help renders and covers the key actions ---
 help="$(printf '\n' | menu_help 2>&1)"
 helpok=1

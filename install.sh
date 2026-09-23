@@ -15,12 +15,19 @@ die(){ printf 'install: %s\n' "$*" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || die "must be run as root."
 
 echo "==> Dependencies"
-need=(); for b in restic jq zstd flock curl; do command -v "$b" >/dev/null 2>&1 || need+=("$b"); done
+# restic jq zstd flock curl openssl: the tool + the setup wizard (openssl mints
+# the DR key). ssh/sftp/ssh-keygen/ssh-keyscan come from openssh-client, which
+# the wizard uses to make and pin an SSH key and to test the connection.
+declare -A pkg=( [restic]=restic [jq]=jq [zstd]=zstd [flock]=util-linux [curl]=curl
+                 [openssl]=openssl [ssh-keygen]=openssh-client )
+need=(); for b in "${!pkg[@]}"; do command -v "$b" >/dev/null 2>&1 || need+=("${pkg[$b]}"); done
 if [[ "${#need[@]}" -gt 0 ]]; then
+    # unique package list
+    mapfile -t need < <(printf '%s\n' "${need[@]}" | sort -u)
     echo "    installing: ${need[*]}"
     apt-get update -qq && apt-get install -y "${need[@]}"
 else
-    echo "    all present (restic jq zstd flock curl)"
+    echo "    all present (restic jq zstd flock curl openssl openssh-client)"
 fi
 for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing, required on a real Proxmox host."; done
 
@@ -58,11 +65,14 @@ cat <<EOF
 
 Installed: pbo (Proxmox Backup Offsite).
 
-  Setup:      $BIN setup      run the guided config wizard
+  Setup:      $BIN setup      guided wizard: SSH key, SFTP target, repo, DR key,
+                              retention, guests, and (offered) the timers — everything.
   Interface:  $BIN menu       open the interactive prompt
   Health:     $BIN doctor     check repo, timer, key perms, per-guest age
-  Backups:    systemctl enable --now pbo.timer         (runs 05:00 nightly)
-  Retention:  systemctl enable --now pbo-prune.timer   (prunes weekly, Sun 06:30)
+
+The wizard offers to enable the schedule at the end. To do it by hand instead:
+  systemctl enable --now pbo.timer         (backups, 05:00 nightly)
+  systemctl enable --now pbo-prune.timer   (prune, Sun 06:30)
 
 Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
 EOF

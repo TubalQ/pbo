@@ -2,7 +2,9 @@
 # This is the example/template, copied by install.sh. It contains no secrets
 # (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
 #
-# The easiest way to fill this in is the interactive wizard:
+# The easiest way to fill this in is the interactive wizard, which does the whole
+# job in one pass (SSH key, host-key pinning, connection test, repo, DR key,
+# retention, guest set, and enabling the timers):
 #   pbo setup
 
 # --- paths ---
@@ -51,8 +53,10 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 #OFFSITE_ENABLED=true                          # false=local repo only (no offsite copy)
 #RESTIC_CACHE_REPO=/var/cache/pbo/repo         # local restic repo (cache tier)
 #RESTIC_OFFSITE_REPO=sftp:hetzner:lxc-restic   # native sftp, RELATIVE path (Storage Box is chrooted!)
-# The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name):
-#RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -s sftp"
+# The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name).
+# `pbo setup` pins the host key into /etc/pbo/known_hosts and uses StrictHostKeyChecking=yes;
+# the accept-new form below is the trust-on-first-use fallback.
+#RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
 #RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
 #RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache
