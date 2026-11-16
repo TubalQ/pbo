@@ -71,20 +71,22 @@ rdo_backup_host() {
     log_info "host backup $node: restic backup → $wrepo (tags vmid=$id,type=host,ts=$ts)"
     local rc=0
     run_stream "$jobfile" "restic-host[$node]" -- \
-        _restic "$wrepo" backup "${excludes[@]}" \
+        _restic_w "$wrepo" backup "${excludes[@]}" \
             --tag "vmid=$id" --tag "ts=$ts" --tag "type=host" --host "$node" \
             "${paths[@]}" || rc=$?
     if (( rc == 3 )); then
         log_warn "host backup $node: some files could not be read (restic warning), snapshot still created"
     elif (( rc != 0 )); then
         notify_failure "host backup FAILED on $node (see $jobfile)"
+        _restic_lock_die "$jobfile" "host backup"
         die "$EX_SOFTWARE" "host backup failed (see $jobfile)"
     fi
 
     if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         log_info "host backup $node: restic copy cache → offsite"
         if ! run_stream "$jobfile" "restic-copy[$node]" -- \
-                _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$id,ts=$ts"; then
+                _restic_w "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$id,ts=$ts"; then
+            _restic_lock_die "$jobfile" "restic copy → offsite for host $node"
             die "$EX_UNAVAILABLE" "restic copy → offsite failed for host $node"
         fi
     fi

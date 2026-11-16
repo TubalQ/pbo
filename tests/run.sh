@@ -85,6 +85,28 @@ $BIN fetch 9005 2026_09_04-00_00_00 >/dev/null 2>&1; got=$?
 [[ "$got" == 65 ]] && ok "fetch ignores the global lock (runs on, fails on lookup)" || bad "fetch global lock ($got)"
 flock -u "$H"; exec {H}>&-
 
+# --- schedule lock (issue #1): prune and run-schedule never overlap ---
+SLOCK="$LOCKDIR/pbo.schedule"
+exec {S}>"$SLOCK"; flock -n "$S" || bad "could not take the schedule test lock"
+check_exit "manual prune exits at once while a run holds the schedule lock" 75 $BIN prune
+t0=$SECONDS
+$BIN prune --queue >/dev/null 2>&1; got=$?
+elapsed=$((SECONDS - t0))
+[[ "$got" == 75 && "$elapsed" -ge 4 ]] && ok "prune --queue waits for the run, then times out (${elapsed}s)" || bad "prune --queue (exit $got, ${elapsed}s)"
+t0=$SECONDS
+$BIN run-schedule >/dev/null 2>&1; got=$?
+elapsed=$((SECONDS - t0))
+[[ "$got" == 75 && "$elapsed" -ge 4 ]] && ok "run-schedule waits for a running prune (${elapsed}s)" || bad "run-schedule schedule lock (exit $got, ${elapsed}s)"
+$BIN --dry-run prune >/dev/null 2>&1; got=$?
+[[ "$got" != 75 ]] && ok "prune --dry-run ignores the schedule lock (read-only)" || bad "dry-run prune blocked by lock"
+flock -u "$S"; exec {S}>&-
+check_exit "unknown prune flag rejected" 64 $BIN prune --bogus
+
+# prune also takes the global lock, so a manual guest backup can't collide with it
+exec {H}>"$GLOBAL_LOCK"; flock -n "$H"
+check_exit "manual prune exits at once while a backup holds the global lock" 75 $BIN prune
+flock -u "$H"; exec {H}>&-
+
 # --- config: unsafe permissions are refused ---
 tmpcfg="$PWD/run/badcfg"; echo 'CACHE_DIR=/tmp/x' > "$tmpcfg"; chmod 666 "$tmpcfg"
 PBO_CONFIG="$tmpcfg" $BIN status >/dev/null 2>&1

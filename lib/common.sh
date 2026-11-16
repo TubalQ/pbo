@@ -32,6 +32,7 @@ set_defaults() {
     : "${BACKUP_ORDER:=auto}"          # auto = all guests on THIS node; or an explicit csv (critical-first)
     : "${PRUNE_OWNER:=}"               # cluster: restrict prune to this nodename (empty = any node may prune)
     : "${GLOBAL_LOCK_TIMEOUT:=7200}"
+    : "${SCHEDULE_LOCK_TIMEOUT:=${GLOBAL_LOCK_TIMEOUT}}"   # how long a queued prune/run-schedule waits for the other
     : "${KEEP_LOCAL:=2}"
     : "${KEEP_OFFSITE_DAILY:=7}"
     : "${KEEP_OFFSITE_WEEKLY:=4}"
@@ -57,6 +58,7 @@ set_defaults() {
     : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restic's own metadata cache
     : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # local repo: keep N latest per guest
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
+    : "${RESTIC_RETRY_LOCK:=10m}"                         # write ops wait this long on a busy repo lock (another node, a manual restic). Empty = fail at once
     : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max), speeds up restore considerably
 
     # --- host backup (config + rebuild metadata, manual: `pbo backup-host`) ---
@@ -71,6 +73,8 @@ set_defaults() {
     AUDIT_FILE="${LOG_DIR}/audit.log"
     GLOBAL_LOCK_FILE="${LOCK_DIR}/pbo.global"
     GLOBAL_HOLDER_FILE="${STATE_DIR}/global.holder"
+    SCHED_LOCK_FILE="${LOCK_DIR}/pbo.schedule"
+    SCHED_HOLDER_FILE="${STATE_DIR}/schedule.holder"
     JOBS_DIR="${STATE_DIR}/jobs"
 }
 

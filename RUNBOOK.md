@@ -87,6 +87,11 @@ journalctl -u pbo.service -f
 Retention is not applied by the backup run, only by `pbo prune` (the prune timer),
 so without the prune timer the offsite repo grows until you prune by hand.
 
+Prune and backup never run at the same time. Both timers have `Persistent=true`, so
+after the host has been off past a Sunday they fire together right after boot. The
+prune timer runs `prune --queue`, which waits for the backup run to finish (up to
+`SCHEDULE_LOCK_TIMEOUT`). A manual `pbo prune` exits at once if a backup is running.
+
 ## Restore with the tool
 
 ```bash
@@ -151,6 +156,9 @@ so you get cluster-wide dedup with no central coordinator. Points to remember:
 - **`init` or list fails.** Check `RESTIC_OFFSITE_REPO`, check `RESTIC_SFTP_COMMAND`
   for the right port and key, and check that `RESTIC_PASSWORD_FILE` exists and is
   readable at mode 0600.
+- **"repo locked" in a backup failure.** Another restic process holds an exclusive
+  lock on the repo, usually a prune or `check` from another node. Write operations
+  wait `RESTIC_RETRY_LOCK` (10m) before giving up. If the holder is dead, `pbo unlock`.
 - **Prune removes nothing.** Retention always keeps the latest snapshot per guest.
   That is on purpose. `forget` (metadata) and `prune` (reclaiming space) are
   separate steps.

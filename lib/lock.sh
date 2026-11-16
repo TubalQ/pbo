@@ -9,6 +9,13 @@
 #   Per-vmid lock (/var/lock/pbo.vmid-<vmid>.lock)
 #     Prevents the same container from being queued/run twice.
 #
+#   Schedule lock (/var/lock/pbo.schedule)
+#     Held by run-schedule for the WHOLE run and by prune. run-schedule only takes
+#     the global lock per guest, so it is free for a moment between guests; a
+#     prune slipping in there takes an exclusive restic lock and every following
+#     backup fails (issue #1: catch-up timers after a long power-off). Prune takes
+#     this lock first, then the global lock (so a manual backup can't collide either).
+#
 #   Modes:
 #     queue , scheduled run: waits for the global lock up to
 #              GLOBAL_LOCK_TIMEOUT, then exits with an error (a queue you SEE).
@@ -22,6 +29,8 @@ GLOBAL_LOCK_HELD=0
 VMID_LOCK_HELD=0
 GLOBAL_LOCK_FD=""
 VMID_LOCK_FD=""
+SCHED_LOCK_HELD=0
+SCHED_LOCK_FD=""
 
 # Write/read holder metadata so `status` and now-mode can show who is blocking.
 _write_global_holder() {
@@ -77,6 +86,30 @@ acquire_vmid_lock() {
     log_info "vmid lock acquired for $vmid."
 }
 
+read_schedule_holder() {
+    [[ -f "$SCHED_HOLDER_FILE" ]] || { printf ''; return; }
+    local op pid since
+    IFS='|' read -r op pid since <"$SCHED_HOLDER_FILE"
+    printf 'op=%s pid=%s since=%ss' "$op" "$pid" "$(( $(date +%s) - ${since:-$(date +%s)} ))"
+}
+
+# acquire_schedule_lock <queue|now> <op>: serialize run-schedule and prune.
+acquire_schedule_lock() {
+    local mode="$1" op="$2" h
+    exec {SCHED_LOCK_FD}>"$SCHED_LOCK_FILE" \
+        || die "$EX_CANTCREAT" "cannot open schedule lock file: $SCHED_LOCK_FILE"
+    if ! flock -n "$SCHED_LOCK_FD"; then
+        h="$(read_schedule_holder)"
+        [[ "$mode" == "queue" ]] \
+            || die "$EX_TEMPFAIL" "$op: a scheduled run or prune is in progress (${h:-unknown}). Exiting (manual mode does not queue)."
+        log_info "$op: waiting for ${h:-another run} to finish (schedule lock, timeout ${SCHEDULE_LOCK_TIMEOUT}s)…"
+        flock -w "$SCHEDULE_LOCK_TIMEOUT" "$SCHED_LOCK_FD" \
+            || die "$EX_TEMPFAIL" "$op: schedule lock not acquired within ${SCHEDULE_LOCK_TIMEOUT}s (held by: ${h:-unknown})"
+    fi
+    SCHED_LOCK_HELD=1
+    printf '%s|%s|%s\n' "$op" "$$" "$(date +%s)" > "$SCHED_HOLDER_FILE" 2>/dev/null || true
+}
+
 # Clean up locks + holder file. Set as the EXIT trap by the main script.
 cleanup_locks() {
     if [[ "${GLOBAL_LOCK_HELD:-0}" == 1 ]]; then
@@ -84,4 +117,8 @@ cleanup_locks() {
         [[ -n "$GLOBAL_LOCK_FD" ]] && flock -u "$GLOBAL_LOCK_FD" 2>/dev/null || true
     fi
     [[ "${VMID_LOCK_HELD:-0}" == 1 && -n "$VMID_LOCK_FD" ]] && flock -u "$VMID_LOCK_FD" 2>/dev/null || true
+    if [[ "${SCHED_LOCK_HELD:-0}" == 1 ]]; then
+        rm -f "$SCHED_HOLDER_FILE" 2>/dev/null || true
+        [[ -n "$SCHED_LOCK_FD" ]] && flock -u "$SCHED_LOCK_FD" 2>/dev/null || true
+    fi
 }

@@ -161,7 +161,8 @@ _pf_check_repo() {
         return
     fi
     local repo; repo="$(_restic_read_repo)"
-    if _restic "$repo" cat config >/dev/null 2>&1; then
+    # --no-lock: a reachability check must not fail just because a prune holds the lock.
+    if _restic "$repo" --no-lock cat config >/dev/null 2>&1; then
         _pf_add_check "restic_repo" "true" "repo '$repo' reachable"
     else
         _pf_add_check "restic_repo" "false" "repo '$repo' not responding / not initialized"

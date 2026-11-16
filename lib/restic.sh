@@ -29,6 +29,33 @@ _restic() {                    # _restic <repo> <args...>
         "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
 }
 
+# _restic_w: _restic for WRITE ops (backup/copy/forget/prune/init). Adds
+# --retry-lock so a short overlap with another restic process (another node's
+# backup, a manual check) waits instead of failing outright. Read paths keep
+# plain _restic so status/list never hang behind a long prune.
+# --retry-lock needs restic >= 0.16; older binaries just fail fast as before.
+_restic_has_retry_lock() {
+    if [[ -z "${_RESTIC_RETRY_LOCK_OK:-}" ]]; then
+        if "$RESTIC_BIN" --help 2>/dev/null | grep -q -- '--retry-lock'; then _RESTIC_RETRY_LOCK_OK=1
+        else _RESTIC_RETRY_LOCK_OK=0; fi
+    fi
+    [[ "$_RESTIC_RETRY_LOCK_OK" == 1 ]]
+}
+_restic_w() {                  # _restic_w <repo> <args...>
+    if [[ -n "${RESTIC_RETRY_LOCK:-}" ]] && _restic_has_retry_lock; then
+        _restic "$1" --retry-lock "$RESTIC_RETRY_LOCK" "${@:2}"
+    else
+        _restic "$@"
+    fi
+}
+
+# _restic_lock_msg <file>: if restic's output says the repo was locked, print the
+# holder line ("repository is already locked exclusively by PID ... on <host>").
+# Lets a failure say "repo locked" instead of a misleading "init failed".
+_restic_lock_msg() {
+    grep -m1 -oE 'repository is already locked.*' "$1" 2>/dev/null
+}
+
 # Newest vzdump archive for a vmid in a dumpdir, .tar (lxc) or .vma (qemu).
 # Uses find (returns 0 on no match) instead of a two-glob `ls` (which returns
 # non-zero when one glob misses → trips set -e/pipefail on the assignment).
@@ -36,6 +63,14 @@ _newest_dump() {               # <dir> <vmid> → path (empty if none)
     find "$1" -maxdepth 1 -type f \
         \( -name "vzdump-*-$2-*.tar" -o -name "vzdump-*-$2-*.vma" \) \
         -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-
+}
+
+# _restic_lock_die <jobfile> <what>: die with a "repo locked" reason if that is
+# why the step failed; otherwise return and let the caller's generic die run.
+_restic_lock_die() {
+    local lm; lm="$(_restic_lock_msg "$1")"
+    [[ -n "$lm" ]] || return 0
+    die "$EX_TEMPFAIL" "$2 failed: repo locked ($lm), see $1"
 }
 
 # Primary READ repo (list/restore/prune): offsite if enabled, otherwise cache.
@@ -60,25 +95,45 @@ _restic_write_repo() {
 }
 
 # Ensure repo (init if not present). Extra args → init.
+# The existence check runs with --no-lock: `cat config` otherwise takes a repo
+# lock, fails while a prune holds it, and the repo looked missing → a bogus init
+# → "init failed" (issue #1). Returns 3 if the repo is locked, not missing.
 _restic_ensure() {             # _restic_ensure <repo> [init-args...]
     local repo="$1"; shift
-    _restic "$repo" cat config >/dev/null 2>&1 && return 0
+    _restic "$repo" --no-lock cat config >/dev/null 2>&1 && return 0
     log_info "restic: init repo $repo"
-    _restic "$repo" init "$@"
+    local errf rc=0; errf="$(mktemp)"
+    _restic_w "$repo" init "$@" 2>"$errf" || rc=$?
+    if (( rc != 0 )); then
+        local lm; lm="$(_restic_lock_msg "$errf")"
+        sed 's/^/    restic: /' "$errf" >&2
+        rm -f "$errf"
+        [[ -n "$lm" ]] && { RESTIC_LOCK_MSG="$lm"; return 3; }
+        return "$rc"
+    fi
+    rm -f "$errf"
+}
+
+# _restic_init_die <tier> <rc>: tell "locked" apart from a real init failure.
+_restic_init_die() {
+    if [[ "$2" == 3 ]]; then
+        die "$EX_TEMPFAIL" "restic: $1 repo is locked by another process (${RESTIC_LOCK_MSG:-unknown}), not an init error. Is a prune or check running?"
+    fi
+    die "$EX_SOFTWARE" "restic: $1 repo init failed"
 }
 
 # restic_init, init cache and/or offsite repo (onboarding, idempotent).
 restic_init() {
     [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "restic: missing password file $RESTIC_PASSWORD_FILE (0600)"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
-        _restic_ensure "$RESTIC_CACHE_REPO" || die "$EX_SOFTWARE" "restic: cache repo init failed"
+        _restic_ensure "$RESTIC_CACHE_REPO" || _restic_init_die cache $?
     fi
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
             _restic_ensure "$RESTIC_OFFSITE_REPO" --copy-chunker-params --from-repo "$RESTIC_CACHE_REPO" \
-                || die "$EX_SOFTWARE" "restic: offsite repo init failed"
+                || _restic_init_die offsite $?
         else
-            _restic_ensure "$RESTIC_OFFSITE_REPO" || die "$EX_SOFTWARE" "restic: offsite repo init failed"
+            _restic_ensure "$RESTIC_OFFSITE_REPO" || _restic_init_die offsite $?
         fi
     fi
 }
@@ -127,8 +182,9 @@ rdo_backup() {
     local wrepo; wrepo="$(_restic_write_repo)"
     log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts)"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
-            _restic "$wrepo" backup "$dumpdir" \
+            _restic_w "$wrepo" backup "$dumpdir" \
                 --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(_local_node)"; then
+        _restic_lock_die "$jobfile" "restic backup of $base"
         die "$EX_SOFTWARE" "restic backup failed for $base (see $jobfile)"
     fi
 
@@ -136,7 +192,8 @@ rdo_backup() {
     if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         log_info "backup $vmid: restic copy cache → offsite"
         if ! run_stream "$jobfile" "restic-copy[$vmid]" -- \
-                _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$vmid,ts=$ts"; then
+                _restic_w "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$vmid,ts=$ts"; then
+            _restic_lock_die "$jobfile" "restic copy → offsite for vmid $vmid"
             die "$EX_UNAVAILABLE" "restic copy → offsite failed for vmid $vmid"
         fi
     fi
@@ -339,17 +396,24 @@ _restic_forget_json() {
     # Distinguish a FAILED forget (repo unreachable, lock, auth) from "nothing to
     # remove". Swallowing the error made a failed offsite prune look like a clean
     # "removed 0", so retention could silently stop applying. Return 1 on failure.
-    local out rc
-    out="$(_restic "$repo" "${fflags[@]}" 2>/dev/null)"; rc=$?
+    local out rc errf; errf="$(mktemp)"
+    out="$(_restic_w "$repo" "${fflags[@]}" 2>"$errf")"; rc=$?
     if (( rc != 0 )); then
-        log_warn "restic forget ($repo) FAILED (rc=$rc) — retention NOT applied this run"
+        local lm; lm="$(_restic_lock_msg "$errf")"
+        if [[ -n "$lm" ]]; then
+            log_warn "restic forget ($repo) FAILED: repo locked ($lm) — retention NOT applied this run"
+        else
+            log_warn "restic forget ($repo) FAILED (rc=$rc) — retention NOT applied this run"
+        fi
+        rm -f "$errf"
         printf '[]'
         return 1
     fi
+    rm -f "$errf"
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
     # Real run that actually removed snapshots → reclaim pack files separately.
     if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
-        _restic "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
+        _restic_w "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
     fi
     printf '%s' "$removed"
     return 0
@@ -458,7 +522,7 @@ rdo_usage() {
 # (e.g. VERIFY_SUBSET=5% for an affordable periodic deep check).
 _rdo_verify_one() {                # <repo> → 0 ok, 1 fail (empty repo = skip, ok)
     local repo="$1"
-    _restic "$repo" cat config >/dev/null 2>&1 || { log_warn "verify: $repo unreachable/absent, skipped"; return 0; }
+    _restic "$repo" --no-lock cat config >/dev/null 2>&1 || { log_warn "verify: $repo unreachable/absent, skipped"; return 0; }
     local args=(check)
     if [[ "${VERIFY_READ_DATA:-0}" == 1 ]]; then args+=(--read-data)
     elif [[ -n "${VERIFY_SUBSET:-}" ]]; then args+=(--read-data-subset "${VERIFY_SUBSET}"); fi
@@ -553,7 +617,7 @@ rdo_doctor() {
 
     # Repo reachable.
     local repo; repo="$(_restic_read_repo)"
-    if _restic "$repo" cat config >/dev/null 2>&1; then lines+=("$ok  repo $repo reachable")
+    if _restic "$repo" --no-lock cat config >/dev/null 2>&1; then lines+=("$ok  repo $repo reachable")
     else lines+=("$bad  repo $repo not reachable"); problems=$((problems+1)); fi
 
     # Timer enabled.
@@ -682,13 +746,15 @@ rdo_run_batch() {
         ts="${TS_OF[$v]}"; dumpdir="${CACHE_DIR}/${v}"
         jobfile="${JOBS_DIR}/backup-${v}-$(date +%Y%m%d-%H%M%S).log"
         if ! run_stream "$jobfile" "restic-backup[$v]" -- \
-                _restic "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=${GT_OF[$v]:-lxc}" --host "$(_local_node)"; then
-            failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v FAILED"; continue
+                _restic_w "$wrepo" backup "$dumpdir" --tag "vmid=$v" --tag "ts=$ts" --tag "type=${GT_OF[$v]:-lxc}" --host "$(_local_node)"; then
+            local lm; lm="$(_restic_lock_msg "$jobfile")"
+            failc=$((failc+1)); failed+=("$v"); log_warn "batch: restic backup $v FAILED${lm:+: repo locked ($lm)}"; continue
         fi
         if [[ "${LOCAL_REPO:-true}" == "true" && "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
             run_stream "$jobfile" "restic-copy[$v]" -- \
-                _restic "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$v,ts=$ts" \
-                || { failc=$((failc+1)); failed+=("$v"); log_warn "batch: copy→offsite $v FAILED"; continue; }
+                _restic_w "$RESTIC_OFFSITE_REPO" copy --from-repo "$RESTIC_CACHE_REPO" --tag "vmid=$v,ts=$ts" \
+                || { local lm; lm="$(_restic_lock_msg "$jobfile")"
+                     failc=$((failc+1)); failed+=("$v"); log_warn "batch: copy→offsite $v FAILED${lm:+: repo locked ($lm)}"; continue; }
         fi
         rm -f "$dumpdir"/vzdump-* 2>/dev/null
         okc=$((okc+1))

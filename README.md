@@ -130,7 +130,7 @@ Commands:
   fetch <vmid> <ts>           extract+verify a snapshot into the cache
   restore <vmid> <ts> --to N  restore to a new vmid
   verify                      restic integrity check (both tiers)
-  prune [--if-owner]          apply retention
+  prune [--if-owner] [--queue] apply retention (--queue: wait for a running backup)
   unlock                      clear a stale repo lock after a killed run
   rotate-key <file>           rotate the repo password to a new value
   test-restore <vmid>         restore to a throwaway vmid, boot, destroy

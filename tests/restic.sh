@@ -83,6 +83,32 @@ jq -e '[.archives[]|select(.keep==true and (.reasons|length>0))]|length>=1' "$RU
 jq -e '[.archives[]|select(.keep==false)]|length>=1' "$RUN/lr.json" >/dev/null \
     && ok "list --reasons: over-policy snapshot flagged keep=false" || bad "list --reasons keep=false"
 
+# --- issue #1: a repo held by an exclusive lock (what prune takes). Hold one with a
+# real restic process: `key passwd` locks exclusively, then blocks reading a fifo. ---
+hold_lock() {
+    mkfifo "$RUN/lockfifo"
+    RESTIC_PASSWORD_FILE="$RUN/pass" RESTIC_CACHE_DIR="$RUN/rcache" \
+        restic -r "$RUN/repo" key passwd --new-password-file "$RUN/lockfifo" >/dev/null 2>&1 &
+    LOCKPID=$!
+    for _ in $(seq 50); do restic -r "$RUN/repo" --password-file "$RUN/pass" list locks --no-lock 2>/dev/null | grep -q . && break; sleep 0.1; done
+}
+release_lock() { printf 'testpass\n' > "$RUN/lockfifo"; wait "$LOCKPID" 2>/dev/null; rm -f "$RUN/lockfifo"; }
+
+hold_lock
+$BIN preflight 8001 >/dev/null 2>&1 && ok "preflight: repo check passes while the repo is locked (--no-lock)" || bad "preflight fails on a locked repo"
+RESTIC_RETRY_LOCK=2s $BIN backup 8001 > "$RUN/lk.out" 2>&1; rc=$?
+[[ $rc == 75 ]] && ok "backup on a locked repo → EX_TEMPFAIL" || bad "locked backup rc=$rc"
+grep -q 'repo locked (repository is already locked' "$RUN/lk.out" && ok "backup on a locked repo says 'repo locked'" || bad "lock reason missing ($(grep -i error "$RUN/lk.out" | tail -1))"
+grep -q 'init failed' "$RUN/lk.out" && bad "locked repo still reported as 'init failed'" || ok "locked repo is not reported as 'init failed'"
+release_lock
+
+# --retry-lock: a short overlap waits instead of failing
+hold_lock
+( sleep 3; release_lock ) &
+RESTIC_RETRY_LOCK=1m $BIN backup 8001 > "$RUN/rl.out" 2>&1; rc=$?
+wait
+[[ $rc == 0 ]] && ok "backup waits out a short repo lock (--retry-lock)" || bad "retry-lock backup rc=$rc ($(tail -2 "$RUN/rl.out"))"
+
 # --- second backup already ran above; prune keep-last=1 leaves exactly one ---
 $BIN --json prune >/dev/null 2>&1
 n="$($BIN --json list 2>/dev/null | jq '[.archives[]|select(.vmid=="8001")]|length')"

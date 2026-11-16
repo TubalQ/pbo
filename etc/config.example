@@ -27,6 +27,7 @@ VZDUMP_STOP_VMIDS=
 BACKUP_ORDER=auto
 BACKUP_MODE=stream        # stream (one-by-one, low disk) | batch (dump all→upload)
 GLOBAL_LOCK_TIMEOUT=7200  # seconds a scheduled run waits in the queue
+#SCHEDULE_LOCK_TIMEOUT=7200  # seconds the prune timer waits for a running run-schedule (and vice versa)
 # Cluster only: restrict `prune` to one node (prune needs an exclusive repo lock).
 # Empty = any node may prune (restic's lock keeps concurrent attempts safe).
 PRUNE_OWNER=
@@ -58,6 +59,7 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 # the accept-new form below is the trust-on-first-use fallback.
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
+#RESTIC_RETRY_LOCK=10m                         # backup/copy/prune wait this long on a locked repo (restic >= 0.16); empty = fail at once
 #RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
 #RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache
 #TR_STORAGE=nvmepool                           # throwaway storage for test-restore

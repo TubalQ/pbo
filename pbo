@@ -84,7 +84,7 @@ Commands:
   fetch <vmid> <ts>           extract+verify one snapshot into the cache (no global lock)
   restore <vmid> <ts> --to N  restore to a new vmid (no global lock)
   verify                      verify repo integrity (restic check[, --read-data])
-  prune [--if-owner]          apply retention (cache keep-last, offsite GFS)
+  prune [--if-owner] [--queue] apply retention (cache keep-last, offsite GFS)
   unlock                      remove a stale restic repo lock (after a killed run)
   rotate-key <file>           rotate the repo password (DR key) to the value in <file>
   test-restore <vmid>         full restore to a throwaway vmid, boot, destroy
@@ -166,6 +166,8 @@ cmd_run_schedule() {
         "" ) : ;;
         *) die "$EX_USAGE" "unknown run-schedule flag: $1 (use --stream|--batch)" ;;
     esac
+    # Held for the whole run so prune can't land between two guests (issue #1).
+    acquire_schedule_lock "queue" "run-schedule"
     do_run_schedule
 }
 
@@ -218,13 +220,30 @@ cmd_usage()        { rdo_usage; }
 cmd_verify()       { rdo_verify; }
 cmd_unlock()       { rdo_unlock; }
 cmd_rotate_key()   { [[ -n "${1:-}" ]] || die "$EX_USAGE" "rotate-key requires a file with the new password"; rdo_rotate_key "$1"; }
-# prune [--if-owner]: --if-owner skips silently unless this node is the prune owner
-# (cluster-safe scheduled prune; see lib/cluster.sh _is_prune_owner).
+# prune [--if-owner] [--queue]
+#   --if-owner: skip silently unless this node is the prune owner (cluster-safe
+#               scheduled prune; see lib/cluster.sh _is_prune_owner).
+#   --queue:    wait for a running backup/run-schedule instead of exiting (the
+#               timer uses this). Manual prune exits at once if something runs.
+# Prune takes an exclusive restic lock, so it must never overlap a backup (issue #1).
 cmd_prune() {
-    if [[ "${1:-}" == "--if-owner" ]] && ! _is_prune_owner; then
+    local if_owner=0 mode="now"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --if-owner) if_owner=1; shift ;;
+            --queue)    mode="queue"; shift ;;
+            *) die "$EX_USAGE" "unknown prune flag: $1" ;;
+        esac
+    done
+    if (( if_owner )) && ! _is_prune_owner; then
         log_info "prune: node '$(_local_node)' is not the prune owner (PRUNE_OWNER=${PRUNE_OWNER:-}), skipping."
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "skipped" "true" "reason" "not_prune_owner"
         return "$EX_OK"
+    fi
+    # A dry-run only reads (restic forget --dry-run) and needs no serialization.
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        acquire_schedule_lock "$mode" "prune"
+        acquire_global_lock "$mode" "prune"
     fi
     do_prune
 }
