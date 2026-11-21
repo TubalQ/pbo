@@ -3,6 +3,8 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
+## 0.3.0 (unreleased)
+
 ## 0.2.0 (2026-11-21)
 
 Added
