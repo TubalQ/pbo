@@ -1,0 +1,14 @@
+[Unit]
+Description=pbo: scheduled integrity check (rotating deep read)
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Reads the next 1/VERIFY_ROTATE of the data in each repo tier; over
+# VERIFY_ROTATE runs every pack has been read and checked once.
+ExecStart=/usr/local/lib/pbo/pbo verify --scheduled
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle

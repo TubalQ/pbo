@@ -71,7 +71,8 @@ install -m 0644 "$EXAMPLE" "$CFGDIR/config.example"
 if [[ -f "$CFGDIR/config" ]]; then
     echo "    $CFGDIR/config already exists, left untouched."
 elif [[ "$ROLE" == janitor ]]; then
-    install -m 0640 -o root -g "$JUSER" "$EXAMPLE" "$CFGDIR/config"
+    sed "s/^JANITOR_USER=.*/JANITOR_USER=$JUSER/" "$EXAMPLE" > "$CFGDIR/config"
+    chown "root:$JUSER" "$CFGDIR/config"; chmod 0640 "$CFGDIR/config"
     echo "    created $CFGDIR/config (0640 root:$JUSER), EDIT it: repo path, password file."
 else
     install -m 0600 "$SRC/etc/config.example" "$CFGDIR/config"
@@ -90,11 +91,11 @@ Installed: pbo janitor (runs as $JUSER).
 
   1. Edit $CFGDIR/config: RESTIC_OFFSITE_REPO = the repo directory on this disk.
   2. Put the repo password in $CFGDIR/restic-pass, chown $JUSER, chmod 0400.
-  3. Check it:   runuser -u $JUSER -- $BIN doctor
+  3. Check it:   $BIN doctor        (drops to $JUSER by itself)
   4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily 12:30)
 
-Run manual commands as $JUSER too (runuser -u $JUSER -- $BIN ...), so new repo
-files stay readable by rest-server.
+Started as root, pbo re-execs itself as $JUSER (JANITOR_USER in the config), so
+plain "$BIN doctor" is fine.
 EOF
     exit 0
 fi
@@ -104,6 +105,8 @@ install -m 0644 "$SRC/systemd/pbo.service"       "$UNITDIR/pbo.service"
 install -m 0644 "$SRC/systemd/pbo.timer"         "$UNITDIR/pbo.timer"
 install -m 0644 "$SRC/systemd/pbo-prune.service" "$UNITDIR/pbo-prune.service"
 install -m 0644 "$SRC/systemd/pbo-prune.timer"   "$UNITDIR/pbo-prune.timer"
+install -m 0644 "$SRC/systemd/pbo-verify.service" "$UNITDIR/pbo-verify.service"
+install -m 0644 "$SRC/systemd/pbo-verify.timer"   "$UNITDIR/pbo-verify.timer"
 systemctl daemon-reload
 
 cat <<EOF
@@ -118,6 +121,7 @@ Installed: pbo (Proxmox Backup Offsite).
 The wizard offers to enable the schedule at the end. To do it by hand instead:
   systemctl enable --now pbo.timer         (backups, 05:00 nightly)
   systemctl enable --now pbo-prune.timer   (prune, Sun 06:30)
+  systemctl enable --now pbo-verify.timer  (integrity, Wed 10:00, 1/12 of the data per run)
 
 Uninstall: remove $LIBDIR, $BIN, units in $UNITDIR. Config/creds in $CFGDIR are kept.
 EOF

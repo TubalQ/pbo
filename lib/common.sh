@@ -44,11 +44,14 @@ set_defaults() {
     : "${NTFY_ON_SUCCESS:=false}"
     : "${OFFSITE_ENABLED:=true}"       # false = local repo only, no offsite copy
     : "${PBO_ROLE:=host}"              # host = PVE node that backs up guests | janitor = storage-side box that owns offsite retention
+    : "${JANITOR_USER:=restic}"         # janitor: the user rest-server runs as; root re-execs as this user
     : "${OFFSITE_APPEND_ONLY:=false}"  # true = offsite refuses deletes (rest-server --append-only); this host never prunes it
     : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach the guest
     : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
     : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
     : "${DOCTOR_MAX_AGE:=172800}"      # 48h, doctor flags a guest whose newest snapshot is older
+    : "${VERIFY_ROTATE:=12}"           # verify --scheduled reads 1/N of the data per run, all of it every N runs (0 = structure only)
+    : "${VERIFY_MAX_AGE:=3456000}"     # 40 days, doctor warns when the last verify is older
 
     # --- restic engine ---
     : "${BACKUP_MODE:=stream}"                            # stream (one-by-one) | batch (dump all→upload), SAME repo
@@ -122,6 +125,33 @@ load_config() {
     PBO_CONFIG_LOADED="$loaded"
     set_defaults
     ensure_dirs
+}
+
+# Config schema. Bump when a key is renamed or changes meaning, and teach
+# _config_check about the old name. A config may declare PBO_CONFIG_VERSION.
+readonly PBO_CONFIG_SCHEMA=1
+
+# _config_check <file>: lines for doctor. Unknown keys are usually typos
+# (KEEP_OFSITE_DAILY silently falls back to the default), so name them.
+# "Known" = every upper-case identifier pbo's own code mentions.
+_config_check() {
+    local f="$1"; CC_LINES=(); CC_WARNS=0
+    [[ -r "$f" ]] || return 0
+    local known keys k unknown=()
+    known="$(grep -ohE '\b[A-Z][A-Z0-9_]{2,}\b' "${SELF_DIR}/pbo" "${SELF_DIR}"/lib/*.sh 2>/dev/null | sort -u)"
+    keys="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=.*/\2/p' "$f" | sort -u)"
+    while read -r k; do
+        [[ -n "$k" ]] || continue
+        grep -qx "$k" <<<"$known" || unknown+=("$k")
+    done <<<"$keys"
+    if (( ${#unknown[@]} )); then
+        CC_LINES+=("unknown config key(s) in $f: ${unknown[*]} (typo? pbo ignores them)"); CC_WARNS=1
+    fi
+    local v="${PBO_CONFIG_VERSION:-$PBO_CONFIG_SCHEMA}"
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v > PBO_CONFIG_SCHEMA )); then
+        CC_LINES+=("$f is written for config schema $v, this pbo knows $PBO_CONFIG_SCHEMA: upgrade pbo"); CC_WARNS=1
+    fi
+    return 0
 }
 
 # Create the directories we own. The log directory falls back to stderr-only

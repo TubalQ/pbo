@@ -23,6 +23,17 @@ _role_check() {
     case "${PBO_ROLE:-host}" in
         host) : ;;
         janitor)
+            # Never run the janitor as root. Its state and log dirs belong to the
+            # server user, so root writing there could be steered by a symlink;
+            # and a root prune leaves repo files rest-server can't read. Re-exec
+            # as JANITOR_USER before anything is written.
+            # PBO_JANITOR_ALLOW_ROOT=1 exists for the test suite only.
+            if [[ "$(id -u)" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 ]]; then
+                local ju="${JANITOR_USER:-restic}"
+                id "$ju" >/dev/null 2>&1 || die "$EX_CONFIG" "JANITOR_USER '$ju' does not exist"
+                [[ "$(id -u "$ju")" != 0 ]] || die "$EX_CONFIG" "JANITOR_USER must not be root"
+                exec "${PBO_RUNUSER_BIN:-runuser}" -u "$ju" -- "${SELF_DIR}/pbo" "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}"
+            fi
             if [[ "${OFFSITE_APPEND_ONLY:-false}" == "true" ]]; then
                 die "$EX_CONFIG" "PBO_ROLE=janitor with OFFSITE_APPEND_ONLY=true: the janitor is the one that prunes, it needs write access to the repo"
             fi

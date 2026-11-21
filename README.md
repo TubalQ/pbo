@@ -53,6 +53,17 @@ sudo ./install.sh
 Goes into `/usr/local` and offers to run setup. It leaves the timer off, so it won't
 start a nightly job you didn't ask for.
 
+Or use the package from a [release](https://github.com/TubalQ/PBO/releases) (built by
+CI, `packaging/build-deb.sh` builds the same locally):
+
+```bash
+apt install ./pbo_<version>_all.deb    # pulls restic, jq, zstd, ...
+pbo setup
+```
+
+It installs to `/usr/lib/pbo`, ships the timers disabled, and leaves `/etc/pbo` alone
+on purge (the DR key lives there). Releases are signed tags; see `CHANGELOG.md`.
+
 ## Quick start
 
 ```bash
@@ -79,7 +90,23 @@ systemctl enable --now pbo-prune.timer   # prune, Sunday 06:30
 ```
 
 Then `pbo doctor` any time to check the repo is reachable, the timer is on, the
-DR key is 0600, and every guest has a recent snapshot.
+DR key is 0600, the last integrity check passed, the config has no unknown keys, and
+every guest has a recent snapshot.
+
+## Integrity checks
+
+`restic check` alone only checks structure. Reading the data back is what catches
+bit rot or a provider quietly losing a pack, and reading all of it over SFTP every
+week is expensive. `pbo verify --scheduled` reads the next 1/`VERIFY_ROTATE` slice
+each run instead, so with the default of 12 and the weekly `pbo-verify.timer` every
+pack is read about once a quarter. A failed slice is read again next time. `doctor`
+shows when the last verify ran and fails if it failed.
+
+```bash
+systemctl enable --now pbo-verify.timer   # Wed 10:00
+```
+
+On a janitor the same runs daily against local disk (`VERIFY_ROTATE=30`).
 
 ## Clusters
 
@@ -129,7 +156,7 @@ Commands:
   usage                       repo size, dedup ratio, snapshot count
   fetch <vmid> <ts>           extract+verify a snapshot into the cache
   restore <vmid> <ts> --to N  restore to a new vmid
-  verify                      restic integrity check (both tiers)
+  verify [--scheduled]        restic integrity check (both tiers); --scheduled reads 1/N of the data
   prune [--if-owner] [--queue] apply retention (--queue: wait for a running backup)
   unlock                      clear a stale repo lock after a killed run
   rotate-key <file>           rotate the repo password to a new value
@@ -254,7 +281,12 @@ fine to keep in version control.
 ## Contributing
 
 Patches welcome. It's plain bash with tests in `tests/`. If you change how something
-behaves, please add a test that covers it.
+behaves, please add a test that covers it. `bash tests/all.sh` runs against mocks and
+local repos. `tests/integration/pve.sh` runs the real thing on a Proxmox host:
+throwaway CT and VM, backup, restore, boot, compare, prune, verify, and with
+`PBO_IT_JANITOR_CT`/`PBO_IT_JANITOR_URL` the whole append-only path. It cleans up
+after itself and only touches guests it created. Security issues: see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

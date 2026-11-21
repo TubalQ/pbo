@@ -450,6 +450,10 @@ run_setup_wizard() {
         systemctl enable --now pbo-prune.timer 2>/dev/null \
             && echo "  ${C_G}pbo-prune.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-prune.timer (enable it by hand).${C_0}"
     fi
+    if _yn "Enable the weekly integrity check (pbo-verify.timer, Wed 10:00, reads 1/${VERIFY_ROTATE:-12} of the data per run)?" y; then
+        systemctl enable --now pbo-verify.timer 2>/dev/null \
+            && echo "  ${C_G}pbo-verify.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-verify.timer (enable it by hand).${C_0}"
+    fi
 
     printf '\n%s  Setup complete.%s Recommended next step:\n' "$C_G" "$C_0"
     printf '    %sExport your DR key%s → password manager (menu → Export DR key).\n' "$C_B" "$C_0"

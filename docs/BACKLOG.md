@@ -32,7 +32,14 @@
   probes that deletes are refused. See
   [`docs/adr/0004-append-only-offsite-and-janitor.md`](adr/0004-append-only-offsite-and-janitor.md).
 
+- **Scheduled deep verify.** `verify --scheduled` + `pbo-verify.timer`, rotating
+  `--read-data-subset n/VERIFY_ROTATE`; result in `STATE_DIR/verify.last`, shown by
+  doctor.
+- **Releases.** semver, `CHANGELOG.md`, signed tags via `packaging/release.sh`, `.deb`
+  via `packaging/build-deb.sh` (CI builds it and attaches it to tag releases),
+  `PBO_CONFIG_VERSION` + unknown-key warnings in doctor.
+- **Integration test on real Proxmox.** `tests/integration/pve.sh`.
+- **Threat model.** `SECURITY.md`.
+
 ## Open
 The roadmap lives in the issue tracker, one milestone per phase.
-- **Deep-verify schedule.** `verify` supports `VERIFY_SUBSET=<n%>` for an affordable
-  `--read-data` sample; wire it into a periodic (monthly) timer.

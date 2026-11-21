@@ -47,7 +47,7 @@ source "${SELF_DIR}/lib/appendonly.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
-readonly VERSION="0.1.0-dev"
+readonly VERSION="0.2.0-dev"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
@@ -59,7 +59,7 @@ PBO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-pbo: offsite backup of Proxmox guests (LXC + QEMU) to any SFTP target, via restic.
+pbo: offsite backup of Proxmox guests (LXC + QEMU) via restic, to SFTP or an append-only rest-server.
 
 Usage:
   pbo [global flags] <command> [arguments]
@@ -85,7 +85,8 @@ Commands:
   usage                       repo size, dedup ratio, snapshot count
   fetch <vmid> <ts>           extract+verify one snapshot into the cache (no global lock)
   restore <vmid> <ts> --to N  restore to a new vmid (no global lock)
-  verify                      verify repo integrity (restic check[, --read-data])
+  verify [--scheduled]        verify repo integrity (restic check); --scheduled reads the
+                              next 1/VERIFY_ROTATE slice of the data (all of it over N runs)
   prune [--if-owner] [--queue] apply retention (cache keep-last, offsite GFS)
   unlock                      remove a stale restic repo lock (after a killed run)
   rotate-key <file>           rotate the repo password (DR key) to the value in <file>
@@ -219,7 +220,9 @@ cmd_list() {
     LIST_WITH_REASONS="$reasons" do_list "$vmid"
 }
 cmd_usage()        { rdo_usage; }
-cmd_verify()       { rdo_verify; }
+cmd_verify() {
+    case "${1:-}" in ""|--scheduled) rdo_verify "${1:-}" ;; *) die "$EX_USAGE" "unknown verify flag: $1 (use --scheduled)" ;; esac
+}
 cmd_unlock()       { rdo_unlock; }
 cmd_rotate_key()   { [[ -n "${1:-}" ]] || die "$EX_USAGE" "rotate-key requires a file with the new password"; rdo_rotate_key "$1"; }
 # prune [--if-owner] [--queue]
@@ -279,6 +282,7 @@ cmd_restore_host() {
 # Main.
 # ---------------------------------------------------------------------------
 main() {
+    PBO_ORIG_ARGS=("$@")   # the janitor re-execs itself unprivileged with these
     parse_global_flags "$@"
     set -- "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 

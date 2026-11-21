@@ -561,11 +561,33 @@ _rdo_verify_one() {                # <repo> → 0 ok, 1 fail (empty repo = skip,
     if [[ "${VERIFY_READ_DATA:-0}" == 1 ]]; then args+=(--read-data)
     elif [[ -n "${VERIFY_SUBSET:-}" ]]; then args+=(--read-data-subset "${VERIFY_SUBSET}"); fi
     if _restic "$repo" "${args[@]}" >/dev/null 2>&1; then
-        log_info "verify: OK ($repo)"; return 0
+        log_info "verify: OK ($repo${VERIFY_SUBSET:+, read $VERIFY_SUBSET})"; return 0
     fi
     log_error "verify: restic check FAILED for $repo"; return 1
 }
+
+# Scheduled deep verify (issue #3): each scheduled run reads the next slice
+# n/VERIFY_ROTATE of the data (restic --read-data-subset n/t), so every pack is
+# read once per VERIFY_ROTATE runs without any single run reading it all. The
+# slice counter lives in STATE_DIR so it advances run to run, whatever the timer.
+_verify_next_slice() {
+    local f="${STATE_DIR}/verify.slice" last=0 r="${VERIFY_ROTATE:-12}"
+    [[ -r "$f" ]] && last="$(tr -cd '0-9' < "$f")"
+    printf '%s' $(( (${last:-0} % r) + 1 ))
+}
+_verify_record() {                 # <ok:true|false> <subset> <tiers>
+    local f="${STATE_DIR}/verify.last"
+    printf '{"time":"%s","epoch":%s,"ok":%s,"subset":"%s","tiers":"%s"}\n' \
+        "$(date --iso-8601=seconds)" "$(date +%s)" "$1" "$2" "$3" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
+}
+
 rdo_verify() {
+    local scheduled=0 slice=""
+    [[ "${1:-}" == "--scheduled" ]] && scheduled=1
+    if (( scheduled )) && [[ "${VERIFY_READ_DATA:-0}" != 1 ]] && (( ${VERIFY_ROTATE:-12} > 0 )); then
+        slice="$(_verify_next_slice)"
+        VERIFY_SUBSET="${slice}/${VERIFY_ROTATE:-12}"
+    fi
     local fail=0 checked=()
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         _rdo_verify_one "$RESTIC_CACHE_REPO" || fail=1; checked+=("cache")
@@ -573,12 +595,31 @@ rdo_verify() {
     if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         _rdo_verify_one "$RESTIC_OFFSITE_REPO" || fail=1; checked+=("offsite")
     fi
+    local subset="${VERIFY_SUBSET:-}"; [[ "${VERIFY_READ_DATA:-0}" == 1 ]] && subset="all"
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        _verify_record "$( ((fail==0)) && echo true || echo false )" "${subset:-structure}" "${checked[*]:-none}"
+        # Advance the slice only when this one passed, so a failed slice is re-read.
+        [[ -n "$slice" ]] && (( fail == 0 )) && printf '%s\n' "$slice" > "${STATE_DIR}/verify.slice"
+    fi
     if (( fail == 0 )); then
-        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" "tiers" "${checked[*]:-none}" || log_info "verify: OK (${checked[*]:-nothing to check})"
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" "tiers" "${checked[*]:-none}" "subset" "${subset:-structure}" || log_info "verify: OK (${checked[*]:-nothing to check}${subset:+, data read: $subset})"
         return "$EX_OK"
     fi
-    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "tiers" "${checked[*]:-none}"
-    die "$EX_DATAERR" "restic check FAILED (see log)"
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "engine" "restic" "tiers" "${checked[*]:-none}" "subset" "${subset:-structure}"
+    die "$EX_DATAERR" "restic check FAILED (${checked[*]:-}, data read: ${subset:-structure})"
+}
+
+# _doctor_verify: last verify age/result from STATE_DIR/verify.last.
+_doctor_verify() {
+    local ok="$1" bad="$2" warn="$3" f="${STATE_DIR}/verify.last"
+    DV_LINE=""; DV_PROBLEM=0; DV_WARN=0
+    local max="${VERIFY_MAX_AGE:-3456000}"   # 40 days
+    if [[ ! -r "$f" ]]; then DV_LINE="$warn  no verify recorded yet (pbo verify, or enable pbo-verify.timer)"; DV_WARN=1; return; fi
+    local ep vok sub days; ep="$(jq -r '.epoch//0' "$f" 2>/dev/null)"; vok="$(jq -r '.ok' "$f" 2>/dev/null)"; sub="$(jq -r '.subset//""' "$f" 2>/dev/null)"
+    days=$(( ( $(date +%s) - ${ep:-0} ) / 86400 ))
+    if [[ "$vok" != true ]]; then DV_LINE="$bad  last verify FAILED ${days}d ago (data read: $sub)"; DV_PROBLEM=1
+    elif (( $(date +%s) - ${ep:-0} > max )); then DV_LINE="$warn  last verify ${days}d ago (> $(( max/86400 ))d)"; DV_WARN=1
+    else DV_LINE="$ok  last verify ${days}d ago, OK (data read: $sub)"; fi
 }
 
 # fetch: extract+verify one snapshot into the cache WITHOUT restoring. Proves the
@@ -676,6 +717,15 @@ rdo_doctor() {
         if own="$(_doctor_janitor_ownership "$repo")"; then lines+=("$ok  repo file ownership consistent")
         else lines+=("$bad  $own"); problems=$((problems+1)); fi
     fi
+
+    # Config: unknown keys (typos) and a config newer than this pbo.
+    _config_check "${PBO_CONFIG_LOADED:-}"
+    local cl; for cl in "${CC_LINES[@]+"${CC_LINES[@]}"}"; do lines+=("$warn  $cl"); done
+    warns=$((warns+CC_WARNS))
+
+    # Integrity: when did verify last run, and did it pass.
+    _doctor_verify "$ok" "$bad" "$warn"
+    lines+=("$DV_LINE"); problems=$((problems+DV_PROBLEM)); warns=$((warns+DV_WARN))
 
     # Per-guest freshness: newest snapshot age vs DOCTOR_MAX_AGE, for every guest
     # on this node. A live guest with NO snapshot at all is a hard finding.

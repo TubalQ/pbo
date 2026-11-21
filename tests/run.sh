@@ -32,7 +32,8 @@ $BIN --json status >/dev/null 2>&1
 
 # --- basic CLI ---
 $BIN --help    2>&1 | grep -q 'Usage' && ok "help shows usage" || bad "help"
-$BIN --version 2>&1 | grep -q '0.1.0'      && ok "version" || bad "version"
+want="$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' pbo)"
+$BIN --version 2>&1 | grep -qx "pbo $want" && ok "version ($want)" || bad "version"
 check_exit "unknown command gives EX_USAGE" 64 $BIN nonsense
 check_exit "no command gives EX_USAGE" 64 $BIN
 

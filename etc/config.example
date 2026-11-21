@@ -7,6 +7,9 @@
 # retention, guest set, and enabling the timers):
 #   pbo setup
 
+# Config schema this file is written for (pbo warns if it is newer than it knows).
+PBO_CONFIG_VERSION=1
+
 # --- paths ---
 CACHE_DIR=/var/cache/pbo
 LOG_DIR=/var/log/pbo

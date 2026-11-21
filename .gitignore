@@ -1,6 +1,7 @@
 # Dev runtime (the isolated config.dev writes here), never in git.
 /run/
 run/
+run-*/
 
 # Secrets, the restic password lives in the password file, never in the repo.
 etc/config
@@ -23,3 +24,4 @@ venv/
 *.bak
 *.swp
 .DS_Store
+dist/

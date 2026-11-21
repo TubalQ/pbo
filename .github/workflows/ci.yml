@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
 
 jobs:
@@ -32,3 +33,26 @@ jobs:
 
       - name: Tests
         run: bash tests/all.sh
+
+  deb:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .deb
+        run: packaging/build-deb.sh dist
+      - name: Inspect package
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pbo-deb
+          path: dist/*
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "pbo ${GITHUB_REF_NAME#v}" --notes "See CHANGELOG.md." --verify-tag

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1
+export PBO_JANITOR_ALLOW_ROOT=1   # the suite may run as root; one test below turns it off
 # tests/appendonly.sh: append-only offsite + janitor role (ADR 0004). Real local
 # restic repos stand in for cache and offsite; the rest-server is faked where
 # the test is about what pbo sends (curl/restic argv and env), not about HTTP.
@@ -76,6 +77,16 @@ PBO_CONFIG="$RUN/badrole.cfg" $BIN status >/dev/null 2>&1; rc=$?
 
 PBO_CONFIG="$RUN/does-not-exist" $BIN status >/dev/null 2>&1; rc=$?
 [[ $rc == 78 ]] && ok "missing explicit PBO_CONFIG is a config error, not silent defaults" || bad "missing PBO_CONFIG rc=$rc"
+
+# --- janitor started as root re-execs as JANITOR_USER (never writes as root) ---
+if [[ "$(id -u)" == 0 ]]; then
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s"\n' "$RUN/runuser.argv" > "$RUN/bin/fake-runuser"; chmod 755 "$RUN/bin/fake-runuser"
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" PBO_CONFIG="$RUN/jan.cfg" JANITOR_USER=nobody $BIN --json prune >/dev/null 2>&1
+    grep -q -- "-u nobody -- .*/pbo --json prune" "$RUN/runuser.argv" 2>/dev/null \
+        && ok "janitor as root re-execs as JANITOR_USER with the same args" || bad "re-exec argv: $(cat "$RUN/runuser.argv" 2>/dev/null)"
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$RUN/jan.cfg" JANITOR_USER=root $BIN status >/dev/null 2>&1; rc=$?
+    [[ $rc == 78 ]] && ok "JANITOR_USER=root is refused" || bad "root janitor user rc=$rc"
+fi
 
 # --- janitor doctor: freshness per vmid seen in the repo, host-* ignored ---
 R "$RUN/off-repo" backup -q --time "2020-01-01 00:00:00" --tag "vmid=8002,ts=old" "$RUN/data" >/dev/null 2>&1

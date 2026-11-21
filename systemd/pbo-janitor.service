@@ -12,8 +12,8 @@ User=restic
 Group=restic
 # --queue: wait for a running janitor job instead of failing.
 ExecStart=/usr/local/lib/pbo/pbo prune --queue
-# Structure check plus VERIFY_SUBSET of the data, read from local disk.
-ExecStart=/usr/local/lib/pbo/pbo verify
+# Structure check plus the next 1/VERIFY_ROTATE slice of the data, from local disk.
+ExecStart=/usr/local/lib/pbo/pbo verify --scheduled
 # Fails the unit if a guest's newest snapshot is too old: a host stopped sending.
 ExecStart=/usr/local/lib/pbo/pbo doctor
 TimeoutStartSec=infinity

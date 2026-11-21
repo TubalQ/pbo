@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly pbo integrity check (rotating deep read)
+Documentation=https://github.com/TubalQ/PBO
+
+[Timer]
+# Wednesdays 10:00, away from the nightly backup and the Sunday prune.
+# With VERIFY_ROTATE=12 the whole repo is read about once a quarter.
+OnCalendar=Wed *-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
