@@ -20,9 +20,10 @@ bash tests/all.sh >/dev/null || { echo "tests failed, nothing committed" >&2; gi
 # and PBO_IT_JANITOR_URL for the append-only path). PBO_RELEASE_IT=0 skips it.
 if [[ "${PBO_RELEASE_IT:-1}" != 0 ]] && command -v pct >/dev/null 2>&1; then
     echo "running the integration test on this Proxmox host (a few minutes)..."
-    tests/integration/pve.sh > /tmp/pbo-release-it.log 2>&1 \
-        || { echo "integration test failed (see /tmp/pbo-release-it.log), nothing committed" >&2; git checkout -- pbo CHANGELOG.md; exit 1; }
-    grep -E '^[0-9]+ passed' /tmp/pbo-release-it.log
+    itlog="$(mktemp -t pbo-release-it.XXXXXX)"
+    tests/integration/pve.sh > "$itlog" 2>&1 \
+        || { echo "integration test failed (see $itlog), nothing committed" >&2; git checkout -- pbo CHANGELOG.md; exit 1; }
+    grep -E '^[0-9]+ passed' "$itlog"
 elif [[ "${PBO_RELEASE_IT:-1}" != 0 ]]; then
     echo "not a Proxmox host: integration test skipped. Run tests/integration/pve.sh on one before pushing the tag." >&2
 fi
