@@ -67,6 +67,10 @@ there checks the newest snapshot of every vmid in the repo against
 host can't touch. `host-*` (manual `backup-host`) is not age-checked.
 
 ## Consequences
+- The janitor must be a machine the hosts have no admin access to. A janitor in
+  an LXC on the PVE host it guards protects nothing: host root is root in the
+  container. (The verification box in ADR testing was exactly that, which is fine
+  for testing only.)
 - The janitor holds the repo password (it must, to prune) and full delete
   rights. It becomes the machine to protect: no inbound except rest-server, no
   SSH, not reachable from the hosts on anything but port 8000.

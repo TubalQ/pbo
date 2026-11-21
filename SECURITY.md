@@ -61,8 +61,11 @@ into the repo it protects.
   server can't read.
 - **Restore always goes to a new vmid** and never overwrites a running guest. Every
   restore and test-restore lands in the audit log (`LOG_DIR/audit.log`).
-- **A janitor on the same hardware is not offsite.** It protects against a compromised
-  host, not against losing the building.
+- **A janitor on the same host protects nothing.** Root on a Proxmox host is root in
+  every container on it (`pct enter`, or the container's disk straight from the host's
+  storage), so a janitor in an LXC on the host it guards falls with that host. It is
+  fine for testing. In production it has to be a machine the host has no admin
+  access to.
 
 ### Out of scope
 

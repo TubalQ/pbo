@@ -269,7 +269,8 @@ user (run manual janitor commands with `runuser -u restic --`).
 
 The janitor has the repo password and can delete everything. Lock it down
 accordingly: nothing inbound but the rest-server port, from the hosts only. And put
-it somewhere else. A janitor on the same hardware is append-only, not offsite.
+it somewhere else. A janitor in a container on the host it protects protects nothing:
+root on the host is root in the container. Use one only for testing.
 Design notes: [ADR 0004](docs/adr/0004-append-only-offsite-and-janitor.md).
 
 ## Configuration
