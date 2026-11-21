@@ -49,7 +49,7 @@ source "${SELF_DIR}/lib/appendonly.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
-readonly VERSION="0.3.0-dev"
+readonly VERSION="0.3.0"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
