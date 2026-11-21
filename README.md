@@ -285,7 +285,8 @@ behaves, please add a test that covers it. `bash tests/all.sh` runs against mock
 local repos. `tests/integration/pve.sh` runs the real thing on a Proxmox host:
 throwaway CT and VM, backup, restore, boot, compare, prune, verify, and with
 `PBO_IT_JANITOR_CT`/`PBO_IT_JANITOR_URL` the whole append-only path. It cleans up
-after itself and only touches guests it created. Security issues: see
+after itself and only touches guests it created. `packaging/release.sh` runs it
+before tagging when it's on a Proxmox host. Security issues: see
 [SECURITY.md](SECURITY.md).
 
 ## License
