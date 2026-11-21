@@ -143,6 +143,26 @@ after="$(R "$RUN/f-repo" snapshots --json | jq length)"
 out="$(PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/f.cfg" $BIN doctor 2>&1)"
 grep -q 'FAIL.*dated in the future' <<<"$out" && ok "doctor fails on future-dated snapshots" || bad "doctor future: $out"
 
+# backdated insert: a new snapshot claiming a time before the last janitor run
+rm -rf "$RUN/b-repo"; R "$RUN/b-repo" init >/dev/null 2>&1
+mkdir -p "$RUN/data/9301"; echo a > "$RUN/data/9301/f"
+R "$RUN/b-repo" backup -q --time "$(date -d '-2 day' '+%F %T')" --tag vmid=9301 "$RUN/data/9301" >/dev/null 2>&1
+cfg "$RUN/b.cfg" "PBO_ROLE=janitor" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/b-repo" "KEEP_OFFSITE_DAILY=7"
+JB() { PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/b.cfg" $BIN "$@"; }
+JB --json prune >/dev/null 2>&1; rc=$?
+[[ $rc == 0 ]] && ls "$RUN"/state/janitor-seen-*.json >/dev/null 2>&1 && ok "first janitor prune records a baseline" || bad "baseline rc=$rc"
+echo b >> "$RUN/data/9301/f"
+R "$RUN/b-repo" backup -q --tag vmid=9301 "$RUN/data/9301" >/dev/null 2>&1          # honest: now
+JB --json prune >/dev/null 2>&1; rc=$?
+[[ $rc == 0 ]] && ok "an honest new snapshot passes" || bad "honest rc=$rc"
+echo c >> "$RUN/data/9301/f"
+R "$RUN/b-repo" backup -q --time "$(date -d '-1 day' '+%F 23:59:00')" --tag vmid=9301 "$RUN/data/9301" >/dev/null 2>&1   # slipped into yesterday
+before="$(R "$RUN/b-repo" snapshots --json | jq length)"
+JB --json prune >/dev/null 2>&1; rc=$?
+after="$(R "$RUN/b-repo" snapshots --json | jq length)"
+[[ $rc != 0 && "$before" == "$after" ]] && ok "janitor refuses to prune after a backdated insert" || bad "backdated: rc=$rc $before→$after"
+out="$(JB doctor 2>&1)"; grep -q 'FAIL.*backdated snapshots' <<<"$out" && ok "doctor fails on a backdated insert" || bad "doctor backdated: $out"
+
 # unreadable snapshot list: retention fails closed, nothing is guessed
 cfg "$RUN/u.cfg" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/does-not-exist"
 PBO_CONFIG="$RUN/u.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?

@@ -16,7 +16,9 @@ Added
   when nothing would alert.
 - Janitor hardening: keep tags may only raise retention there; prune is refused
   while snapshots are dated in the future (`FUTURE_SKEW`), and `doctor` fails on
-  them; retention fails closed when the snapshot list can't be read.
+  them; a new snapshot claiming a time before the janitor's last run (a backdated
+  insert) blocks prune too; retention fails closed when the snapshot list can't be
+  read.
 
 ## 0.2.0 (2026-11-21)
 

@@ -119,6 +119,12 @@ _forget_policy_runs() {
             log_error "retention: refusing to prune $repo, snapshots dated in the future: $fut (a writer is lying about time)"
             return 1
         fi
+        local back; back="$(_backdated_snapshots "$snaps" "$repo")"
+        if [[ -n "$back" ]]; then
+            log_error "retention: refusing to prune $repo, snapshots that arrived after the last janitor run but claim an earlier time: $back"
+            return 1
+        fi
+        [[ "${DRY_RUN:-0}" == 1 ]] || _janitor_seen_update "$snaps" "$repo"
     fi
     local rc=0
     while IFS= read -r line; do
@@ -139,4 +145,31 @@ _future_snapshots() {
             | ((.d + "Z") | fromdateiso8601)
               - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
         [ .[] | select((.time | epoch) > $lim) | .short_id ] | join(" ")' 2>/dev/null
+}
+
+# Backdated inserts (janitor). A host could slip a snapshot into a past day so
+# that day's GFS bucket keeps the fake and the real one is forgotten. The
+# janitor remembers which snapshot ids it has seen and when it last ran
+# (STATE_DIR/janitor-seen-<repo hash>.json, its own disk, the host can't touch it). A NEW id
+# claiming a time before that run arrived late and lies about it. Days before
+# the last janitor run are thereby sealed; only the time since then is open.
+# First run (no state): everything present is accepted as the baseline.
+_janitor_seen_file() {             # <repo>: one baseline per repo (a janitor may serve several)
+    printf '%s/janitor-seen-%s.json' "${STATE_DIR}" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
+}
+_backdated_snapshots() {           # <snapshots-json> <repo>
+    local f; f="$(_janitor_seen_file "$2")"
+    [[ -r "$f" ]] || return 0
+    local last; last="$(jq -r '.last_run // 0' "$f" 2>/dev/null)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    local lim=$(( last - ${FUTURE_SKEW:-3600} ))
+    printf '%s' "$1" | jq -r --slurpfile st "$f" --argjson lim "$lim" '
+        def epoch: capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
+            | ((.d + "Z") | fromdateiso8601)
+              - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
+        (($st[0].ids // []) | map({key:., value:true}) | from_entries) as $seen
+        | [ .[] | select(($seen[.id] // false) | not) | select((.time | epoch) < $lim) | .short_id ] | join(" ")' 2>/dev/null
+}
+_janitor_seen_update() {           # <snapshots-json> <repo>
+    local f; f="$(_janitor_seen_file "$2")"
+    printf '%s' "$1" | jq -c --argjson now "$(date +%s)" '{last_run:$now, ids:[.[].id]}' > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
 }

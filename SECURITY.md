@@ -61,13 +61,14 @@ into the repo it protects.
   - Future-dated snapshots could take over the buckets and push real ones out. The
     janitor refuses to prune while any snapshot is dated more than `FUTURE_SKEW`
     (1h) ahead, and `doctor` fails.
-  - A host can still add a snapshot later in the same day as a real one, and the
-    daily bucket keeps the later one. So a compromised host can make the janitor
-    drop real snapshots over time, one per day, back to the start of the retention
-    window. It can't remove them faster than retention would, and the newest
-    real ones before the compromise stay until retention ages them out. Closing
-    this needs retention by arrival time on the server (issue #19). Until then,
-    provider snapshots under the janitor's disk cover it.
+  - Backdated inserts: a snapshot slipped into a past day would make that day's
+    bucket keep the fake and drop the real one. The janitor remembers which
+    snapshot ids it has seen and when it last ran (on its own disk); a new id that
+    claims a time before that run blocks prune and fails `doctor`. Days before the
+    last janitor run are sealed that way. What stays open is the window since then:
+    a compromised host can displace the snapshots of the last day or so. Retention
+    by arrival time on the server (issue #19) would close that too. The first
+    janitor run takes what's there as its baseline.
 - **Per-guest keep tags can't lower retention on a janitor.** They come from the
   host. A janitor only lets a tag raise retention above its own `KEEP_OFFSITE_*`.
 - **The janitor never runs as root.** Started as root, pbo re-execs as

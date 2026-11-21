@@ -770,6 +770,11 @@ rdo_doctor() {
     # to take over the retention buckets. The janitor refuses to prune while any exist.
     local fut; fut="$(_future_snapshots "$snaps")"
     if [[ -n "$fut" ]]; then lines+=("$bad  snapshots dated in the future: $fut$(_is_janitor && echo ' (janitor prune is blocked until they are gone)')"); problems=$((problems+1)); fi
+    if _is_janitor; then
+        local back; back="$(_backdated_snapshots "$snaps" "$repo")"
+        if [[ -n "$back" ]]; then lines+=("$bad  backdated snapshots (arrived after the last janitor run, claim an earlier time): $back (prune blocked)"); problems=$((problems+1)); fi
+        [[ -r "$(_janitor_seen_file "$repo")" ]] || { lines+=("$warn  janitor has no baseline of seen snapshots yet (set on the first prune)"); warns=$((warns+1)); }
+    fi
     local id newest age hrs guests
     if _is_janitor; then
         guests="$(printf '%s' "$snaps" | jq -r '[.[].tags[]? | select(startswith("vmid=") and (startswith("vmid=host-")|not)) | sub("^vmid=";"") | select(test("^[0-9]{1,9}$"))] | unique | .[]' 2>/dev/null || true)"
