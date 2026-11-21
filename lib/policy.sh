@@ -59,6 +59,16 @@ _keep_args() {
     unset IFS
     # config values too (they are root's, but a typo shouldn't become arithmetic)
     local v; for v in d w m y; do [[ "${!v}" =~ ^[0-9]{1,6}$ ]] || printf -v "$v" 0; done
+    # On a janitor the tag comes from a host it must not trust: a host could
+    # otherwise write keep=d0 and have the janitor delete its history. There a
+    # tag may only RAISE retention above the janitor's own KEEP_OFFSITE_*.
+    if _is_janitor; then
+        local base; base=("${KEEP_OFFSITE_DAILY:-7}" "${KEEP_OFFSITE_WEEKLY:-4}" "${KEEP_OFFSITE_MONTHLY:-6}" "${KEEP_OFFSITE_YEARLY:-0}")
+        local i=0; for v in d w m y; do
+            [[ "${base[$i]}" =~ ^[0-9]{1,6}$ ]] && (( ${!v} < base[i] )) && printf -v "$v" '%s' "${base[$i]}"
+            i=$((i+1))
+        done
+    fi
     local a=()
     (( d > 0 )) && a+=(--keep-daily "$d")
     (( w > 0 )) && a+=(--keep-weekly "$w")
@@ -94,7 +104,22 @@ _policy_groups() {
 # policy group, with --tag vmid=... filters when the repo has overrides.
 _forget_policy_runs() {
     local repo="$1" cb="$2" snaps line keep ids id
-    snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"; [[ -n "$snaps" ]] || snaps='[]'
+    # Fail closed: without a readable snapshot list we don't know the policies,
+    # and a default-policy forget over everything would be the wrong guess.
+    if ! snaps="$(_restic "$repo" snapshots --json 2>/dev/null)" || ! jq -e 'type=="array"' >/dev/null 2>&1 <<<"$snaps"; then
+        log_warn "retention: cannot list snapshots in $repo, nothing forgotten"
+        return 1
+    fi
+    # Snapshot times are whatever the writer claimed. On a janitor, a snapshot
+    # from the future could take over the GFS buckets and push real ones out,
+    # so refuse to prune at all while one exists (doctor reports it).
+    if _is_janitor; then
+        local fut; fut="$(_future_snapshots "$snaps")"
+        if [[ -n "$fut" ]]; then
+            log_error "retention: refusing to prune $repo, snapshots dated in the future: $fut (a writer is lying about time)"
+            return 1
+        fi
+    fi
     local rc=0
     while IFS= read -r line; do
         keep="${line%%$'\t'*}"; ids="${line#*$'\t'}"
@@ -103,4 +128,15 @@ _forget_policy_runs() {
         "$cb" "$repo" "${args[@]}" || rc=1
     done < <(_policy_groups "$snaps")
     return "$rc"
+}
+
+# _future_snapshots <snapshots-json> → short ids of snapshots dated more than
+# FUTURE_SKEW (default 1h) ahead of this machine's clock, space-separated.
+_future_snapshots() {
+    local lim=$(( $(date +%s) + ${FUTURE_SKEW:-3600} ))
+    printf '%s' "$1" | jq -r --argjson lim "$lim" '
+        def epoch: capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
+            | ((.d + "Z") | fromdateiso8601)
+              - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
+        [ .[] | select((.time | epoch) > $lim) | .short_id ] | join(" ")' 2>/dev/null
 }

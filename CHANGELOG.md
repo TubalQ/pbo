@@ -14,6 +14,9 @@ Added
   `auto` = when no ntfy is configured), fields `type=pbo`/`hostname`, templates in
   `/etc/pve/notification-templates/default/`. `pbo notify-test`. `doctor` warns
   when nothing would alert.
+- Janitor hardening: keep tags may only raise retention there; prune is refused
+  while snapshots are dated in the future (`FUTURE_SKEW`), and `doctor` fails on
+  them; retention fails closed when the snapshot list can't be read.
 
 ## 0.2.0 (2026-11-21)
 

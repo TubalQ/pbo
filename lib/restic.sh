@@ -766,6 +766,10 @@ rdo_doctor() {
     # which catches a host that quietly stopped sending backups.
     local now; now="$(date +%s)"
     local snaps; snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"
+    # Snapshots claiming a time in the future: clock trouble, or a writer trying
+    # to take over the retention buckets. The janitor refuses to prune while any exist.
+    local fut; fut="$(_future_snapshots "$snaps")"
+    if [[ -n "$fut" ]]; then lines+=("$bad  snapshots dated in the future: $fut$(_is_janitor && echo ' (janitor prune is blocked until they are gone)')"); problems=$((problems+1)); fi
     local id newest age hrs guests
     if _is_janitor; then
         guests="$(printf '%s' "$snaps" | jq -r '[.[].tags[]? | select(startswith("vmid=") and (startswith("vmid=host-")|not)) | sub("^vmid=";"") | select(test("^[0-9]{1,9}$"))] | unique | .[]' 2>/dev/null || true)"

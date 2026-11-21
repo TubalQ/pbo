@@ -119,6 +119,35 @@ PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/x.cfg" $BIN doctor >/dev/null 2>&1
 [[ ! -e "$RUN/pwned1" && ! -e "$RUN/pwned2" ]] && ok "hostile keep=/vmid= tags are not executed on the janitor" || bad "tag injection executed"
 [[ "$(cnt "$RUN/x-repo" 9100)" == 1 ]] && ok "malformed keep= falls back to the default policy" || bad "hostile keep: $(cnt "$RUN/x-repo" 9100)"
 
+# --- janitor vs. an untrusted writer ---
+jseed() { rm -rf "$1"; R "$1" init >/dev/null 2>&1; seed "$1" 9201 d1 5; seed "$1" 9202 d5 6; }
+jseed "$RUN/c-repo"
+cfg "$RUN/c.cfg" "PBO_ROLE=janitor" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/c-repo" "KEEP_OFFSITE_DAILY=3"
+PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/c.cfg" $BIN --json prune >/dev/null 2>&1
+[[ "$(cnt "$RUN/c-repo" 9201)" == 3 ]] && ok "janitor: a tag can't lower retention below its own config (keep=d1 → still 3)" || bad "lowering on janitor: $(cnt "$RUN/c-repo" 9201)"
+[[ "$(cnt "$RUN/c-repo" 9202)" == 5 ]] && ok "janitor: a tag may raise retention (keep=d5)" || bad "raising on janitor: $(cnt "$RUN/c-repo" 9202)"
+# the same repo pruned by a host honours the lower tag (the host is trusted)
+jseed "$RUN/h-repo"
+cfg "$RUN/h.cfg" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/h-repo" "KEEP_OFFSITE_DAILY=3"
+PBO_CONFIG="$RUN/h.cfg" $BIN --json prune >/dev/null 2>&1
+[[ "$(cnt "$RUN/h-repo" 9201)" == 1 ]] && ok "host: its own tag may lower retention" || bad "host lowering: $(cnt "$RUN/h-repo" 9201)"
+
+# future-dated snapshot: janitor refuses to prune, doctor fails
+jseed "$RUN/f-repo"; mkdir -p "$RUN/data/9203"; echo z > "$RUN/data/9203/f"
+R "$RUN/f-repo" backup -q --time "2099-01-01 00:00:00" --tag vmid=9203 "$RUN/data/9203" >/dev/null 2>&1
+cfg "$RUN/f.cfg" "PBO_ROLE=janitor" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/f-repo" "KEEP_OFFSITE_DAILY=1"
+before="$(R "$RUN/f-repo" snapshots --json | jq length)"
+PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/f.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?
+after="$(R "$RUN/f-repo" snapshots --json | jq length)"
+[[ $rc != 0 && "$before" == "$after" ]] && ok "janitor refuses to prune while a future-dated snapshot exists" || bad "future: rc=$rc $before→$after"
+out="$(PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/f.cfg" $BIN doctor 2>&1)"
+grep -q 'FAIL.*dated in the future' <<<"$out" && ok "doctor fails on future-dated snapshots" || bad "doctor future: $out"
+
+# unreadable snapshot list: retention fails closed, nothing is guessed
+cfg "$RUN/u.cfg" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/does-not-exist"
+PBO_CONFIG="$RUN/u.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?
+[[ $rc != 0 ]] && ok "prune fails closed when the snapshot list can't be read" || bad "unreadable list rc=$rc"
+
 rm -rf "$RUN"
 printf '%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 ))

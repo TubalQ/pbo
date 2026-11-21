@@ -38,6 +38,7 @@ set_defaults() {
     : "${KEEP_OFFSITE_WEEKLY:=4}"
     : "${KEEP_OFFSITE_MONTHLY:=6}"
     : "${KEEP_OFFSITE_YEARLY:=0}"      # 0 = no yearly bucket
+    : "${FUTURE_SKEW:=3600}"           # seconds a snapshot may be dated ahead before it counts as "from the future"
     : "${NTFY_URL:=}"                  # ntfy server (base URL); empty = no notifications
     : "${NTFY_TOKEN:=}"                # otherwise read from NTFY_CREDS_FILE
     : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file

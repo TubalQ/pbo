@@ -55,6 +55,21 @@ into the repo it protects.
 - **Rotating the key doesn't revoke the old one everywhere by itself.** On an
   append-only target the old key stays valid until the janitor removes it, and
   `rotate-key` says so.
+- **Retention runs on times the writer claims.** restic's GFS buckets go by each
+  snapshot's own timestamp, which the host sets. Two consequences on a janitor, where
+  the host is not trusted:
+  - Future-dated snapshots could take over the buckets and push real ones out. The
+    janitor refuses to prune while any snapshot is dated more than `FUTURE_SKEW`
+    (1h) ahead, and `doctor` fails.
+  - A host can still add a snapshot later in the same day as a real one, and the
+    daily bucket keeps the later one. So a compromised host can make the janitor
+    drop real snapshots over time, one per day, back to the start of the retention
+    window. It can't remove them faster than retention would, and the newest
+    real ones before the compromise stay until retention ages them out. Closing
+    this needs retention by arrival time on the server (issue #19). Until then,
+    provider snapshots under the janitor's disk cover it.
+- **Per-guest keep tags can't lower retention on a janitor.** They come from the
+  host. A janitor only lets a tag raise retention above its own `KEEP_OFFSITE_*`.
 - **The janitor never runs as root.** Started as root, pbo re-execs as
   `JANITOR_USER`. Its state and log directories belong to that user, and root writing
   there could be redirected through a symlink; a root prune also leaves repo files the
