@@ -452,7 +452,9 @@ _restic_forget_json() {
 # (config default + per-guest keep= overrides, lib/policy.sh), one prune at the end.
 _OFF_REMOVED_FILE=""
 _offsite_forget_cb() {             # <repo> <forget args...>
-    local r; r="$(_FORGET_NO_PRUNE=1 _restic_forget_json "$@")" || return 1
+    local r
+    if _is_janitor && [[ -n "${_CHECKED_IDS_FILE:-}" ]]; then r="$(_janitor_bound_forget "$@")" || return 1
+    else r="$(_FORGET_NO_PRUNE=1 _restic_forget_json "$@")" || return 1; fi
     printf '%s\n' "$r" >> "$_OFF_REMOVED_FILE"
 }
 _offsite_forget() {
@@ -771,7 +773,8 @@ rdo_doctor() {
     local fut; fut="$(_future_snapshots "$snaps")"
     if [[ -n "$fut" ]]; then lines+=("$bad  snapshots dated in the future: $fut$(_is_janitor && echo ' (janitor prune is blocked until they are gone)')"); problems=$((problems+1)); fi
     if _is_janitor; then
-        local back; back="$(_backdated_snapshots "$snaps" "$repo")"
+        local back brc=0; back="$(_backdated_snapshots "$snaps" "$repo")" || brc=$?
+        (( brc == 0 )) || { lines+=("$bad  janitor baseline $(_janitor_seen_file "$repo") unreadable or malformed (prune blocked)"); problems=$((problems+1)); }
         if [[ -n "$back" ]]; then lines+=("$bad  backdated snapshots (arrived after the last janitor run, claim an earlier time): $back (prune blocked)"); problems=$((problems+1)); fi
         [[ -r "$(_janitor_seen_file "$repo")" ]] || { lines+=("$warn  janitor has no baseline of seen snapshots yet (set on the first prune)"); warns=$((warns+1)); }
     fi

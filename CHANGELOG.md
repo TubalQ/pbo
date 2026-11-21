@@ -3,6 +3,18 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
+## 0.3.1 (unreleased)
+
+Fixed (janitor, from a security review)
+- The forget is bound to the checked snapshot set: the janitor asks restic for
+  the plan first, refuses if it contains a snapshot that arrived after the
+  checks, and then forgets exactly the planned ids.
+- A malformed or unreadable baseline blocks prune and fails `doctor` instead of
+  being treated as "nothing suspicious". Unparsable snapshot times count as
+  suspicious.
+- The baseline is written only after every forget succeeded, stamped with the
+  time of the check.
+
 ## 0.3.0 (2026-11-21)
 
 Added

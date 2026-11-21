@@ -68,7 +68,10 @@ into the repo it protects.
     last janitor run are sealed that way. What stays open is the window since then:
     a compromised host can displace the snapshots of the last day or so. Retention
     by arrival time on the server (issue #19) would close that too. The first
-    janitor run takes what's there as its baseline.
+    janitor run takes what's there as its baseline. A broken baseline blocks
+    prune rather than being ignored, and the forget is bound to the snapshots
+    that were checked: anything that lands mid-run stops the run and waits for
+    the next one.
 - **Per-guest keep tags can't lower retention on a janitor.** They come from the
   host. A janitor only lets a tag raise retention above its own `KEEP_OFFSITE_*`.
 - **The janitor never runs as root.** Started as root, pbo re-execs as

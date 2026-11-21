@@ -163,6 +163,40 @@ after="$(R "$RUN/b-repo" snapshots --json | jq length)"
 [[ $rc != 0 && "$before" == "$after" ]] && ok "janitor refuses to prune after a backdated insert" || bad "backdated: rc=$rc $before→$after"
 out="$(JB doctor 2>&1)"; grep -q 'FAIL.*backdated snapshots' <<<"$out" && ok "doctor fails on a backdated insert" || bad "doctor backdated: $out"
 
+# malformed baseline: fail closed
+for f in "$RUN"/state/janitor-seen-*.json; do echo '{"last_run":"x"}' > "$f"; done
+JB --json prune >/dev/null 2>&1; rc=$?
+[[ $rc != 0 ]] && ok "malformed janitor baseline blocks prune" || bad "malformed baseline rc=$rc"
+out="$(JB doctor 2>&1)"; grep -q 'FAIL.*baseline.*malformed' <<<"$out" && ok "doctor fails on a malformed baseline" || bad "doctor baseline: $out"
+
+# race: a snapshot lands between the janitor's checks and restic's own listing
+rm -rf "$RUN/r-repo"; R "$RUN/r-repo" init >/dev/null 2>&1; seed "$RUN/r-repo" 9401 "" 3
+cat > "$RUN/bin/racy-restic" <<RR
+#!/usr/bin/env bash
+# on the forget plan, first slip in a new snapshot, then answer
+if [[ " \$* " == *" forget "* && " \$* " == *" --dry-run "* && ! -e "$RUN/raced" ]]; then
+    touch "$RUN/raced"; mkdir -p "$RUN/data/9402"; echo r > "$RUN/data/9402/f"
+    restic -r "$RUN/r-repo" backup -q --tag vmid=9401 "$RUN/data/9401" >/dev/null 2>&1
+fi
+exec restic "\$@"
+RR
+chmod 755 "$RUN/bin/racy-restic"
+cfg "$RUN/r.cfg" "PBO_ROLE=janitor" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/r-repo" "KEEP_OFFSITE_DAILY=1" "RESTIC_BIN=$RUN/bin/racy-restic"
+rbefore="$(R "$RUN/r-repo" snapshots --json | jq length)"
+PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/r.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?
+rafter="$(R "$RUN/r-repo" snapshots --json | jq length)"
+[[ -e "$RUN/raced" && $rc != 0 && "$rafter" == $((rbefore+1)) ]] && ok "snapshot arriving mid-run: janitor forgets nothing" || bad "race: rc=$rc $rbefore→$rafter raced=$([[ -e $RUN/raced ]] && echo y)"
+newid="$(R "$RUN/r-repo" snapshots --json | jq -r 'max_by(.time).id')"
+if grep -qsF "$newid" "$RUN"/state/janitor-seen-*.json; then bad "baseline was written after a failed run"; else ok "no baseline written after a failed run"; fi
+# next run without the race: the mid-run snapshot (time = now) is honest and passes
+sed -i "/^RESTIC_BIN=/d" "$RUN/r.cfg"
+PATH="${PATH#"$RUN/bin:"}" PBO_CONFIG="$RUN/r.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?
+[[ $rc == 0 ]] && ok "next run judges it, honest snapshot passes, retention applied" || bad "after race rc=$rc"
+
+# unparsable times count as suspicious
+( source lib/policy.sh
+  [[ "$(_future_snapshots '[{"time":"garbage","short_id":"g1"}]')" == g1 ]] ) && ok "unparsable snapshot time counts as future" || bad "unparsable time"
+
 # unreadable snapshot list: retention fails closed, nothing is guessed
 cfg "$RUN/u.cfg" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" "RESTIC_OFFSITE_REPO=$RUN/does-not-exist"
 PBO_CONFIG="$RUN/u.cfg" $BIN --json prune >/dev/null 2>&1; rc=$?

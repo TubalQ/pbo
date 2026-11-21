@@ -119,13 +119,20 @@ _forget_policy_runs() {
             log_error "retention: refusing to prune $repo, snapshots dated in the future: $fut (a writer is lying about time)"
             return 1
         fi
-        local back; back="$(_backdated_snapshots "$snaps" "$repo")"
+        local back brc=0; back="$(_backdated_snapshots "$snaps" "$repo")" || brc=$?
+        if (( brc != 0 )); then
+            log_error "retention: refusing to prune $repo, the janitor baseline $(_janitor_seen_file "$repo") is unreadable or malformed"
+            return 1
+        fi
         if [[ -n "$back" ]]; then
             log_error "retention: refusing to prune $repo, snapshots that arrived after the last janitor run but claim an earlier time: $back"
             return 1
         fi
-        [[ "${DRY_RUN:-0}" == 1 ]] || _janitor_seen_update "$snaps" "$repo"
+        # Bind the forgets to exactly this checked set (see _janitor_bound_forget).
+        _CHECKED_IDS_FILE="$(mktemp)"
+        jq -r '.[].id' <<<"$snaps" > "$_CHECKED_IDS_FILE"
     fi
+    local checked_at; checked_at="$(date +%s)"
     local rc=0
     while IFS= read -r line; do
         keep="${line%%$'\t'*}"; ids="${line#*$'\t'}"
@@ -133,7 +140,37 @@ _forget_policy_runs() {
         if [[ -n "$ids" ]]; then for id in $ids; do args+=(--tag "vmid=$id"); done; fi
         "$cb" "$repo" "${args[@]}" || rc=1
     done < <(_policy_groups "$snaps")
+    if _is_janitor; then
+        # Baseline only after every forget succeeded, stamped with the time of
+        # the CHECK, so a snapshot that arrived mid-run is judged next time.
+        (( rc == 0 )) && [[ "${DRY_RUN:-0}" != 1 ]] && { _janitor_seen_update "$snaps" "$repo" "$checked_at" || rc=1; }
+        rm -f "$_CHECKED_IDS_FILE"; _CHECKED_IDS_FILE=""
+    fi
     return "$rc"
+}
+
+# _janitor_bound_forget <repo> <policy args...> → removed short_ids (JSON array).
+# restic's forget lists the repo again by itself, so a snapshot that lands
+# between our checks and that listing would be judged unchecked. On a janitor,
+# ask for the plan first (--dry-run), insist every snapshot in it was in the
+# checked set, then forget exactly the planned ids and nothing else.
+_CHECKED_IDS_FILE=""
+_janitor_bound_forget() {
+    local repo="$1"; shift
+    local plan
+    plan="$(_restic "$repo" forget --group-by paths "$@" --dry-run --json 2>/dev/null)" || { log_warn "retention: forget plan failed for $repo"; return 1; }
+    jq -e 'type=="array"' >/dev/null 2>&1 <<<"$plan" || { log_warn "retention: forget plan for $repo is not JSON"; return 1; }
+    local extra
+    extra="$(jq -r '[.[] | ((.keep // []) + (.remove // []))[] | .id] | .[]' <<<"$plan" | grep -vxF -f "$_CHECKED_IDS_FILE" | head -5 | tr '\n' ' ')"
+    if [[ -n "${extra// /}" ]]; then
+        log_error "retention: snapshots appeared in $repo after the checks ($extra), nothing forgotten this run"
+        return 1
+    fi
+    local rm_ids=(); mapfile -t rm_ids < <(jq -r '[.[] | (.remove // [])[] | .id] | .[]' <<<"$plan")
+    if (( ${#rm_ids[@]} )) && [[ "${DRY_RUN:-0}" != 1 ]]; then
+        _restic_w "$repo" forget "${rm_ids[@]}" >/dev/null 2>&1 || { log_warn "retention: forget of the planned ids failed in $repo"; return 1; }
+    fi
+    jq -c '[.[] | (.remove // [])[] | .short_id]' <<<"$plan"
 }
 
 # _future_snapshots <snapshots-json> → short ids of snapshots dated more than
@@ -144,7 +181,7 @@ _future_snapshots() {
         def epoch: capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
             | ((.d + "Z") | fromdateiso8601)
               - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
-        [ .[] | select((.time | epoch) > $lim) | .short_id ] | join(" ")' 2>/dev/null
+        [ .[] | select(((.time | epoch?) // 99999999999) > $lim) | .short_id ] | join(" ")' 2>/dev/null
 }
 
 # Backdated inserts (janitor). A host could slip a snapshot into a past day so
@@ -157,19 +194,29 @@ _future_snapshots() {
 _janitor_seen_file() {             # <repo>: one baseline per repo (a janitor may serve several)
     printf '%s/janitor-seen-%s.json' "${STATE_DIR}" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
 }
+# Exit 0 with the suspicious ids (maybe none), 2 when the baseline exists but
+# can't be trusted (unreadable, malformed): the caller must then not prune.
+# The FUTURE_SKEW tolerance below the last run is deliberate: an honest backup
+# that STARTED shortly before the janitor listed the repo but finished after
+# carries a time just before last_run. With the janitor at midday the window
+# can't reach into the previous day's bucket.
 _backdated_snapshots() {           # <snapshots-json> <repo>
     local f; f="$(_janitor_seen_file "$2")"
-    [[ -r "$f" ]] || return 0
-    local last; last="$(jq -r '.last_run // 0' "$f" 2>/dev/null)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [[ -e "$f" ]] || return 0      # first run: no baseline yet
+    jq -e '(.last_run|type)=="number" and (.ids|type)=="array"' "$f" >/dev/null 2>&1 || return 2
+    local last; last="$(jq -r '.last_run' "$f")"; [[ "$last" =~ ^[0-9]+$ ]] || return 2
     local lim=$(( last - ${FUTURE_SKEW:-3600} ))
     printf '%s' "$1" | jq -r --slurpfile st "$f" --argjson lim "$lim" '
         def epoch: capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
             | ((.d + "Z") | fromdateiso8601)
               - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
         (($st[0].ids // []) | map({key:., value:true}) | from_entries) as $seen
-        | [ .[] | select(($seen[.id] // false) | not) | select((.time | epoch) < $lim) | .short_id ] | join(" ")' 2>/dev/null
+        | [ .[] | select(($seen[.id] // false) | not) | select(((.time | epoch?) // -1) < $lim) | .short_id ] | join(" ")' 2>/dev/null || return 2
 }
-_janitor_seen_update() {           # <snapshots-json> <repo>
+_janitor_seen_update() {           # <snapshots-json> <repo> [checked-at epoch]
     local f; f="$(_janitor_seen_file "$2")"
-    printf '%s' "$1" | jq -c --argjson now "$(date +%s)" '{last_run:$now, ids:[.[].id]}' > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
+    if printf '%s' "$1" | jq -c --argjson now "${3:-$(date +%s)}" '{last_run:$now, ids:[.[].id]}' > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"; then
+        return 0
+    fi
+    rm -f "$f.tmp"; log_error "retention: could not write the janitor baseline $f"; return 1
 }
