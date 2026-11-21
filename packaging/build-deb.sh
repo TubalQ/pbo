@@ -22,6 +22,7 @@ for u in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
     chmod 0644 "$ROOT/usr/lib/systemd/system/$(basename "$u")"
 done
 install -m 0644 "$SRC"/etc/config.example "$SRC"/etc/config.janitor.example "$ROOT/usr/share/doc/pbo/examples/"
+install -d "$ROOT/etc/logrotate.d"; install -m 0644 "$SRC/etc/logrotate.d/pbo" "$ROOT/etc/logrotate.d/pbo"
 install -d "$ROOT/usr/share/pbo/templates"; install -m 0644 "$SRC"/templates/pbo-*.hbs "$ROOT/usr/share/pbo/templates/"
 install -m 0644 "$SRC"/README.md "$SRC"/RUNBOOK.md "$SRC"/SECURITY.md "$SRC"/CHANGELOG.md "$ROOT/usr/share/doc/pbo/"
 install -m 0644 "$SRC"/LICENSE "$ROOT/usr/share/doc/pbo/copyright"
@@ -41,6 +42,7 @@ Description: offsite backup of Proxmox guests with restic
  offsite over SFTP or to an append-only rest-server. Restore always goes to a
  new vmid. Also runs as a janitor next to an append-only repo.
 CTL
+echo /etc/logrotate.d/pbo > "$ROOT/DEBIAN/conffiles"
 cat > "$ROOT/DEBIAN/postinst" <<'PI'
 #!/bin/sh
 set -e

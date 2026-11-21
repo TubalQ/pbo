@@ -82,6 +82,9 @@ set_defaults() {
     # Derived paths.
     LOG_FILE="${LOG_DIR}/pbo.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"
+    : "${AUDIT_JSON:=${LOG_DIR}/audit.jsonl}"        # one JSON object per line: every command + audit events
+    : "${METRICS_ENABLED:=true}"
+    : "${METRICS_FILE:=${STATE_DIR}/pbo.prom}"       # node_exporter textfile; point it into --collector.textfile.directory
     GLOBAL_LOCK_FILE="${LOCK_DIR}/pbo.global"
     GLOBAL_HOLDER_FILE="${STATE_DIR}/global.holder"
     SCHED_LOCK_FILE="${LOCK_DIR}/pbo.schedule"
@@ -163,6 +166,7 @@ ensure_dirs() {
     mkdir -p "$STATE_DIR" "$JOBS_DIR" "$LOCK_DIR" "$CACHE_DIR" 2>/dev/null || true
     if ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; then
         LOG_FILE=""   # signal: log only to stderr/stdout
+        AUDIT_JSON=""
     fi
 }
 
@@ -195,6 +199,9 @@ audit_log() {
     local who="${SUDO_USER:-$(id -un 2>/dev/null || echo root)}"
     local line; line="$(date --iso-8601=seconds) user=${who} $*"
     [[ -n "${AUDIT_FILE:-}" ]] && printf '%s\n' "$line" >> "$AUDIT_FILE" 2>/dev/null || true
+    # same event in the JSON audit log (lib/metrics.sh), if loaded
+    declare -F _audit_json >/dev/null && _audit_json "$(jq -cn --arg time "$(date --iso-8601=seconds)" --arg user "$who" \
+        --arg cmd "${PBO_COMMAND:-}" --arg what "$*" '{time:$time, kind:"event", user:$user, command:$cmd, event:$what}' 2>/dev/null)"
     _log INFO "audit: $*"
 }
 

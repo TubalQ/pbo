@@ -108,6 +108,35 @@ Failures alert, success stays quiet unless `NTFY_ON_SUCCESS=true`. Two ways out:
 `NOTIFY_PVE=true` uses both, `false` only ntfy. `pbo notify-test` sends one warning
 through whatever is active, and `doctor` warns if nothing would alert at all.
 
+## Metrics and audit log
+
+pbo writes a Prometheus textfile after every run-schedule, verify, prune and
+manual backup, to `METRICS_FILE` (default `/var/lib/pbo/pbo.prom`). Point it into
+node_exporter's textfile directory and it gets scraped with everything else:
+
+```bash
+METRICS_FILE=/var/lib/prometheus/node-exporter/pbo.prom
+```
+
+Per guest it reports the newest snapshot's time, duration, archive size and bytes
+added (read from the snapshot summaries restic already keeps, so nothing extra runs
+during the backup), plus snapshot counts, whether the repo answered, and the last
+run-schedule/verify/prune with success, duration and failed guests. `pbo metrics`
+prints the same. A useful alert:
+
+```
+time() - pbo_guest_last_backup_timestamp_seconds > 36*3600
+```
+
+Every pbo command also lands in `LOG_DIR/audit.jsonl`, one JSON object per line:
+who ran it (`SUDO_USER` or the user), the arguments, node, exit code, duration, and
+whether it only read. Restores and test-restores add an event line with the details.
+The file is 0600 and logrotate keeps two years of it.
+
+```bash
+jq -c 'select(.read_only==false) | {time,user,command,args,exit}' /var/log/pbo/audit.jsonl
+```
+
 ## Per-guest policy
 
 Set it on the guest in Proxmox, as tags (GUI, or `pct set <id> --tags "..."`), and it
@@ -188,6 +217,7 @@ Commands:
   status                      running jobs and lock holder
   doctor                      health check (repo, timer, key, alerts, verify, per-guest age)
   notify-test                 send a test alert through every active backend
+  metrics [--no-write]        Prometheus metrics (also rewrites METRICS_FILE)
   list [vmid]                 offsite archives
   usage                       repo size, dedup ratio, snapshot count
   fetch <vmid> <ts>           extract+verify a snapshot into the cache

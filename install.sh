@@ -55,6 +55,10 @@ echo "    $BIN → $LIBDIR/pbo"
 ln -sf "$LIBDIR/pbo" /usr/local/sbin/lxc-offsite
 echo "    /usr/local/sbin/lxc-offsite → $LIBDIR/pbo  (compat alias)"
 
+echo "==> logrotate"
+install -m 0644 "$SRC/etc/logrotate.d/pbo" /etc/logrotate.d/pbo
+[[ "$ROLE" == janitor ]] && sed -i "s/create 0600 root root/create 0600 $JUSER $JUSER/" /etc/logrotate.d/pbo
+
 echo "==> Directories"
 install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
 install -d -m 0700 "$CFGDIR"

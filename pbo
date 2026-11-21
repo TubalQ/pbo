@@ -46,6 +46,8 @@ source "${SELF_DIR}/lib/host.sh"
 source "${SELF_DIR}/lib/policy.sh"
 # shellcheck source=lib/appendonly.sh
 source "${SELF_DIR}/lib/appendonly.sh"
+# shellcheck source=lib/metrics.sh
+source "${SELF_DIR}/lib/metrics.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
@@ -82,6 +84,7 @@ Commands:
                               --stream: dump→upload one at a time (low disk, default)
                               --batch:  dump all to cache→upload (if there is room)
   status                      running jobs, queue length, who holds the global lock
+  metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
   doctor                      health check (repo, timer, key perms, per-guest age)
   list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
@@ -281,6 +284,29 @@ cmd_restore_host() {
     rdo_restore_host "$who" "$ts" "$target" "$path"
 }
 
+# On exit: release locks first, then record what happened (metrics, audit).
+# A trap, so it also covers commands that end in die().
+_pbo_on_exit() {
+    local rc="$1"
+    cleanup_locks
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        local ev="" dur=$(( $(date +%s) - ${AUDIT_T0:-$(date +%s)} ))
+        case "$PBO_COMMAND" in
+            run-schedule) ev=run_schedule ;;
+            verify|prune) ev="$PBO_COMMAND" ;;
+        esac
+        if [[ -n "$ev" ]]; then
+            _metrics_event "$ev" time "$(date +%s)" ok "$( ((rc==0)) && echo 1 || echo 0 )" duration "$dur" \
+                ${RS_FAILED:+failed "$RS_FAILED"}
+        fi
+        # backup --queue is one guest inside run-schedule; that writes once at the end
+        if [[ -n "$ev" || ( "$PBO_COMMAND" == backup && " ${PBO_ORIG_ARGS[*]} " != *" --queue "* ) ]]; then
+            _metrics_write
+        fi
+    fi
+    audit_command_end "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # Main.
 # ---------------------------------------------------------------------------
@@ -294,7 +320,8 @@ main() {
     shift || true
 
     load_config
-    trap cleanup_locks EXIT
+    audit_command_start
+    trap '_pbo_on_exit $?' EXIT
     _role_check "$PBO_COMMAND"
 
     case "$PBO_COMMAND" in
@@ -318,6 +345,7 @@ main() {
         backup-host)   cmd_backup_host "$@" ;;
         restore-host)  cmd_restore_host "$@" ;;
         notify-test)   rdo_notify_test ;;
+        metrics)       rdo_metrics "$@" ;;
         help)          usage ;;
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
     esac

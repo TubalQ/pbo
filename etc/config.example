@@ -53,6 +53,13 @@ NTFY_ON_SUCCESS=false      # alert on failure, silent on success
 # fields type=pbo and hostname=<node> for matchers. `pbo notify-test` sends a test.
 NOTIFY_PVE=auto
 
+# Prometheus textfile, rewritten after run-schedule/verify/prune. Put it in
+# node_exporter's --collector.textfile.directory to have it scraped.
+#METRICS_FILE=/var/lib/prometheus/node-exporter/pbo.prom
+#METRICS_ENABLED=true
+# One JSON line per command (who/what/exit) plus restore events.
+#AUDIT_JSON=/var/log/pbo/audit.jsonl
+
 # --- health check ---
 DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapshot is older
 

@@ -1,0 +1,125 @@
+# shellcheck shell=bash
+# lib/metrics.sh: Prometheus metrics and the JSON audit log (issue #12).
+#
+# Metrics are a node_exporter textfile (METRICS_FILE, default
+# STATE_DIR/pbo.prom; point it into node_exporter's --collector.textfile.directory
+# to have it scraped). Two sources:
+#  - events (run-schedule, verify, prune) recorded in STATE_DIR/metrics-state.json
+#    as they happen;
+#  - per guest, read from the repo: restic keeps a summary in every snapshot
+#    (start/end, bytes added, bytes processed), so nothing extra is measured
+#    during a backup.
+# The file is rewritten after run-schedule/verify/prune and by `pbo metrics`.
+#
+# Audit: AUDIT_JSON (default LOG_DIR/audit.jsonl), one JSON object per line: a
+# "command" entry per invocation (who, what, args, node, exit code, duration)
+# and "event" entries for the details audit_log already records (restore etc.).
+
+_metrics_state() { printf '%s/metrics-state.json' "$STATE_DIR"; }
+
+# _metrics_event <name> <key> <value> [<key> <value> ...]: numbers only.
+_metrics_event() {
+    local name="$1"; shift
+    local f; f="$(_metrics_state)"
+    local cur='{}'; [[ -r "$f" ]] && cur="$(cat "$f" 2>/dev/null)"; jq -e 'type=="object"' >/dev/null 2>&1 <<<"$cur" || cur='{}'
+    local args=(--arg n "$name") upd='.[$n] = (.[$n] // {})' i=0
+    while [[ $# -ge 2 ]]; do
+        [[ "$2" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || { shift 2; continue; }
+        args+=(--arg "k$i" "$1" --argjson "v$i" "$2"); upd+=" | .[\$n][\$k$i] = \$v$i"; i=$((i+1)); shift 2
+    done
+    jq -c "${args[@]}" "$upd" <<<"$cur" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
+    return 0
+}
+
+# _metrics_render → the textfile on stdout. Reads the repo once.
+_metrics_render() {
+    local state='{}' f; f="$(_metrics_state)"
+    [[ -r "$f" ]] && state="$(cat "$f")"; jq -e 'type=="object"' >/dev/null 2>&1 <<<"$state" || state='{}'
+    local repo snaps; repo="$(_restic_read_repo)"
+    snaps="$(_restic "$repo" --no-lock snapshots --json 2>/dev/null)" || snaps=""
+    local repo_ok=1; jq -e 'type=="array"' >/dev/null 2>&1 <<<"$snaps" || { snaps='[]'; repo_ok=0; }
+    local tier=offsite; [[ "$repo" == "${RESTIC_CACHE_REPO:-}" ]] && tier=cache
+    # snapshots on stdin: a production repo's list is far too big for argv
+    printf '%s' "$snaps" | jq -r --argjson st "$state" --arg node "$(_local_node)" --arg ver "${VERSION:-}" \
+          --arg role "${PBO_ROLE:-host}" --arg tier "$tier" --argjson repo_ok "$repo_ok" '
+        . as $s |
+        def ts: capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
+            | ((.d + "Z") | fromdateiso8601)
+              - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
+        def lbl($o): if ($o|length) == 0 then "" else
+            "{" + ([$o | to_entries[] | "\(.key)=\"\(.value|tostring|gsub("\\\\";"\\\\\\\\")|gsub("\"";"\\\\\""))\""] | join(",")) + "}" end;
+        def m($name; $help; $type; $rows): "# HELP \($name) \($help)\n# TYPE \($name) \($type)\n" + ([$rows[] | "\($name)\(lbl(.l)) \(.v)"] | join("\n"));
+        ( [ $s[]
+            | { vmid: ((.tags // []) | map(select(startswith("vmid="))) | .[0] // "" | sub("vmid=";"")),
+                type: ((.tags // []) | map(select(startswith("type="))) | .[0] // "type=lxc" | sub("type=";"")),
+                t: ((.time | ts?) // 0), sm: (.summary // {}) }
+            | select(.vmid | test("^([0-9]{1,9}|host-[A-Za-z0-9.-]{1,63})$")) ]
+          | group_by(.vmid) | map({vmid: .[0].vmid, type: .[0].type, n: length, last: max_by(.t)}) ) as $g
+        | [ m("pbo_info"; "pbo version and role"; "gauge"; [{l:{version:$ver, role:$role, node:$node}, v:1}]),
+            m("pbo_repo_up"; "1 if the repo answered the snapshot listing"; "gauge"; [{l:{tier:$tier}, v:$repo_ok}]),
+            m("pbo_repo_snapshots"; "snapshots in the repo"; "gauge"; [{l:{tier:$tier}, v:($s|length)}]),
+            m("pbo_guest_snapshots"; "snapshots per guest"; "gauge"; [$g[] | {l:{vmid, type}, v:.n}]),
+            m("pbo_guest_last_backup_timestamp_seconds"; "time of the newest snapshot per guest"; "gauge"; [$g[] | {l:{vmid, type}, v:.last.t}]),
+            m("pbo_guest_last_backup_duration_seconds"; "duration of the newest backup (restic part)"; "gauge";
+              [$g[] | select(.last.sm.backup_start and .last.sm.backup_end)
+                    | {l:{vmid, type}, v:(((.last.sm.backup_end|ts?) // 0) - ((.last.sm.backup_start|ts?) // 0))}]),
+            m("pbo_guest_last_backup_added_bytes"; "new data added by the newest backup (before compression)"; "gauge";
+              [$g[] | select(.last.sm.data_added != null) | {l:{vmid, type}, v:.last.sm.data_added}]),
+            m("pbo_guest_last_backup_processed_bytes"; "size of the guest archive in the newest backup"; "gauge";
+              [$g[] | select(.last.sm.total_bytes_processed != null) | {l:{vmid, type}, v:.last.sm.total_bytes_processed}]),
+            ( ["run_schedule","verify","prune"] | map(. as $e | ($st[$e] // {}) as $x
+                | select($x | length > 0)
+                | m("pbo_\($e)_last_timestamp_seconds"; "when \($e) last finished"; "gauge"; [{l:{}, v:($x.time // 0)}]) + "\n"
+                + m("pbo_\($e)_last_success"; "1 if the last \($e) succeeded"; "gauge"; [{l:{}, v:($x.ok // 0)}])
+                + (if $x.duration then "\n" + m("pbo_\($e)_last_duration_seconds"; "duration of the last \($e)"; "gauge"; [{l:{}, v:$x.duration}]) else "" end)
+                + (if $x.failed != null then "\n" + m("pbo_\($e)_last_failed"; "guests that failed in the last \($e)"; "gauge"; [{l:{}, v:$x.failed}]) else "" end)
+              ) | .[] )
+          ] | join("\n") + "\n"'
+}
+
+# _metrics_write: render to METRICS_FILE atomically (Prometheus may read any time).
+_metrics_write() {
+    [[ "${METRICS_ENABLED:-true}" == "true" ]] || return 0
+    local f="${METRICS_FILE:-$STATE_DIR/pbo.prom}" out
+    out="$(_metrics_render 2>/dev/null)" || return 0
+    [[ -n "$out" ]] || return 0
+    mkdir -p "$(dirname "$f")" 2>/dev/null
+    printf '%s' "$out" > "$f.$$.tmp" 2>/dev/null && chmod 0644 "$f.$$.tmp" && mv -f "$f.$$.tmp" "$f" || rm -f "$f.$$.tmp"
+    return 0
+}
+
+# metrics [--no-write]: print the metrics (and refresh the textfile).
+rdo_metrics() {
+    _metrics_render
+    [[ "${1:-}" == "--no-write" ]] || _metrics_write
+}
+
+# --- JSON audit log ---------------------------------------------------------
+_audit_json() {                       # <json-object>
+    local f="${AUDIT_JSON:-}"
+    [[ -n "$f" ]] || return 0
+    ( umask 077; printf '%s\n' "$1" >> "$f" ) 2>/dev/null || true
+}
+_audit_who() { printf '%s' "${SUDO_USER:-$(id -un 2>/dev/null || echo "uid$(id -u)")}"; }
+
+# Read-only commands are logged too (who looked at what is part of an audit),
+# flagged so a reader can filter them.
+readonly AUDIT_READONLY="status list usage doctor metrics help preflight"
+
+audit_command_start() {
+    AUDIT_T0="$(date +%s)"
+}
+audit_command_end() {                 # <exit code>
+    [[ -n "${PBO_COMMAND:-}" && -n "${AUDIT_T0:-}" ]] || return 0
+    [[ "${PBO_AUDIT_DONE:-0}" == 1 ]] && return 0; PBO_AUDIT_DONE=1
+    local ro=false; [[ " $AUDIT_READONLY " == *" $PBO_COMMAND "* ]] && ro=true
+    [[ "${DRY_RUN:-0}" == 1 ]] && ro=true
+    _audit_json "$(jq -cn --arg time "$(date --iso-8601=seconds)" --arg user "$(_audit_who)" \
+        --arg node "$(_local_node 2>/dev/null)" --arg role "${PBO_ROLE:-host}" --arg cmd "$PBO_COMMAND" \
+        --arg ver "${VERSION:-}" --argjson rc "$1" --argjson dur "$(( $(date +%s) - AUDIT_T0 ))" \
+        --argjson ro "$ro" --argjson dry "$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )" \
+        --argjson pid "$$" '$ARGS.positional as $a
+        | {time:$time, kind:"command", user:$user, node:$node, role:$role, command:$cmd,
+           args:$a, exit:$rc, ok:($rc==0), duration_s:$dur, read_only:$ro, dry_run:$dry, pid:$pid, version:$ver}' \
+        --args -- "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}" 2>/dev/null)"
+}

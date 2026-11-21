@@ -1,0 +1,19 @@
+# pbo logs. pbo opens the files per line, so plain rotation is safe.
+/var/log/pbo/pbo.log /var/log/pbo/audit.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+# The JSON audit log is kept longer: it's the record of who did what.
+/var/log/pbo/audit.jsonl {
+    monthly
+    rotate 24
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 root root
+}

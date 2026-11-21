@@ -5,6 +5,13 @@ behaviour; the entry says so when it does.
 
 ## 0.3.1 (unreleased)
 
+Added
+- Prometheus metrics as a node_exporter textfile (`METRICS_FILE`), rewritten after
+  run-schedule/verify/prune/manual backup; per-guest values come from the snapshot
+  summaries. `pbo metrics`.
+- JSON audit log (`AUDIT_JSON`, `audit.jsonl`): every command with user, args,
+  exit code, duration and a read-only flag, plus restore events. logrotate config.
+
 Fixed (janitor, from a security review)
 - The forget is bound to the checked snapshot set: the janitor asks restic for
   the plan first, refuses if it contains a snapshot that arrived after the

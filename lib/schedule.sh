@@ -61,6 +61,7 @@ do_run_schedule() {
     else
         log_info "run-schedule: done, ${okc} ok, ${failc} failed, ${dur}s"
     fi
+    RS_FAILED="$failc"   # for the run_schedule metrics (pbo _pbo_on_exit)
     (( failc == 0 )) || return "$EX_SOFTWARE"
 }
 
