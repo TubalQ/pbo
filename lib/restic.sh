@@ -16,17 +16,38 @@
 # --- restic wrapper: repo + password + own metadata cache + optional native-sftp command ---
 # Used by ALL restic calls (also via run_stream) so sftp.command is set in ONE
 # place. Runs as a function in run_stream's subshell (functions are inherited).
+# _restic_opts: backend options shared by every restic call (also rotate-key,
+# which runs restic with its own password files). Fills the RESTIC_OPTS array.
+_restic_opts() {               # _restic_opts <repo>: options for THAT repo's backend
+    RESTIC_OPTS=()
+    case "$1" in
+        sftp:*)
+            [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && RESTIC_OPTS+=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
+            [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && RESTIC_OPTS+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}") ;;
+        rest:*)
+            [[ -n "${RESTIC_CACERT:-}" ]] && RESTIC_OPTS+=(--cacert "${RESTIC_CACERT}") ;;
+    esac
+    return 0
+}
+# _restic_rest_env: export rest-server basic auth for the restic child. Via env,
+# never argv (argv shows up in ps for every user on the host).
+_restic_rest_env() {
+    if [[ -n "${RESTIC_REST_USERNAME:-}" ]]; then
+        export RESTIC_REST_USERNAME
+        RESTIC_REST_PASSWORD="$(_rest_password)"; export RESTIC_REST_PASSWORD
+    fi
+    return 0
+}
 _restic() {                    # _restic <repo> <args...>
-    local opts=()
-    [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
-    [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && opts+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}")
+    _restic_opts "$1"
     # The env prefixes below re-export config vars for the restic child; the RHS
     # references the outer (config) values, not the sibling prefixes. Intended.
     # shellcheck disable=SC2097,SC2098
-    RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
-    RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
-    RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
-        "$RESTIC_BIN" -r "$1" "${opts[@]}" "${@:2}"
+    ( _restic_rest_env
+      RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
+      RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
+      RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
+          "$RESTIC_BIN" -r "$1" "${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}" "${@:2}" )
 }
 
 # _restic_w: _restic for WRITE ops (backup/copy/forget/prune/init). Adds
@@ -431,7 +452,13 @@ rdo_prune() {
         cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")" || failed+=("cache")
     fi
     # Offsite: pure GFS (daily/weekly/monthly), no keep-last (a cache concept).
-    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+    # Append-only offsite: the janitor owns retention. Running forget here would
+    # get 403 per snapshot and still exit 0, a prune that looks fine and isn't.
+    local offsite_skipped=""
+    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && _offsite_append_only; then
+        offsite_skipped="append_only"
+        log_info "prune: offsite is append-only, retention there runs on the janitor"
+    elif [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
         offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
             --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
@@ -443,8 +470,8 @@ rdo_prune() {
     local ok=true status=ok
     (( ${#failed[@]} == 0 )) || { ok=false; status=partial; }
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
-        printf '{"command":"prune","status":"%s","ok":%s,"dry_run":%s,"cache_deleted":%s,"offsite_deleted":%s,"failed_tiers":"%s"}\n' \
-            "$status" "$ok" "$dry" "$cache_removed" "$offsite_removed" "${failed[*]:-}"
+        printf '{"command":"prune","status":"%s","ok":%s,"dry_run":%s,"cache_deleted":%s,"offsite_deleted":%s,"failed_tiers":"%s","offsite_skipped":"%s"}\n' \
+            "$status" "$ok" "$dry" "$cache_removed" "$offsite_removed" "${failed[*]:-}" "$offsite_skipped"
     elif (( ${#failed[@]} > 0 )); then
         log_warn "prune (restic): retention FAILED on ${failed[*]} (repo unreachable/locked?) — cache removed $nc, offsite removed $no"
     else
@@ -473,23 +500,30 @@ rdo_rotate_key() {
     [[ "${LOCAL_REPO:-true}" == "true" ]] && repos+=("$RESTIC_CACHE_REPO")
     [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && repos+=("$RESTIC_OFFSITE_REPO")
     (( ${#repos[@]} )) || die "$EX_CONFIG" "rotate-key: no repos configured"
-    local opts=(); [[ -n "${RESTIC_SFTP_COMMAND:-}" ]] && opts=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
-    [[ -n "${RESTIC_SFTP_CONNECTIONS:-}" ]] && opts+=(-o "sftp.connections=${RESTIC_SFTP_CONNECTIONS}")
-    local repo oldid
+    _restic_rest_env
+    local repo oldid pending=() opts=()
     for repo in "${repos[@]}"; do
+        _restic_opts "$repo"; opts=("${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}")
         oldid="$(RESTIC_PASSWORD_FILE="$oldfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key list --json 2>/dev/null | jq -r '.[]|select(.current==true)|.id' 2>/dev/null)"
         [[ -n "$oldid" ]] || die "$EX_SOFTWARE" "rotate-key: cannot read current key id for $repo (wrong password?)"
         RESTIC_PASSWORD_FILE="$oldfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key add --new-password-file "$newfile" >/dev/null 2>&1 \
             || die "$EX_SOFTWARE" "rotate-key: 'key add' failed on $repo (old key still valid)"
         RESTIC_PASSWORD_FILE="$newfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" cat config >/dev/null 2>&1 \
             || die "$EX_SOFTWARE" "rotate-key: the new key does not open $repo (aborted, old key still valid)"
+        # Append-only offsite refuses key removal (403). Leave the old key for the
+        # janitor rather than pretend it's gone: it still opens the repo.
+        if [[ "$repo" == "${RESTIC_OFFSITE_REPO:-}" ]] && _offsite_append_only; then
+            pending+=("$oldid")
+            log_warn "rotate-key: $repo is append-only, old key $oldid is STILL VALID there. On the janitor: install the new password file, then: restic -r <repo> key remove $oldid"
+            continue
+        fi
         RESTIC_PASSWORD_FILE="$newfile" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$repo" "${opts[@]}" key remove "$oldid" >/dev/null 2>&1 \
             || log_warn "rotate-key: could not remove old key $oldid on $repo (new key works; remove it by hand)"
         log_info "rotate-key: $repo rotated (removed old key $oldid)"
     done
     install -m 0600 "$newfile" "$oldfile"
     log_info "rotate-key: DONE. Export the new DR key and update your password manager."
-    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "repos" "${repos[*]}"
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "repos" "${repos[*]}" "offsite_old_key_pending" "${pending[*]:-}"
     return "$EX_OK"
 }
 
@@ -620,19 +654,41 @@ rdo_doctor() {
     if _restic "$repo" --no-lock cat config >/dev/null 2>&1; then lines+=("$ok  repo $repo reachable")
     else lines+=("$bad  repo $repo not reachable"); problems=$((problems+1)); fi
 
-    # Timer enabled.
-    if systemctl is-enabled pbo.timer >/dev/null 2>&1; then lines+=("$ok  pbo.timer enabled")
-    else lines+=("$warn  pbo.timer not enabled (no nightly backup)"); warns=$((warns+1)); fi
+    # Timer enabled (the janitor's own timer on a janitor).
+    local timer=pbo.timer what="nightly backup"
+    _is_janitor && { timer=pbo-janitor.timer; what="offsite retention + verify"; }
+    if systemctl is-enabled "$timer" >/dev/null 2>&1; then lines+=("$ok  $timer enabled")
+    else lines+=("$warn  $timer not enabled (no $what)"); warns=$((warns+1)); fi
 
-    # Ransomware backstop.
-    if [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]]; then lines+=("$ok  provider snapshots confirmed")
-    else lines+=("$warn  STORAGE_BOX_SNAPSHOTS_CONFIRMED=false (no ransomware backstop)"); warns=$((warns+1)); fi
+    # Append-only offsite (host side): prove the server refuses deletes.
+    _doctor_append_only "$ok" "$bad" "$warn"
+    lines+=("${AO_LINES[@]+"${AO_LINES[@]}"}"); problems=$((problems+AO_PROBLEMS)); warns=$((warns+AO_WARNS))
+
+    # Ransomware backstop: a verified append-only server, or provider snapshots.
+    if _is_janitor; then :
+    elif (( AO_VERIFIED )); then :
+    elif [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]]; then lines+=("$ok  provider snapshots confirmed")
+    else lines+=("$warn  no ransomware backstop: offsite is not append-only and STORAGE_BOX_SNAPSHOTS_CONFIRMED=false"); warns=$((warns+1)); fi
+
+    # Janitor: repo files must stay owned by the rest-server user.
+    if _is_janitor && [[ "$repo" != *:* ]]; then
+        local own
+        if own="$(_doctor_janitor_ownership "$repo")"; then lines+=("$ok  repo file ownership consistent")
+        else lines+=("$bad  $own"); problems=$((problems+1)); fi
+    fi
 
     # Per-guest freshness: newest snapshot age vs DOCTOR_MAX_AGE, for every guest
     # on this node. A live guest with NO snapshot at all is a hard finding.
+    # On a janitor there are no local guests: check every vmid seen in the repo,
+    # which catches a host that quietly stopped sending backups.
     local now; now="$(date +%s)"
     local snaps; snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"
-    local id newest age hrs guests; guests="$(_backup_set || true)"
+    local id newest age hrs guests
+    if _is_janitor; then
+        guests="$(printf '%s' "$snaps" | jq -r '[.[].tags[]? | select(startswith("vmid=") and (startswith("vmid=host-")|not)) | sub("^vmid=";"")] | unique | .[]' 2>/dev/null || true)"
+    else
+        guests="$(_backup_set || true)"
+    fi
     while read -r id; do
         [[ -n "$id" ]] || continue
         newest="$(printf '%s' "$snaps" | jq -r --arg v "$id" '[ .[] | select((.tags//[])|any(.=="vmid=\($v)")) | .time ] | sort | last // empty' 2>/dev/null)"

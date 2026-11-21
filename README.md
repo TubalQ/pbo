@@ -190,13 +190,60 @@ backups. Three things close that gap, in order of effort:
   the target, writes the key to `/etc/pbo/known_hosts`, and points the ssh command at it
   with `-o UserKnownHostsFile=... -o StrictHostKeyChecking=yes` instead of trust-on-first-
   use. Decline it and the connection falls back to `accept-new`.
-- **Append-only repo.** For a host that should never be able to delete, put a restic
-  REST server in append-only mode (or a restricted SFTP user) in front of the storage
-  and prune from elsewhere. More moving parts; worth it if the host is exposed.
+- **Append-only repo.** The strong version: the host can add snapshots but can't
+  delete any. Put a restic rest-server in `--append-only` mode in front of the storage,
+  on a machine the host has no shell on, and let that machine do retention. See
+  [Append-only offsite](#append-only-offsite) below.
 
 Rotate the repo password with `pbo rotate-key` (or menu → Rotate DR key). restic keys
 wrap the master key, so it's instant and re-encrypts nothing, but the old key stops
 working, so export the new one immediately.
+
+## Append-only offsite
+
+Two machines. The Proxmox host backs up to a restic rest-server running with
+`--append-only`, so it can write new snapshots and nothing else. A second box, the
+janitor, holds the repo on its own disk and runs retention there. Take the host over
+and you still can't touch what's already offsite.
+
+On the storage box, run [rest-server](https://github.com/restic/rest-server) with
+`--append-only --private-repos --tls` as its own user, then:
+
+```bash
+sudo ./install.sh --janitor --user restic   # no PVE needed
+# edit /etc/pbo/config: RESTIC_OFFSITE_REPO=/srv/restic/<user>/<repo>
+# repo password in /etc/pbo/restic-pass, owned by restic, 0400
+runuser -u restic -- pbo doctor
+systemctl enable --now pbo-janitor.timer    # daily: prune, verify, doctor
+```
+
+On the host, in `/etc/pbo/config`:
+
+```bash
+RESTIC_OFFSITE_REPO=rest:https://janitor:8000/<user>/<repo>
+RESTIC_REST_USERNAME=<user>
+RESTIC_REST_PASSWORD_FILE=/etc/pbo/rest-pass   # 0600
+RESTIC_CACERT=/etc/pbo/janitor-ca.pem          # the server's cert, if self-signed
+OFFSITE_APPEND_ONLY=true
+```
+
+The setting is not decoration. restic exits 0 when an append-only server refuses a
+`forget`, so without it the host's prune would report success and remove nothing.
+With it, the host prunes its cache only and leaves offsite to the janitor.
+`rotate-key` adds the new key offsite but can't remove the old one, so it tells you
+to finish that on the janitor.
+
+`pbo doctor` on the host sends a delete for a key that can't exist and expects a
+403. If the server would have accepted it, doctor fails: a host that thinks it's
+protected and isn't is worse than one that knows. On the janitor, doctor checks the
+newest snapshot of every guest in the repo, so a host that stops sending shows up
+on a machine it can't reach, and fails if any repo file isn't owned by the server's
+user (run manual janitor commands with `runuser -u restic --`).
+
+The janitor has the repo password and can delete everything. Lock it down
+accordingly: nothing inbound but the rest-server port, from the hosts only. And put
+it somewhere else. A janitor on the same hardware is append-only, not offsite.
+Design notes: [ADR 0004](docs/adr/0004-append-only-offsite-and-janitor.md).
 
 ## Configuration
 

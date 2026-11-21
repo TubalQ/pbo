@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily pbo janitor run (retention + verify + freshness)
+Documentation=https://github.com/TubalQ/PBO
+
+[Timer]
+# Midday, well clear of the hosts' nightly backups. Prune and backup still
+# serialize on the restic lock (RESTIC_RETRY_LOCK) if they ever meet.
+OnCalendar=*-*-* 12:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

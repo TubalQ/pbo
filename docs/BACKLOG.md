@@ -26,10 +26,13 @@
 - **Numbered restore pickers.** `pbo menu` → Restore now picks the guest and the
   snapshot from numbered lists (age/size), instead of typing a raw timestamp.
 
+- **Append-only offsite + janitor.** rest-server `--append-only` as the offsite
+  repo, `OFFSITE_APPEND_ONLY=true` on the host, retention on a separate
+  `PBO_ROLE=janitor` box (`install.sh --janitor`, `pbo-janitor.timer`), doctor
+  probes that deletes are refused. See
+  [`docs/adr/0004-append-only-offsite-and-janitor.md`](adr/0004-append-only-offsite-and-janitor.md).
+
 ## Open
-- **Hardened / append-only offsite.** Prune runs locally, so the host holds the
-  delete key; the provider's scheduled snapshots are the real backstop. A restic
-  REST server in append-only mode (or a restricted SFTP user) would remove that
-  single point. See the Hardening section in the README.
+The roadmap lives in the issue tracker, one milestone per phase.
 - **Deep-verify schedule.** `verify` supports `VERIFY_SUBSET=<n%>` for an affordable
   `--read-data` sample; wire it into a periodic (monthly) timer.

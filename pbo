@@ -42,6 +42,8 @@ source "${SELF_DIR}/lib/schedule.sh"
 source "${SELF_DIR}/lib/restic.sh"
 # shellcheck source=lib/host.sh
 source "${SELF_DIR}/lib/host.sh"
+# shellcheck source=lib/appendonly.sh
+source "${SELF_DIR}/lib/appendonly.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
 
@@ -286,6 +288,7 @@ main() {
 
     load_config
     trap cleanup_locks EXIT
+    _role_check "$PBO_COMMAND"
 
     case "$PBO_COMMAND" in
         init)          cmd_init "$@" ;;

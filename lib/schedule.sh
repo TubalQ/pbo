@@ -9,7 +9,7 @@
 # do_run_schedule, run backup for each vmid in BACKUP_ORDER, sequentially.
 do_run_schedule() {
     # Ransomware protection: SFTP provides no append-only. Remind about Storage Box snapshots.
-    [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]] || \
+    [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" || "${OFFSITE_APPEND_ONLY:-false}" == "true" ]] || \
         log_warn "run-schedule: Storage Box snapshots NOT confirmed, a compromised host can delete offsite. Enable Hetzner's snapshots and set STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
     local self="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
     # The guests that live on THIS node: BACKUP_ORDER=auto → all local; an explicit

@@ -14,6 +14,20 @@ UNITDIR=/etc/systemd/system
 die(){ printf 'install: %s\n' "$*" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || die "must be run as root."
 
+# --janitor [--user <name>]: install on the storage host instead of a PVE node
+# (ADR 0004). No vzdump/pct needed; installs the janitor units, not pbo.timer.
+ROLE=host; JUSER=restic
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --janitor) ROLE=janitor; shift ;;
+        --user)    JUSER="$2"; shift 2 ;;
+        *) die "unknown flag: $1 (use --janitor [--user <name>])" ;;
+    esac
+done
+if [[ "$ROLE" == janitor ]]; then
+    id "$JUSER" >/dev/null 2>&1 || die "janitor user '$JUSER' does not exist (it should be the user rest-server runs as)"
+fi
+
 echo "==> Dependencies"
 # restic jq zstd flock curl openssl: the tool + the setup wizard (openssl mints
 # the DR key). ssh/sftp/ssh-keygen/ssh-keyscan come from openssh-client, which
@@ -29,7 +43,7 @@ if [[ "${#need[@]}" -gt 0 ]]; then
 else
     echo "    all present (restic jq zstd flock curl openssl openssh-client)"
 fi
-for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing, required on a real Proxmox host."; done
+[[ "$ROLE" == janitor ]] || for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing, required on a real Proxmox host."; done
 
 echo "==> Program files → $LIBDIR"
 install -d -m 0755 "$LIBDIR" "$LIBDIR/lib"
@@ -44,14 +58,45 @@ echo "    /usr/local/sbin/lxc-offsite → $LIBDIR/pbo  (compat alias)"
 echo "==> Directories"
 install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
 install -d -m 0700 "$CFGDIR"
+if [[ "$ROLE" == janitor ]]; then
+    # The janitor runs as $JUSER: it needs its state/log dirs and to read the config.
+    install -d -m 0755 /var/cache/pbo
+    chown -R "$JUSER:$JUSER" /var/log/pbo /var/lib/pbo /var/cache/pbo
+    chown "root:$JUSER" "$CFGDIR"; chmod 0750 "$CFGDIR"
+fi
 
 echo "==> Config"
-install -m 0644 "$SRC/etc/config.example" "$CFGDIR/config.example"
+EXAMPLE="$SRC/etc/config.example"; [[ "$ROLE" == janitor ]] && EXAMPLE="$SRC/etc/config.janitor.example"
+install -m 0644 "$EXAMPLE" "$CFGDIR/config.example"
 if [[ -f "$CFGDIR/config" ]]; then
     echo "    $CFGDIR/config already exists, left untouched."
+elif [[ "$ROLE" == janitor ]]; then
+    install -m 0640 -o root -g "$JUSER" "$EXAMPLE" "$CFGDIR/config"
+    echo "    created $CFGDIR/config (0640 root:$JUSER), EDIT it: repo path, password file."
 else
     install -m 0600 "$SRC/etc/config.example" "$CFGDIR/config"
     echo "    created $CFGDIR/config (0600), run '$BIN setup' or EDIT it."
+fi
+
+if [[ "$ROLE" == janitor ]]; then
+    echo "==> systemd units (installed, NOT enabled)"
+    sed "s/^User=.*/User=$JUSER/; s/^Group=.*/Group=$JUSER/" "$SRC/systemd/pbo-janitor.service" > "$UNITDIR/pbo-janitor.service"
+    chmod 0644 "$UNITDIR/pbo-janitor.service"
+    install -m 0644 "$SRC/systemd/pbo-janitor.timer" "$UNITDIR/pbo-janitor.timer"
+    systemctl daemon-reload
+    cat <<EOF
+
+Installed: pbo janitor (runs as $JUSER).
+
+  1. Edit $CFGDIR/config: RESTIC_OFFSITE_REPO = the repo directory on this disk.
+  2. Put the repo password in $CFGDIR/restic-pass, chown $JUSER, chmod 0400.
+  3. Check it:   runuser -u $JUSER -- $BIN doctor
+  4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily 12:30)
+
+Run manual commands as $JUSER too (runuser -u $JUSER -- $BIN ...), so new repo
+files stay readable by rest-server.
+EOF
+    exit 0
 fi
 
 echo "==> systemd units (installed, NOT enabled)"

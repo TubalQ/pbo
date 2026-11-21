@@ -59,6 +59,16 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 # the accept-new form below is the trust-on-first-use fallback.
 #RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
 #RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
+
+# --- append-only offsite (restic rest-server --append-only), see ADR 0004 ---
+# The host can add snapshots but never delete them; retention runs on a separate
+# janitor (install.sh --janitor). `pbo doctor` proves the server refuses deletes.
+#RESTIC_OFFSITE_REPO=rest:https://10.10.2.254:8000/pveT440/pbo   # with --private-repos: /<user>/<repo>
+#RESTIC_REST_USERNAME=pveT440                  # basic auth user (= first path segment with --private-repos)
+#RESTIC_REST_PASSWORD_FILE=/etc/pbo/rest-pass  # that user's HTTP password, 0600
+#RESTIC_CACERT=/etc/pbo/janitor-ca.pem         # the server's self-signed cert, pinned
+#OFFSITE_APPEND_ONLY=true                      # host never forgets/prunes/removes keys offsite
+#PBO_ROLE=host                                 # host | janitor (janitor: see etc/config.janitor.example)
 #RESTIC_RETRY_LOCK=10m                         # backup/copy/prune wait this long on a locked repo (restic >= 0.16); empty = fail at once
 #RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
 #RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache

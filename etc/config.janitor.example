@@ -1,0 +1,30 @@
+# pbo janitor config (/etc/pbo/config on the storage host). See ADR 0004.
+#
+# The janitor owns offsite retention for an append-only rest-server. It reads
+# the repo straight from disk, so it never goes through the server and is not
+# bound by --append-only. It is the only machine that can delete.
+PBO_ROLE=janitor
+LOCAL_REPO=false
+OFFSITE_ENABLED=true
+# With rest-server --private-repos the repo for user <u> lives under <path>/<u>/.
+RESTIC_OFFSITE_REPO=/srv/restic/pveT440/pbo
+# Same repo password as the hosts that write to it (the DR key). Readable by
+# the janitor user only: chown restic:restic, chmod 0400.
+RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass
+STATE_DIR=/var/lib/pbo
+LOG_DIR=/var/log/pbo
+CACHE_DIR=/var/cache/pbo
+RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache
+
+# Retention, same meaning as on a host.
+KEEP_OFFSITE_DAILY=7
+KEEP_OFFSITE_WEEKLY=4
+KEEP_OFFSITE_MONTHLY=6
+
+# Read this much of the data on every run. Cheap here: it's local disk.
+VERIFY_SUBSET=5%
+# Warn when a guest's newest snapshot is older than this (seconds).
+DOCTOR_MAX_AGE=172800
+
+#NTFY_URL=
+#NTFY_TOPIC=

@@ -1,0 +1,21 @@
+[Unit]
+Description=pbo janitor: offsite retention, integrity check and freshness check
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as the user rest-server serves the repo as. A prune as root leaves packs
+# the server can't read (install.sh --janitor --user <name> rewrites this line).
+User=restic
+Group=restic
+# --queue: wait for a running janitor job instead of failing.
+ExecStart=/usr/local/lib/pbo/pbo prune --queue
+# Structure check plus VERIFY_SUBSET of the data, read from local disk.
+ExecStart=/usr/local/lib/pbo/pbo verify
+# Fails the unit if a guest's newest snapshot is too old: a host stopped sending.
+ExecStart=/usr/local/lib/pbo/pbo doctor
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle

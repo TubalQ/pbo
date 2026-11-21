@@ -163,9 +163,20 @@ so you get cluster-wide dedup with no central coordinator. Points to remember:
   That is on purpose. `forget` (metadata) and `prune` (reclaiming space) are
   separate steps.
 - **The provider has no append-only mode.** Plain SFTP means a compromised host
-  can delete the offsite data. Turn on your provider's scheduled snapshots and set
-  `STORAGE_BOX_SNAPSHOTS_CONFIRMED=true`. That is the only protection against
-  ransomware.
+  can delete the offsite data. Either move offsite to an append-only rest-server
+  with a janitor (README, "Append-only offsite"), or turn on your provider's
+  scheduled snapshots and set `STORAGE_BOX_SNAPSHOTS_CONFIRMED=true`.
+- **Append-only: offsite keeps growing.** The host never prunes it. Check the
+  janitor: `systemctl status pbo-janitor.timer`, `runuser -u restic -- pbo doctor`.
+- **Append-only: doctor says the server ACCEPTS deletes.** rest-server isn't running
+  with `--append-only`, or the URL points at a different server. Fix that before
+  trusting the setup.
+- **Append-only: backups fail with permission errors after a janitor run.** Someone
+  ran the janitor as root and left root-owned files in the repo. On the janitor:
+  `chown -R restic:restic /srv/restic/<user>`. `doctor` there flags this.
+- **Append-only: verifying it by hand.** From the host, `restic forget <id>` against
+  the rest URL prints `403 Forbidden`, says "1 snapshots have been removed" and exits
+  0, and the snapshot is still there. That's what append-only looks like.
 - **A restored guest is missing from the web UI.** In a cluster it appears under
   the node you restored it on. Refresh the web UI, which does not push new guests
   to you on its own.

@@ -470,11 +470,17 @@ menu_export() {
     echo; echo "  ${C_Y}# PBO DR key, SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
     echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<not set>}"
     echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<not set>}"
+    local rest_lines=()
+    if [[ -n "${RESTIC_REST_USERNAME:-}" ]]; then
+        rest_lines+=("RESTIC_REST_USERNAME=${RESTIC_REST_USERNAME}" "RESTIC_REST_PASSWORD=$(_rest_password)")
+        [[ -n "${RESTIC_CACERT:-}" ]] && rest_lines+=("# RESTIC_CACERT: the server's cert, also on the janitor at /etc/rest-server/tls/cert.pem")
+    fi
+    local l; for l in "${rest_lines[@]}"; do echo "  $l"; done
     echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"
     echo
     if _yn "Save a copy to /root/pbo-dr-key.txt (0600)?" n; then
         ( umask 077; { echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
-          echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
+          echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; printf '%s\n' "${rest_lines[@]}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
         echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0}, move it offline and delete it from this host."
     fi
     _pause

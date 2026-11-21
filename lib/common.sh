@@ -43,6 +43,8 @@ set_defaults() {
     : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
     : "${NTFY_ON_SUCCESS:=false}"
     : "${OFFSITE_ENABLED:=true}"       # false = local repo only, no offsite copy
+    : "${PBO_ROLE:=host}"              # host = PVE node that backs up guests | janitor = storage-side box that owns offsite retention
+    : "${OFFSITE_APPEND_ONLY:=false}"  # true = offsite refuses deletes (rest-server --append-only); this host never prunes it
     : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach the guest
     : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
     : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
@@ -60,6 +62,9 @@ set_defaults() {
     : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
     : "${RESTIC_RETRY_LOCK:=10m}"                         # write ops wait this long on a busy repo lock (another node, a manual restic). Empty = fail at once
     : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max), speeds up restore considerably
+    : "${RESTIC_REST_USERNAME:=}"                         # rest-server basic auth user (rest: repos); with --private-repos also the first path segment
+    : "${RESTIC_REST_PASSWORD_FILE:=}"                    # file with that user's HTTP password, 0600
+    : "${RESTIC_CACERT:=}"                                # pinned cert/CA for a self-signed rest-server (restic --cacert)
 
     # --- host backup (config + rebuild metadata, manual: `pbo backup-host`) ---
     # Curated, space-separated. Missing paths are skipped (not an error).
@@ -100,6 +105,13 @@ _source_config_file() {
 
 load_config() {
     local cfg="${PBO_CONFIG:-/etc/pbo/config}" loaded=""
+    # An explicit PBO_CONFIG that isn't there is a mistake, not "use defaults":
+    # defaults point at a different repo (seen in the ADR 0004 test, where a
+    # leaked PBO_CONFIG made a janitor prune the empty default cache repo).
+    if [[ -n "${PBO_CONFIG:-}" && ! -f "$PBO_CONFIG" ]]; then
+        printf 'pbo: PBO_CONFIG=%s does not exist\n' "$PBO_CONFIG" >&2
+        exit "$EX_CONFIG"
+    fi
     # Cluster: a shared, non-secret base config replicated by pmxcfs (edit once for
     # the whole cluster). The local config overrides it; secrets stay local only.
     # Skipped when PBO_CONFIG is set explicitly (that file stands alone).
