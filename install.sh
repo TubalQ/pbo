@@ -57,7 +57,10 @@ echo "    /usr/local/sbin/lxc-offsite → $LIBDIR/pbo  (compat alias)"
 
 echo "==> logrotate"
 install -m 0644 "$SRC/etc/logrotate.d/pbo" /etc/logrotate.d/pbo
-[[ "$ROLE" == janitor ]] && sed -i "s/create 0600 root root/create 0600 $JUSER $JUSER/" /etc/logrotate.d/pbo
+# On a janitor /var/log/pbo belongs to $JUSER: rotate as that user, not as root
+# in a directory someone else controls.
+[[ "$ROLE" == janitor ]] && sed -i -e "s/create 0600 root root/create 0600 $JUSER $JUSER/" \
+    -e "/{\$/a\\    su $JUSER $JUSER" /etc/logrotate.d/pbo
 
 echo "==> Directories"
 install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs

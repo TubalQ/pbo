@@ -74,6 +74,17 @@ jq -se 'map(select(.command=="prune" and .dry_run==true and .read_only==true))|l
 MOCK_RESTORE_OK=1 $BIN restore 8001 "$($BIN --json list 8001 2>/dev/null | jq -r '.archives[0].archive' | sed -E 's/^vzdump-lxc-8001-(.*)\.tar$/\1/')" --to 9001 --storage teststore --yes >/dev/null 2>&1
 jq -se 'map(select(.kind=="event" and .command=="restore" and (.event|test("restore src=8001"))))|length==1' "$A" >/dev/null && ok "restore detail event in the JSON log" || bad "restore event: $(grep event "$A" | tail -1)"
 
+# hostile tags from the repo can't inject lines into the textfile
+mkdir -p "$RUN/hd"; echo h > "$RUN/hd/f"
+RESTIC_PASSWORD_FILE="$RUN/pass" RESTIC_CACHE_DIR="$RUN/rcache" restic -r "$RUN/repo" backup -q --tag vmid=8001 \
+    --tag "$(printf 'type=lxc"} 1\npbo_injected 1\n#')" "$RUN/hd" >/dev/null 2>&1
+out="$($BIN metrics --no-write 2>/dev/null)"
+grep -q '^pbo_injected' <<<"$out" && bad "tag injected a metric line" || ok "hostile type= tag can't inject metric lines"
+grep -q 'type="unknown"' <<<"$out" && ok "unknown type label normalised" || bad "type normalisation"
+# janitor logrotate drops privileges
+sed -e "s/create 0600 root root/create 0600 restic restic/" -e '/{$/a\    su restic restic' etc/logrotate.d/pbo > "$RUN/lr"
+[[ "$(grep -c '^    su restic restic$' "$RUN/lr")" == 2 ]] && ok "janitor logrotate stanzas get su <user>" || bad "logrotate su: $(cat "$RUN/lr")"
+
 rm -rf "$RUN"
 printf '%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 ))

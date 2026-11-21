@@ -47,14 +47,15 @@ _metrics_render() {
             | ((.d + "Z") | fromdateiso8601)
               - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end);
         def lbl($o): if ($o|length) == 0 then "" else
-            "{" + ([$o | to_entries[] | "\(.key)=\"\(.value|tostring|gsub("\\\\";"\\\\\\\\")|gsub("\"";"\\\\\""))\""] | join(",")) + "}" end;
+            "{" + ([$o | to_entries[] | "\(.key)=\"\(.value|tostring|gsub("\\\\";"\\\\\\\\")|gsub("\"";"\\\\\"")|gsub("\n";"\\\\n"))\""] | join(",")) + "}" end;
         def m($name; $help; $type; $rows): "# HELP \($name) \($help)\n# TYPE \($name) \($type)\n" + ([$rows[] | "\($name)\(lbl(.l)) \(.v)"] | join("\n"));
         ( [ $s[]
             | { vmid: ((.tags // []) | map(select(startswith("vmid="))) | .[0] // "" | sub("vmid=";"")),
-                type: ((.tags // []) | map(select(startswith("type="))) | .[0] // "type=lxc" | sub("type=";"")),
+                type: ((.tags // []) | map(select(startswith("type="))) | .[0] // "type=lxc" | sub("type=";"")
+                       | if test("^(lxc|qemu|host)$") then . else "unknown" end),
                 t: ((.time | ts?) // 0), sm: (.summary // {}) }
             | select(.vmid | test("^([0-9]{1,9}|host-[A-Za-z0-9.-]{1,63})$")) ]
-          | group_by(.vmid) | map({vmid: .[0].vmid, type: .[0].type, n: length, last: max_by(.t)}) ) as $g
+          | group_by(.vmid) | map(max_by(.t) as $l | {vmid: .[0].vmid, type: $l.type, n: length, last: $l}) ) as $g
         | [ m("pbo_info"; "pbo version and role"; "gauge"; [{l:{version:$ver, role:$role, node:$node}, v:1}]),
             m("pbo_repo_up"; "1 if the repo answered the snapshot listing"; "gauge"; [{l:{tier:$tier}, v:$repo_ok}]),
             m("pbo_repo_snapshots"; "snapshots in the repo"; "gauge"; [{l:{tier:$tier}, v:($s|length)}]),
