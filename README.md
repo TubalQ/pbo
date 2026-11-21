@@ -93,6 +93,41 @@ Then `pbo doctor` any time to check the repo is reachable, the timer is on, the
 DR key is 0600, the last integrity check passed, the config has no unknown keys, and
 every guest has a recent snapshot.
 
+## Notifications
+
+Failures alert, success stays quiet unless `NTFY_ON_SUCCESS=true`. Two ways out:
+
+- **Proxmox's notification system** (default when no ntfy is set up). pbo hands its
+  events to the same targets and matchers as the cluster's own alerts, so they end up
+  wherever those go: mail, Gotify, a webhook. Failures are severity `error`, and every
+  event has the fields `type=pbo` and `hostname=<node>`, so a matcher with
+  `match-field exact:type=pbo` can route them separately. `install.sh` puts pbo's
+  templates in `/etc/pve/notification-templates/default/` (cluster-wide).
+- **ntfy**, with `NTFY_URL`/`NTFY_TOPIC` (or `/etc/ntfy.creds`).
+
+`NOTIFY_PVE=true` uses both, `false` only ntfy. `pbo notify-test` sends one warning
+through whatever is active, and `doctor` warns if nothing would alert at all.
+
+## Per-guest policy
+
+Set it on the guest in Proxmox, as tags (GUI, or `pct set <id> --tags "..."`), and it
+follows the guest when it moves to another node:
+
+| Tag | Effect |
+|---|---|
+| `pbo-skip` | Left out of the nightly run. `pbo backup <id>` still works, with a warning. `doctor` lists it as skipped. |
+| `pbo-stop` | vzdump `--mode stop` for this guest, like `VZDUMP_STOP_VMIDS`. |
+| `pbo-keep-daily-N` | Offsite retention for this guest. Any subset of daily/weekly/monthly/yearly; |
+| `pbo-keep-weekly-N` | the rest come from `KEEP_OFFSITE_*`. |
+| `pbo-keep-monthly-N` | |
+| `pbo-keep-yearly-N` | |
+
+The keep tags are copied into each snapshot (`keep=d30.m12`), and prune reads them
+from there. So a janitor that can't see Proxmox applies them too, and they still hold
+after the guest is destroyed. The newest snapshot decides: change a tag and it counts
+from the next backup. A policy that adds up to nothing keeps the newest snapshot
+rather than deleting them all. The cache tier stays on `KEEP_LOCAL`.
+
 ## Integrity checks
 
 `restic check` alone only checks structure. Reading the data back is what catches
@@ -151,7 +186,8 @@ Commands:
   backup <vmid>               back up one guest
   run-schedule [--stream|--batch]   back up this node's guests
   status                      running jobs and lock holder
-  doctor                      health check (repo, timer, key, per-guest age)
+  doctor                      health check (repo, timer, key, alerts, verify, per-guest age)
+  notify-test                 send a test alert through every active backend
   list [vmid]                 offsite archives
   usage                       repo size, dedup ratio, snapshot count
   fetch <vmid> <ts>           extract+verify a snapshot into the cache

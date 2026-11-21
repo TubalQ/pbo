@@ -5,6 +5,16 @@ behaviour; the entry says so when it does.
 
 ## 0.3.0 (unreleased)
 
+Added
+- Per-guest policy from Proxmox tags: `pbo-skip`, `pbo-stop`,
+  `pbo-keep-{daily,weekly,monthly,yearly}-N`. Keep overrides travel in the
+  snapshot (`keep=` tag), so prune and the janitor apply them without Proxmox.
+  `KEEP_OFFSITE_YEARLY`.
+- Notifications through Proxmox's notification system (`NOTIFY_PVE`, default
+  `auto` = when no ntfy is configured), fields `type=pbo`/`hostname`, templates in
+  `/etc/pve/notification-templates/default/`. `pbo notify-test`. `doctor` warns
+  when nothing would alert.
+
 ## 0.2.0 (2026-11-21)
 
 Added

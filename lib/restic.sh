@@ -201,10 +201,14 @@ rdo_backup() {
 
     # 2. restic backup of the DIRECTORY (stable path → grouping-friendly)
     local wrepo; wrepo="$(_restic_write_repo)"
-    log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts)"
+    # Per-guest retention from Proxmox tags travels with the snapshot (lib/policy.sh).
+    _guest_skipped "$vmid" && log_warn "backup $vmid: guest is tagged pbo-skip; backing it up anyway (manual run)"
+    local keep; keep="$(_guest_keep_tag "$vmid")"
+    local ktag=(); [[ -n "$keep" ]] && ktag=(--tag "keep=$keep")
+    log_info "backup $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts${keep:+,keep=$keep})"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
             _restic_w "$wrepo" backup "$dumpdir" \
-                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" --host "$(_local_node)"; then
+                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" "${ktag[@]+"${ktag[@]}"}" --host "$(_local_node)"; then
         _restic_lock_die "$jobfile" "restic backup of $base"
         die "$EX_SOFTWARE" "restic backup failed for $base (see $jobfile)"
     fi
@@ -258,13 +262,16 @@ rdo_list() {
     # dry-run forget with THIS repo's policy (cache=keep-last, offsite=GFS) and
     # merges the reasons in by short_id. Off by default (extra round-trip).
     if [[ "${LIST_WITH_REASONS:-0}" == 1 ]]; then
-        local pol
+        local fj
         if [[ "$repo" == "$RESTIC_CACHE_REPO" ]]; then
-            pol=(--keep-last "${RESTIC_KEEP_LAST:-2}")
+            fj="$(_restic "$repo" forget --group-by paths --keep-last "${RESTIC_KEEP_LAST:-2}" --dry-run --json 2>/dev/null || echo '[]')"
         else
-            pol=(--keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" --keep-monthly "${KEEP_OFFSITE_MONTHLY}")
+            # same per-guest policy groups prune uses, concatenated
+            local fjf; fjf="$(mktemp)"
+            _list_reasons_cb() { _restic "$1" forget --group-by paths "${@:2}" --dry-run --json 2>/dev/null >> "$fjf"; printf '\n' >> "$fjf"; }
+            _forget_policy_runs "$repo" _list_reasons_cb || true
+            fj="$(jq -cs 'map(select(type=="array")) | add // []' "$fjf" 2>/dev/null || echo '[]')"; rm -f "$fjf"
         fi
-        local fj; fj="$(_restic "$repo" forget --group-by paths "${pol[@]}" --dry-run --json 2>/dev/null || echo '[]')"
         [[ -n "$fj" ]] || fj='[]'
         # Merge via --slurpfile over a process substitution: the forget JSON can be
         # hundreds of KB (every snapshot), which overflows argv with --argjson.
@@ -433,11 +440,31 @@ _restic_forget_json() {
     rm -f "$errf"
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
     # Real run that actually removed snapshots → reclaim pack files separately.
-    if [[ "${DRY_RUN:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+    # (_FORGET_NO_PRUNE=1: the caller runs several forgets and prunes once.)
+    if [[ "${DRY_RUN:-0}" != 1 && "${_FORGET_NO_PRUNE:-0}" != 1 && "$(printf '%s' "$removed" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
         _restic_w "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
     fi
     printf '%s' "$removed"
     return 0
+}
+
+# _offsite_forget <repo> → removed short_ids (JSON array). GFS per policy group
+# (config default + per-guest keep= overrides, lib/policy.sh), one prune at the end.
+_OFF_REMOVED_FILE=""
+_offsite_forget_cb() {             # <repo> <forget args...>
+    local r; r="$(_FORGET_NO_PRUNE=1 _restic_forget_json "$@")" || return 1
+    printf '%s\n' "$r" >> "$_OFF_REMOVED_FILE"
+}
+_offsite_forget() {
+    local repo="$1" rc=0 all
+    _OFF_REMOVED_FILE="$(mktemp)"
+    _forget_policy_runs "$repo" _offsite_forget_cb || rc=1
+    all="$(jq -cs 'add // []' "$_OFF_REMOVED_FILE" 2>/dev/null || echo '[]')"; rm -f "$_OFF_REMOVED_FILE"
+    if (( rc == 0 )) && [[ "${DRY_RUN:-0}" != 1 ]] && [[ "$(jq 'length' <<<"$all")" -gt 0 ]]; then
+        _restic_w "$repo" prune >/dev/null 2>&1 || log_warn "restic prune ($repo) returned an error, space not fully reclaimed"
+    fi
+    printf '%s' "$all"
+    return "$rc"
 }
 
 # prune, the cache repo is pruned keep-last, offsite is pruned PURE GFS. In cached mode
@@ -460,9 +487,7 @@ rdo_prune() {
         log_info "prune: offsite is append-only, retention there runs on the janitor"
     elif [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
-        offsite_removed="$(_restic_forget_json "$RESTIC_OFFSITE_REPO" \
-            --keep-daily "${KEEP_OFFSITE_DAILY}" --keep-weekly "${KEEP_OFFSITE_WEEKLY}" \
-            --keep-monthly "${KEEP_OFFSITE_MONTHLY}")" || failed+=("offsite")
+        offsite_removed="$(_offsite_forget "$RESTIC_OFFSITE_REPO")" || failed+=("offsite")
     fi
     local dry; dry="$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )"
     local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length' 2>/dev/null || echo 0)"
@@ -718,6 +743,14 @@ rdo_doctor() {
         else lines+=("$bad  $own"); problems=$((problems+1)); fi
     fi
 
+    # Alerting: someone has to hear about a failed backup.
+    if [[ "${PBO_NO_NOTIFY:-0}" != 1 ]]; then
+        local nb=(); _ntfy_configured && nb+=(ntfy); _notify_use_pve && nb+=(proxmox)
+        if (( ${#nb[@]} == 0 )); then lines+=("$warn  no alerting: no ntfy configured and Proxmox notifications unavailable (NOTIFY_PVE=${NOTIFY_PVE:-auto})"); warns=$((warns+1))
+        elif [[ " ${nb[*]} " == *" proxmox "* ]] && ! _pve_templates_installed; then lines+=("$warn  Proxmox notifications on but pbo templates missing in $PVE_TEMPLATE_DIR (run install.sh)"); warns=$((warns+1))
+        else lines+=("$ok  alerts via ${nb[*]}"); fi
+    fi
+
     # Config: unknown keys (typos) and a config newer than this pbo.
     _config_check "${PBO_CONFIG_LOADED:-}"
     local cl; for cl in "${CC_LINES[@]+"${CC_LINES[@]}"}"; do lines+=("$warn  $cl"); done
@@ -735,9 +768,10 @@ rdo_doctor() {
     local snaps; snaps="$(_restic "$repo" snapshots --json 2>/dev/null || echo '[]')"
     local id newest age hrs guests
     if _is_janitor; then
-        guests="$(printf '%s' "$snaps" | jq -r '[.[].tags[]? | select(startswith("vmid=") and (startswith("vmid=host-")|not)) | sub("^vmid=";"")] | unique | .[]' 2>/dev/null || true)"
+        guests="$(printf '%s' "$snaps" | jq -r '[.[].tags[]? | select(startswith("vmid=") and (startswith("vmid=host-")|not)) | sub("^vmid=";"") | select(test("^[0-9]{1,9}$"))] | unique | .[]' 2>/dev/null || true)"
     else
         guests="$(_backup_set || true)"
+        local sk; for sk in $(_backup_set_skipped); do lines+=("$ok  guest $sk skipped (Proxmox tag pbo-skip)"); done
     fi
     while read -r id; do
         [[ -n "$id" ]] || continue

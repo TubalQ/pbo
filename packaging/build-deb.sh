@@ -22,6 +22,7 @@ for u in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
     chmod 0644 "$ROOT/usr/lib/systemd/system/$(basename "$u")"
 done
 install -m 0644 "$SRC"/etc/config.example "$SRC"/etc/config.janitor.example "$ROOT/usr/share/doc/pbo/examples/"
+install -d "$ROOT/usr/share/pbo/templates"; install -m 0644 "$SRC"/templates/pbo-*.hbs "$ROOT/usr/share/pbo/templates/"
 install -m 0644 "$SRC"/README.md "$SRC"/RUNBOOK.md "$SRC"/SECURITY.md "$SRC"/CHANGELOG.md "$ROOT/usr/share/doc/pbo/"
 install -m 0644 "$SRC"/LICENSE "$ROOT/usr/share/doc/pbo/copyright"
 
@@ -48,6 +49,12 @@ if [ "$1" = configure ]; then
     install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
     [ -e /etc/pbo/config.example ] || cp /usr/share/doc/pbo/examples/config.example /etc/pbo/config.example
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload || true
+    # Proxmox notification templates, cluster-wide via pmxcfs (plain cp, no chmod)
+    if [ -d /etc/pve ]; then
+        mkdir -p /etc/pve/notification-templates/default 2>/dev/null \
+            && cp /usr/share/pbo/templates/pbo-*.hbs /etc/pve/notification-templates/default/ 2>/dev/null \
+            || echo "pbo: could not install notification templates into /etc/pve (no quorum?)"
+    fi
     echo "pbo: run 'pbo setup' (PVE host) or see /usr/share/doc/pbo/examples/config.janitor.example (janitor). Timers are not enabled."
 fi
 PI

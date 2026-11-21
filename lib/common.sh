@@ -37,11 +37,13 @@ set_defaults() {
     : "${KEEP_OFFSITE_DAILY:=7}"
     : "${KEEP_OFFSITE_WEEKLY:=4}"
     : "${KEEP_OFFSITE_MONTHLY:=6}"
+    : "${KEEP_OFFSITE_YEARLY:=0}"      # 0 = no yearly bucket
     : "${NTFY_URL:=}"                  # ntfy server (base URL); empty = no notifications
     : "${NTFY_TOKEN:=}"                # otherwise read from NTFY_CREDS_FILE
     : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file
     : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
     : "${NTFY_ON_SUCCESS:=false}"
+    : "${NOTIFY_PVE:=auto}"            # Proxmox notification system: auto (when no ntfy) | true (also) | false
     : "${OFFSITE_ENABLED:=true}"       # false = local repo only, no offsite copy
     : "${PBO_ROLE:=host}"              # host = PVE node that backs up guests | janitor = storage-side box that owns offsite retention
     : "${JANITOR_USER:=restic}"         # janitor: the user rest-server runs as; root re-execs as this user

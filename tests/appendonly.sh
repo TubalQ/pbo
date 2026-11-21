@@ -115,7 +115,10 @@ chmod 755 "$RUN/bin/fake-restic"
 export MOCK_RESTIC_ARGV="$RUN/restic.argv" MOCK_RESTIC_ENV="$RUN/restic.env"
 cat > "$RUN/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" > "$MOCK_CURL_ARGV"; cat > "$MOCK_CURL_STDIN"
+printf '%s\n' "$*" > "$MOCK_CURL_ARGV"
+# only read stdin when pbo hands credentials that way (-K -); otherwise an open,
+# silent stdin would block the mock forever
+if [[ " $* " == *" -K - "* ]]; then cat > "$MOCK_CURL_STDIN"; else : > "$MOCK_CURL_STDIN"; fi
 printf '%s' "${MOCK_CURL_CODE:-000}"
 EOF
 chmod 755 "$RUN/bin/curl"

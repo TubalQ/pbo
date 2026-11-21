@@ -15,6 +15,8 @@ do_run_schedule() {
     # The guests that live on THIS node: BACKUP_ORDER=auto → all local; an explicit
     # list → the listed vmids that live here (cluster-aware, no-op on one node).
     local ids=(); mapfile -t ids < <(_backup_set)
+    local skipped=(); mapfile -t skipped < <(_backup_set_skipped)
+    (( ${#skipped[@]} )) && log_info "run-schedule: skipping ${skipped[*]} (Proxmox tag pbo-skip)"
     if (( ${#ids[@]} == 0 )); then
         log_warn "run-schedule: no guests to back up on node '$(_local_node)' (BACKUP_ORDER=${BACKUP_ORDER:-auto}), nothing to do."
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "backups_ok" 0 "backups_failed" 0 "note" "no local guests"

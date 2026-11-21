@@ -14,7 +14,7 @@
 # prove the setting matches reality.
 
 # Commands that make sense on a janitor: no guests, no vzdump, just the repo.
-readonly JANITOR_COMMANDS="init doctor list usage verify prune unlock rotate-key status help"
+readonly JANITOR_COMMANDS="init doctor list usage verify prune unlock rotate-key status notify-test help"
 
 # _role_check <command>: refuse guest operations on a janitor, and a config that
 # claims both roles. Called from main() after load_config.

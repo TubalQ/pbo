@@ -34,12 +34,28 @@ _all_local_vmids() {
       qm  list 2>/dev/null | awk 'NR>1{print $1}'; } | grep -E '^[0-9]+$' | sort -n
 }
 
-# _backup_set → the ordered vmids to back up on THIS node (one per line).
+# _backup_set → _backup_set_all minus guests tagged pbo-skip (lib/policy.sh).
+_backup_set() {
+    local id
+    while read -r id; do
+        [[ -n "$id" ]] || continue
+        _guest_skipped "$id" || printf '%s\n' "$id"
+    done < <(_backup_set_all)
+    return 0
+}
+# _backup_set_skipped → the guests _backup_set leaves out because of pbo-skip.
+_backup_set_skipped() {
+    local id
+    while read -r id; do [[ -n "$id" ]] && _guest_skipped "$id" && printf '%s\n' "$id"; done < <(_backup_set_all)
+    return 0
+}
+
+# _backup_set_all → the ordered vmids to back up on THIS node (one per line).
 #   BACKUP_ORDER=auto | empty  → all local guests (auto-discovered, numeric order)
 #   BACKUP_ORDER=<csv>         → the listed vmids that live here, in the given order
 # When no cluster view is available (single node / no quorum / test sandbox) an
 # explicit list is trusted as-is (we cannot, and need not, filter by node).
-_backup_set() {
+_backup_set_all() {
     local order="${BACKUP_ORDER:-auto}" id
     local cluster_ids; cluster_ids="$(_cluster_local_vmids)"
     if [[ "$order" == "auto" || -z "$order" ]]; then

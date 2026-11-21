@@ -52,6 +52,9 @@ _effective_mode() {
     if _in_csv "$vmid" "${VZDUMP_STOP_VMIDS:-}"; then
         printf 'stop'; return
     fi
+    if _guest_force_stop "$vmid"; then   # Proxmox tag pbo-stop (lib/policy.sh)
+        printf 'stop'; return
+    fi
     printf '%s' "$VZDUMP_MODE"
 }
 

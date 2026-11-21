@@ -42,6 +42,8 @@ source "${SELF_DIR}/lib/schedule.sh"
 source "${SELF_DIR}/lib/restic.sh"
 # shellcheck source=lib/host.sh
 source "${SELF_DIR}/lib/host.sh"
+# shellcheck source=lib/policy.sh
+source "${SELF_DIR}/lib/policy.sh"
 # shellcheck source=lib/appendonly.sh
 source "${SELF_DIR}/lib/appendonly.sh"
 # shellcheck source=lib/menu.sh
@@ -80,6 +82,7 @@ Commands:
                               --stream: dump→upload one at a time (low disk, default)
                               --batch:  dump all to cache→upload (if there is room)
   status                      running jobs, queue length, who holds the global lock
+  notify-test                 send a test alert through ntfy and/or Proxmox notifications
   doctor                      health check (repo, timer, key perms, per-guest age)
   list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
   usage                       repo size, dedup ratio, snapshot count
@@ -314,6 +317,7 @@ main() {
         test-restore)  cmd_test_restore "$@" ;;
         backup-host)   cmd_backup_host "$@" ;;
         restore-host)  cmd_restore_host "$@" ;;
+        notify-test)   rdo_notify_test ;;
         help)          usage ;;
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; exit "$EX_USAGE" ;;
     esac

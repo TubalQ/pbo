@@ -107,6 +107,19 @@ install -m 0644 "$SRC/systemd/pbo-prune.service" "$UNITDIR/pbo-prune.service"
 install -m 0644 "$SRC/systemd/pbo-prune.timer"   "$UNITDIR/pbo-prune.timer"
 install -m 0644 "$SRC/systemd/pbo-verify.service" "$UNITDIR/pbo-verify.service"
 install -m 0644 "$SRC/systemd/pbo-verify.timer"   "$UNITDIR/pbo-verify.timer"
+
+# Proxmox notification templates (issue #11). /etc/pve is pmxcfs: plain cp, no
+# chmod/chown. Cluster-wide, so installing on one node covers all of them.
+if [[ -d /etc/pve ]]; then
+    install -d /usr/local/share/pbo/templates
+    install -m 0644 "$SRC"/templates/pbo-*.hbs /usr/local/share/pbo/templates/
+    if mkdir -p /etc/pve/notification-templates/default 2>/dev/null \
+       && cp "$SRC"/templates/pbo-*.hbs /etc/pve/notification-templates/default/ 2>/dev/null; then
+        echo "    notification templates → /etc/pve/notification-templates/default/"
+    else
+        echo "    WARNING: could not write /etc/pve/notification-templates (no quorum?); Proxmox notifications from pbo need them."
+    fi
+fi
 systemctl daemon-reload
 
 cat <<EOF

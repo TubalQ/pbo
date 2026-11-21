@@ -40,11 +40,18 @@ KEEP_LOCAL=2
 KEEP_OFFSITE_DAILY=7
 KEEP_OFFSITE_WEEKLY=4
 KEEP_OFFSITE_MONTHLY=6
+KEEP_OFFSITE_YEARLY=0       # 0 = no yearly bucket
+# Per guest, set Proxmox tags instead: pbo-keep-daily-N / -weekly-N / -monthly-N / -yearly-N,
+# pbo-skip (not scheduled), pbo-stop (vzdump --mode stop). See README "Per-guest policy".
 
 # --- notifications ---
 NTFY_URL=
 NTFY_TOPIC=
 NTFY_ON_SUCCESS=false      # alert on failure, silent on success
+# Proxmox's own notification system (Datacenter → Notifications): auto = use it when
+# no ntfy is configured, true = in addition to ntfy, false = never. Events carry the
+# fields type=pbo and hostname=<node> for matchers. `pbo notify-test` sends a test.
+NOTIFY_PVE=auto
 
 # --- health check ---
 DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapshot is older
