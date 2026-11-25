@@ -165,7 +165,21 @@ append-only offsite after `rotate-key`), `all` also every successful run.
   event has the fields `type=pbo` and `hostname=<node>`, so a matcher with
   `match-field exact:type=pbo` can route them separately. `install.sh` puts pbo's
   templates in `/etc/pve/notification-templates/default/` (cluster-wide).
-- **ntfy**, with `NTFY_URL`/`NTFY_TOPIC` (or `/etc/ntfy.creds`).
+- **ntfy**, with `NTFY_URL`/`NTFY_TOPIC` (and `NTFY_TOKEN` for a server that needs
+  one) in the config, or in a separate file, `NTFY_CREDS_FILE` (default
+  `/etc/pbo/ntfy.creds`): `KEY=VALUE` lines with `NTFY_URL`, `NTFY_TOKEN` and
+  `NTFY_TOPIC`, read with the same strict reader as the config (nothing in it is
+  run; a line it refuses for one of those keys, a line that is no assignment,
+  or a quote that runs on into the next line leaves the whole file unused, and
+  doctor says why). What the config sets wins, key by key. A file that other
+  tools sending to the same server already use can be shared: point
+  `NTFY_CREDS_FILE` at it and, when its topic is under another key, name that
+  key in `NTFY_CREDS_TOPIC_KEY` (`NTFY_CREDS_TOPIC_KEY=NTFY_TOPIC_ALERTS`); other
+  keys in it are ignored, and a line of another key that the reader refuses
+  (an unquoted value with spaces, as systemd's `EnvironmentFile=` allows) is
+  skipped with a doctor warning. Keep it 0600, or 0640 when it sits outside
+  `/etc/pbo` and the other tools read it through its group (`/etc/pbo` itself
+  stays 0700; doctor checks, `doctor --fix` fixes).
 
 `NOTIFY_PVE=true` uses both, `false` only ntfy. `pbo notify-test` sends one warning
 through whatever is active, and `doctor` warns if nothing would alert at all.

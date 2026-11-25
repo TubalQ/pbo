@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.." || exit 1
 # PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
 # machine's own files: point them into the checkout, at paths nothing creates
 # (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
     PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
@@ -43,7 +43,7 @@ out="$(S '
     for k in "${CS_ORDER[@]}"; do
         [[ "$seen" == *" $k "* ]] && echo "duplicate $k"; seen+="$k "
         case "${CS_TYPE[$k]}" in
-            bool|duration|path|dir|string|list|vmids|vmids-csv|url|command|version|calendar|timespan) ;;
+            bool|duration|path|dir|string|list|vmids|vmids-csv|url|name|command|version|calendar|timespan) ;;
             int:*) [[ "${CS_TYPE[$k]}" =~ ^int:[0-9]*:[0-9]*$ ]] || echo "bad int type $k" ;;
             decimal:*) [[ "${CS_TYPE[$k]}" =~ ^decimal:[0-9]*:[0-9]*$ ]] || echo "bad decimal type $k" ;;
             enum:*) [[ "${CS_TYPE[$k]}" =~ ^enum:[A-Za-z0-9_,-]+$ ]] || echo "bad enum $k" ;;
@@ -144,6 +144,13 @@ PBO_KNOWN_HOSTS=/etc/pbo/known_hosts
 PBO_CONFIG_VERSION=1'
 [[ "$out" == "$exp" ]] && ok "inline-only keys: schema defaults as in the code" || bad "inline defaults: $(diff <(echo "$exp") <(echo "$out"))"
 
+# the default 0.6 changes on purpose (CHANGELOG 0.6.0; its line is left out of
+# the frozen 0.5 copy): the ntfy credentials file lives below /etc/pbo, and its
+# topic is under NTFY_TOPIC unless NTFY_CREDS_TOPIC_KEY names another key
+out="$(S 'printf "%s %s %s" "$(_cs_default NTFY_CREDS_FILE)" "$(_cs_default NTFY_CREDS_TOPIC_KEY)" "${CS_TYPE[NTFY_CREDS_TOPIC_KEY]}"')"
+[[ "$out" == "/etc/pbo/ntfy.creds NTFY_TOPIC name" ]] && ok "NTFY_CREDS_FILE defaults below /etc/pbo, NTFY_CREDS_TOPIC_KEY to NTFY_TOPIC (type name)" \
+    || bad "ntfy creds defaults: $out"
+
 # every literal ${KEY:-x} fallback in the code agrees with the schema default
 # (empty guards and display placeholders aside)
 out="$(S '
@@ -209,17 +216,20 @@ out="$(S 'for k in NTFY_TOKEN NTFY_TOPIC NTFY_URL RESTIC_SFTP_COMMAND; do _cs_fl
     for k in PBO_PVE_PLUGIN_CHECK RESTIC_BIN PBO_VZDUMP_HOOK; do _cs_flag "$k" exec >/dev/null || printf "%s-exec " "$k"; done
     [[ "$(_cs_flag PBO_INTEGRATION managed)" == integrate && "$(_cs_flag PBO_ROLE managed)" == install ]] || printf "managed "')"
 [[ -z "$out" ]] && ok "secret, exec, local-only and managed flags where expected" || bad "flags: $out"
-# the old name rule for secrets: a schema key named like one must carry the flag
+# the old name rule for secrets: a schema key named like one must carry the flag.
+# A key of type name holds the name of another key (NTFY_CREDS_TOPIC_KEY: which
+# key of NTFY_CREDS_FILE has the topic), never a value: no secret to hide
 out="$(env -i PATH="$PATH" bash -c 'source lib/common.sh; source lib/config_schema.sh; source lib/config.sh 2>/dev/null; _cs_load
-    for k in "${CS_ORDER[@]}"; do _config_secret_name "$k" && ! _cs_flag "$k" secret >/dev/null && printf "%s " "$k"; done; :')"
+    for k in "${CS_ORDER[@]}"; do [[ "${CS_TYPE[$k]}" == name ]] && continue
+        _config_secret_name "$k" && ! _cs_flag "$k" secret >/dev/null && printf "%s " "$k"; done; :')"
 [[ -z "$out" ]] && ok "every key named like a secret (TOKEN, PASSWORD, COMMAND, TOPIC, ...) is flagged secret" || bad "unflagged secret-like names: $out"
 
 # --- validation ----------------------------------------------------------------------------------
 out="$(S 'STATE_DIR=/var/lib/pbo; for k in "${CS_ORDER[@]}"; do m="$(_cs_validate "$k" "$(_cs_default "$k")")" || echo "$m"; done')"
 [[ -z "$out" ]] && ok "every default passes its own type check" || bad "invalid defaults: $out"
-out="$(S 'for kv in "KEEP_LOCAL=x" "KEEP_LOCAL=0" "OFFSITE_ENABLED=yes" "NOTIFY_LEVEL=loud" "RESTIC_RETRY_LOCK=10 minutes" "BACKUP_ORDER=101;102" "NTFY_URL=ntfy.sh/topic" "VERIFY_READ_DATA=true"; do
+out="$(S 'for kv in "KEEP_LOCAL=x" "KEEP_LOCAL=0" "OFFSITE_ENABLED=yes" "NOTIFY_LEVEL=loud" "RESTIC_RETRY_LOCK=10 minutes" "BACKUP_ORDER=101;102" "NTFY_URL=ntfy.sh/topic" "VERIFY_READ_DATA=true" "NTFY_CREDS_TOPIC_KEY=1TOPIC" "NTFY_CREDS_TOPIC_KEY=MY-TOPIC" "NTFY_CREDS_TOPIC_KEY=\$X"; do
         _cs_validate "${kv%%=*}" "${kv#*=}" >/dev/null && echo "accepted $kv"; done
-    for kv in "KEEP_LOCAL=5" "OFFSITE_ENABLED=false" "NOTIFY_LEVEL=" "NOTIFY_LEVEL=warn" "RESTIC_RETRY_LOCK=1h30m" "BACKUP_ORDER=auto" "BACKUP_ORDER=8001 8002" "VZDUMP_STOP_VMIDS=101,102" "NTFY_URL=https://ntfy.sh" "PBO_ROLE=janitor"; do
+    for kv in "KEEP_LOCAL=5" "OFFSITE_ENABLED=false" "NOTIFY_LEVEL=" "NOTIFY_LEVEL=warn" "RESTIC_RETRY_LOCK=1h30m" "BACKUP_ORDER=auto" "BACKUP_ORDER=8001 8002" "VZDUMP_STOP_VMIDS=101,102" "NTFY_URL=https://ntfy.sh" "PBO_ROLE=janitor" "NTFY_CREDS_TOPIC_KEY=NTFY_TOPIC_ALERTS" "NTFY_CREDS_TOPIC_KEY=_topic2"; do
         _cs_validate "${kv%%=*}" "${kv#*=}" >/dev/null || echo "refused $kv"; done
     m="$(_cs_validate NTFY_URL "secret-topic-in-a-bad-url")"; [[ "$m" == *secret-topic* ]] && echo "secret in message: $m"
     m="$(_cs_validate NOTIFY_LEVEL loud)"; [[ "$m" == "NOTIFY_LEVEL='"'"'loud'"'"' is not fail|warn|all" ]] || echo "enum message: $m"

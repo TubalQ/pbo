@@ -24,7 +24,7 @@ the offsite copy the thing that has to survive when the host doesn't.
 | SFTP key | `/root/.ssh/…` (the key in `RESTIC_SFTP_COMMAND`) | 0600 root | Read, write **and delete** on the SFTP target. |
 | rest-server HTTP password | `RESTIC_REST_PASSWORD_FILE` | 0600 root | Read and append on an append-only server. No deletes. |
 | Pinned host key / server cert | `/etc/pbo/known_hosts`, `RESTIC_CACERT` | 0644 | Not secret. Stops a MITM from posing as the target. |
-| ntfy token | `NTFY_TOKEN` in the config, or `NTFY_CREDS_FILE` | keep 0600 root (not checked) | Sending notifications. Passed to curl on stdin, never on its command line. |
+| ntfy token | `NTFY_TOKEN` in the config, or `NTFY_CREDS_FILE`, default `/etc/pbo/ntfy.creds` | 0600 root at the default path; 0640 with group sharing works only for a shared file kept outside `/etc/pbo` (set `NTFY_CREDS_FILE` to it), because `/etc/pbo` itself stays 0700 (doctor checks, `doctor --fix` fixes) | Sending notifications. Passed to curl on stdin, never on its command line. The file is read with the strict KEY=VALUE reader, never run. |
 | Janitor copy of the repo password | janitor `/etc/pbo/restic-pass` | 0400 server user | Same as the DR key, plus delete rights on the repo files. |
 
 Since 0.6 `/etc/pbo/config` is read, not run: a strict KEY=VALUE reader assigns

@@ -34,7 +34,7 @@ export PATH="$RUN/bin:$PATH" MOCK_LOG="$RUN/calls" MOCK_CONF_DIR="$RUN/lxc" MOCK
 # only the units a test enables are enabled (the mock: MOCK_SYSTEMCTL_ENABLED set, even empty)
 export MOCK_SYSTEMCTL_ENABLED=""
 # read from the environment at start (lib/notify.sh), and the env-only defaults
-export PBO_PVE_TEMPLATE_DIR="$RUN/none/templates" RESTIC_ENV_FILE="$RUN/none/restic.env" NTFY_CREDS_FILE="$RUN/none/ntfy.creds"
+export PBO_PVE_TEMPLATE_DIR="$RUN/none/templates" RESTIC_ENV_FILE="$RUN/none/restic.env" NTFY_CREDS_FILE="$RUN/none/ntfy.env"
 : > "$MOCK_LOG"; chmod 0700 "$RUN/mnt"
 # a single node, as PVE lists it: a cluster of one
 printf '{"nodename":"pve1","version":3,"cluster":{"name":"lab","version":1,"nodes":1,"quorate":1},"nodelist":{"pve1":{"id":1,"online":1,"ip":"192.0.2.11"}}}\n' > "$RUN/pve/.members"

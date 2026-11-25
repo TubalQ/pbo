@@ -4,7 +4,8 @@
 # set_defaults in lib/common.sh); tests/config.sh sources this copy after
 # lib/common.sh and proves the schema gives the same defaults, as root and as a
 # plain user. Never edit it to make that test pass: a changed default is a
-# deliberate change of the schema, with its own test.
+# deliberate change of the schema, with its own test (and a note here where its
+# line was).
 
 set_defaults() {
     : "${CACHE_DIR:=/var/cache/pbo}"
@@ -29,8 +30,9 @@ set_defaults() {
     : "${RETENTION_GROUP_BY:=guest}"   # guest | paths (0.5 behaviour, removed in 0.7)
     : "${NTFY_URL:=}"                  # ntfy server (base URL); empty = no notifications
     : "${NTFY_TOKEN:=}"                # otherwise read from NTFY_CREDS_FILE
-    : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file
-    : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
+    : "${NTFY_TOPIC:=}"                # otherwise the topic from the creds file
+    # NTFY_CREDS_FILE: 0.6 moved its default below /etc/pbo on purpose (CHANGELOG
+    # 0.6.0); its line is left out here and tests/config.sh checks the new default
     : "${NTFY_ON_SUCCESS:=false}"      # deprecated: NOTIFY_LEVEL=all
     : "${NOTIFY_LEVEL:=}"              # fail | warn | all (empty: fail, or all if NTFY_ON_SUCCESS=true)
     : "${NOTIFY_PVE:=auto}"            # Proxmox notification system: auto (when no ntfy) | true (also) | false

@@ -75,7 +75,8 @@ KEEP_OFFSITE_YEARLY=0                        # 0 = no yearly bucket
 NTFY_URL=                                    # ntfy server (base URL); empty = no ntfy
 NTFY_TOPIC=                                  # on a public ntfy server the topic is the password: keep this file 0600
 #NTFY_TOKEN=                                 # access token (sent to curl on stdin, never on its command line)
-#NTFY_CREDS_FILE=/etc/ntfy.creds             # alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC_WARN in that file
+#NTFY_CREDS_FILE=/etc/pbo/ntfy.creds         # alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC in that file (KEY=VALUE, nothing run); the config wins
+#NTFY_CREDS_TOPIC_KEY=NTFY_TOPIC             # the key in NTFY_CREDS_FILE that holds the topic (for a file shared with other tools)
 NOTIFY_LEVEL=fail                            # fail: failures only | warn: + warnings | all: + every successful run
 NOTIFY_PVE=auto                              # Proxmox notifications: auto | true | false
 

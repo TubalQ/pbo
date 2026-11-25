@@ -39,6 +39,27 @@ changed). For such a guest the next prune forgets snapshots that 0.5 kept;
 no guest is split gets exactly the 0.5 restic calls, on the cache tier and
 offsite alike.
 
+Changes behaviour: the ntfy credentials file. `NTFY_CREDS_FILE` defaults to
+`/etc/pbo/ntfy.creds`, with the keys `NTFY_URL`, `NTFY_TOKEN` and `NTFY_TOPIC`
+(the same names as in the config). The new advanced key `NTFY_CREDS_TOPIC_KEY`
+names another key for the topic, for a file shared with other tools that keep
+their own topic key (`NTFY_CREDS_TOPIC_KEY=NTFY_TOPIC_ALERTS`). The file is read
+with the strict reader (`KEY=VALUE` lines, nothing run, no value ever printed)
+instead of being scanned line by line. A line the reader refuses for
+`NTFY_URL`, `NTFY_TOKEN` or the topic key, a line that is no assignment
+(`source`, a command), or a quote or backslash that runs on into the next line
+leaves the whole file unused, and doctor, `notify-test` and the log of a run
+whose alert is dropped (or posted without its token) say why. A refused line
+of any other key is skipped with a doctor warning, so a file shared in systemd
+`EnvironmentFile=` or docker `--env-file` form, where another tool's value may
+hold an unquoted space, still works. An `NTFY_URL` without a scheme is used
+(curl assumes `http://`) with a doctor warning, as in the config, unless the
+config sets `NTFY_URL` itself. Doctor also warns about a file that lacks
+`NTFY_URL` or the topic key while the config does not set them either, and
+names `NTFY_CREDS_TOPIC_KEY` when the topic is missing. Its permission rule
+stays: 0600, or 0640 for a file other tools read through its group; that works
+only for a file outside `/etc/pbo`, which stays 0700.
+
 Migration notes (0.5 → 0.6 config)
 - Run `pbo config check` (0.6) before or right after the upgrade; `install.sh`
   runs the same reader and stops before changing anything. `pbo config check
@@ -76,6 +97,16 @@ Migration notes (0.5 → 0.6 config)
   `/etc/pbo/config` on each node.
 - The file rules are unchanged: a group- or world-writable config, or one owned
   by anyone but root (or the janitor user), is refused (78).
+- ntfy settings in a credentials file: the default file is now
+  `/etc/pbo/ntfy.creds`, with `NTFY_URL`, `NTFY_TOKEN` and `NTFY_TOPIC`. An
+  install that kept its ntfy settings in another file sets `NTFY_CREDS_FILE` to
+  it (`NTFY_CREDS_FILE=/etc/ntfy/shared.env`), and `NTFY_CREDS_TOPIC_KEY` when
+  the topic is under another key there; `pbo doctor` and `pbo notify-test` show
+  whether alerts go out. A file that sources other files or runs commands is
+  refused: write the values out. In the lines of `NTFY_URL`, `NTFY_TOKEN` and
+  the topic key a value with spaces must be quoted (`KEY="a b"`), as in the
+  config, or the whole file is left unused; a refused line of another key is
+  only skipped (doctor names it).
 
 Added
 - A config schema (`lib/config_schema.sh`): one row per key with its type,

@@ -22,4 +22,4 @@ RESTIC_CACHE_REPO=./run/cache/repo
 RESTIC_PASSWORD_FILE=./run/restic-pass
 RESTIC_CACHE_DIR=./run/restic-cache
 RESTIC_ENV_FILE=./run/restic.env          # nothing creates it: never the machine's own
-NTFY_CREDS_FILE=./run/ntfy.creds          # the same
+NTFY_CREDS_FILE=./run/ntfy.env            # the same

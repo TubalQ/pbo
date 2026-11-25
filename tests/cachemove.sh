@@ -83,7 +83,7 @@ mkcfg() {
         "PBO_PVE_LXC_DIR=$RUN/lxc" "PBO_PVE_QEMU_DIR=$RUN/qemu" "PBO_SUBUID_FILE=$RUN/subuid" "PBO_PERMS_PARENTS_TOP=$RUN" \
         "PBO_PERMS_CONFIG_DIR=$RUN/etc" "PBO_PVE_CFS_DIR=$RUN/pve" "PVE_STORAGE_CFG=$RUN/storage.cfg" "PBO_PVE_STORAGE_CFG=$RUN/storage.cfg" \
         "VZDUMP_CONF=$RUN/vzdump.conf" "VZDUMP_LOCK=$RUN/vzdump.lock" "PVE_CATALOG_MOUNT_DIR=$RUN/mnt/m" \
-        "PBO_CATALOG=$RUN/state/catalog/index.json" "PBO_PVE_PLUGIN_PATH=$RUN/plugin.pm" "NTFY_CREDS_FILE=$RUN/ntfy.creds" \
+        "PBO_CATALOG=$RUN/state/catalog/index.json" "PBO_PVE_PLUGIN_PATH=$RUN/plugin.pm" "NTFY_CREDS_FILE=$RUN/ntfy.env" \
         "TR_STORAGE=teststore" "TR_WAIT_TRIES=1" "TR_WAIT_SLEEP=0" "$@" > "$CFG"
     chmod 600 "$CFG"
 }

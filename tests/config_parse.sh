@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.." || exit 1
 # PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
 # machine's own files: point them into the checkout, at paths nothing creates
 # (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
     PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
@@ -63,6 +63,18 @@ if [[ "${1:-}" == --corpus ]]; then
     done < <(awk -F'\t' -v r="$ROOT/" '$1 == "SECRETFILE" && index($3, r) != 1 { print $2 "\t" $3 "\t" $4 }' "$log" | sort -u)
     [[ -z "$probs" ]] && ok "no config a suite loaded points a secret file (RESTIC_ENV_FILE, the password files, NTFY_CREDS_FILE) at the machine's own" \
         || bad "secret files outside the checkout (set them to a path in run*/):"$'\n'"$probs"
+    # the check above passes on a machine without those files: a load that
+    # resolved a secret file to its schema default (the path an installed pbo
+    # uses) fails on every machine, so it does not wait for one that has the
+    # file. A test that resolves the default on purpose (a guard test that
+    # stops pbo after load_config) runs without PBO_TEST_CONFIG_LOG.
+    probs=''
+    while IFS=$'\t' read -r k p; do
+        [[ -n "$k" ]] || continue
+        probs+="$(awk -F'\t' -v k="$k" -v p="$p" '$1 == "SECRETFILE" && $2 == k && $3 == p { print "  " k "=" p " (" $4 ")" }' "$log" | sort -u)"
+    done < <(bash -c 'source lib/config_schema.sh; _cs_load; for k in RESTIC_ENV_FILE RESTIC_PASSWORD_FILE RESTIC_REST_PASSWORD_FILE NTFY_CREDS_FILE; do printf "%s\t%s\n" "$k" "${CS_DEFAULT[$k]}"; done')
+    [[ -z "$probs" ]] && ok "no load resolved a secret file to its schema default (whether or not this machine has it)" \
+        || bad "secret files at their schema default, the path an installed pbo uses:"$'\n'"$probs"
     grep -q "^SECRETFILE	RESTIC_ENV_FILE	$ROOT/" "$log" \
         && ok "the resolved secret files reach the log (SECRETFILE records)" || bad "no SECRETFILE record for RESTIC_ENV_FILE in the corpus log"
     # most suites skip themselves without restic: the same test here, not

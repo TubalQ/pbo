@@ -53,7 +53,7 @@ _perm_rules() {
             "config|file|root|$jg|0640|-|fix|root writes the config, $ju only reads it" \
             "RESTIC_PASSWORD_FILE|file|$ju|-|0400/0600|-|fix|the DR key: whoever reads it can decrypt every backup" \
             "RESTIC_ENV_FILE|file|$ju|-|0400/0600|-|fix|the backend credentials restic gets (S3, B2, Azure, GCS, rclone)" \
-            "NTFY_CREDS_FILE|file|$ju|-|<0640|-|fix|the ntfy credentials (group-readable is allowed: other tools may share the file)"
+            "NTFY_CREDS_FILE|file|$ju|-|<0640|-|fix|the ntfy credentials: 0600; 0640 only for a file other tools share through its group, kept outside pbo's 0700 config directory"
         return 0
     fi
     printf '%s\n' \
@@ -80,7 +80,7 @@ _perm_rules() {
         "RESTIC_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the DR key: whoever reads it can decrypt every backup" \
         "RESTIC_REST_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the rest-server password" \
         "RESTIC_ENV_FILE|file|root?|-|0600/0400|-|fix|the backend credentials restic gets (S3, B2, Azure, GCS, rclone)" \
-        "NTFY_CREDS_FILE|file|root?|-|<0640|-|fix|the ntfy credentials (group-readable is allowed: other tools may share the file)" \
+        "NTFY_CREDS_FILE|file|root?|-|<0640|-|fix|the ntfy credentials: 0600; 0640 only for a file other tools share through its group, kept outside pbo's 0700 config directory" \
         "PVE_CATALOG_MOUNT_DIR/..|dir|root|-|<0700|-|check|the cache repo is mounted below it with allow_other: only root may enter"
     [[ "${METRICS_ENABLED:-true}" != true ]] \
         || printf '%s\n' "METRICS_FILE/..|dir|root|-|-|-|check|pbo writes the metrics textfile there as root and refuses a directory root does not own"
