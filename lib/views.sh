@@ -156,7 +156,8 @@ rdo_timers() {
 
 # --- version ----------------------------------------------------------------
 rdo_version() {
-    local rv; rv="$("${RESTIC_BIN:-restic}" version 2>/dev/null | awk '{print $2; exit}')" || rv=""
+    # as restic prints it (a -dev suffix kept); doctor compares _restic_version
+    local rv; rv="$(_restic_bin version 2>/dev/null | awk '{print $2; exit}')" || rv=""
     local out; out="$(jq -cn --arg v "${VERSION:-}" --argjson s "$PBO_JSON_SCHEMA" --argjson cs "${PBO_CONFIG_SCHEMA:-1}" \
         --arg role "${PBO_ROLE:-host}" --arg node "$(_local_node)" --arg rv "$rv" \
         '{status:"ok", ok:true, version:$v, json_schema:$s, config_schema:$cs, role:$role, node:$node,

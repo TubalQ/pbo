@@ -9,10 +9,11 @@ After=local-fs.target
 
 [Service]
 Type=simple
-# runs `restic mount <cache repo> /run/pbo/mnt` in the foreground (PVE_CATALOG_MOUNT_DIR)
+# runs `restic mount <cache repo> <PVE_CATALOG_MOUNT_DIR>` in the foreground
 ExecStart=/usr/local/lib/pbo/pbo catalog _mount
-# restic unmounts on SIGTERM; the lazy unmount covers a restic that died hard
-ExecStopPost=-/bin/umount -l /run/pbo/mnt
+# restic unmounts on SIGTERM; for a restic that died hard, pbo reads the mount
+# point from the config and lazily unmounts a FUSE mount left there
+ExecStopPost=-/usr/local/lib/pbo/pbo catalog _umount
 TimeoutStopSec=30s
 Restart=no
 Nice=10

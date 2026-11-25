@@ -154,6 +154,18 @@ _cfg_test_log() {
     } >> "$PBO_TEST_CONFIG_LOG" 2>/dev/null || true
 }
 
+# _cfg_test_log_files: test hook, after set_defaults: where this load resolved
+# the files that hold secrets (their paths, never their content), so tests/all.sh
+# can prove that no suite reads or fixes the machine's own files.
+_cfg_test_log_files() {
+    local k p
+    for k in RESTIC_ENV_FILE RESTIC_PASSWORD_FILE RESTIC_REST_PASSWORD_FILE NTFY_CREDS_FILE; do
+        p="${!k:-}"; [[ -n "$p" ]] || continue
+        [[ "$p" == /* ]] || p="${PWD%/}/$p"
+        printf 'SECRETFILE\t%s\t%s\t%s\n' "$k" "$p" "${PBO_CONFIG_LOADED:-(no config file)}"
+    done >> "$PBO_TEST_CONFIG_LOG" 2>/dev/null || true
+}
+
 # load_config: the config files, merged as 0.5 sourced them: with PBO_CONFIG
 # unset the cluster-shared /etc/pve/pbo/config (a non-secret base replicated by
 # pmxcfs, edited once for the whole cluster), then the local /etc/pbo/config,
@@ -169,9 +181,9 @@ _cfg_test_log() {
 #   PBO_CONFIG_SHARED_LOADED  the shared file, when it was read
 #   PBO_CONFIG_EXPLICIT       PBO_CONFIG as given (jobs pass it on)
 # plus the reader's results (CFG_VAL, CFG_SRC, CFG_ENV, ...) for config and
-# doctor. PBO_CFG_LENIENT=1 (main(), `pbo config check|template` only): lines
-# the reader refuses are left out instead of stopping pbo, so check can report
-# them.
+# doctor. PBO_CFG_LENIENT=1 (main(), `pbo config check|template` and `catalog
+# _umount` only): lines the reader refuses are left out instead of stopping
+# pbo, so check can report them and the mount cleanup still runs.
 load_config() {
     PBO_CONFIG_EXPLICIT="${PBO_CONFIG:-}"
     # An explicit PBO_CONFIG that isn't there is a mistake, not "use defaults":
@@ -212,13 +224,27 @@ load_config() {
     (( ${#CFG_ERRORS[@]} == 0 )) || [[ "${PBO_CFG_LENIENT:-0}" == 1 ]] || _config_refuse
     _cfg_apply
     set_defaults
+    [[ -z "${PBO_TEST_CONFIG_LOG:-}" ]] || _cfg_test_log_files
     ensure_dirs
+    # RESTIC_ENV_FILE (lib/restic.sh): checked once here, its values are read
+    # only in the subshell of each restic call
+    if declare -F _restic_env_check >/dev/null; then _restic_env_check; fi
 }
 
 # Config schema version. Bump when a key is renamed or changes meaning, and mark
 # the old key deprecated=<NEW> in lib/config_schema.sh. A config may declare
 # PBO_CONFIG_VERSION.
 readonly PBO_CONFIG_SCHEMA=1
+
+# _cfg_int_r KEY: KEY's value into _CI_R when it is a whole number, else the
+# schema default. For the thresholds in arithmetic: a typo in an advanced key
+# must not break a backup with a bash arithmetic error (doctor names the bad
+# value, _config_check). A global result: no fork.
+_cfg_int_r() {
+    _CI_R="${!1-}"
+    if [[ "$_CI_R" =~ ^[0-9]{1,15}$ ]]; then _CI_R=$(( 10#$_CI_R )); return 0; fi
+    _cs_ensure; _cs_default_r "$1"; _CI_R="$_CS_R"
+}
 
 # _cs_ensure [core]: the schema (lib/config_schema.sh) loaded, the whole table or
 # (core) just what load_config needs (_cs_core). ./pbo sources the file; a
@@ -329,15 +355,17 @@ ensure_dirs() {
 }
 
 # _ct_root_uid <vmid> → the host uid that an unprivileged CT's root maps to: its
-# first "lxc.idmap: u 0 <host> <n>" line, else root's range in /etc/subuid (what
-# Proxmox uses, normally 100000). Fails for a privileged CT or no such CT.
+# first "lxc.idmap: u 0 <host> <n>" line in the main section, else 100000.
+# Without such a line pve-container always maps CT root to 100000 and never
+# reads /etc/subuid (parse_id_maps), so neither does pbo: a uid from there
+# would put the CACHE_DIR ACL on a uid the CT does not run as. Fails for a
+# privileged CT or no such CT.
 _ct_root_uid() {
     local f="${PBO_PVE_LXC_DIR:-/etc/pve/lxc}/$1.conf" cfg u
     [[ "$1" =~ ^[0-9]+$ && -r "$f" ]] || return 1
     cfg="$(sed -n '/^\[/q;p' -- "$f" 2>/dev/null)"
     grep -qE '^unprivileged:[[:space:]]*1[[:space:]]*$' <<<"$cfg" || return 1
     u="$(awk '$1 == "lxc.idmap:" && $2 == "u" && $3 == "0" { print $4; exit }' <<<"$cfg")"
-    [[ "$u" =~ ^[0-9]+$ ]] || u="$(awk -F: '$1 == "root" { print $2; exit }' "${PBO_SUBUID_FILE:-/etc/subuid}" 2>/dev/null)"
     [[ "$u" =~ ^[0-9]+$ ]] || u=100000
     printf '%s' "$u"
 }

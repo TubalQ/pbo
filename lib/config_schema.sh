@@ -24,6 +24,7 @@
 #                      a space between two vmids is not: the code strips spaces and
 #                      splits on commas only (VZDUMP_STOP_VMIDS)
 #   url                scheme://...
+#   version            dotted numbers: 0.14.0 (compared part by part, as sort -V does)
 #   command            a program, or a shell command line
 # DEFAULT: a literal, ${KEY} references to keys EARLIER in the table (expanded
 #   with the current value of that key), or @fn: the function _cfgdef_<KEY>
@@ -64,8 +65,10 @@ STATE_DIR|dir|/var/lib/pbo|paths|host,janitor||jobs, lock holders, restore-test 
 LOCK_DIR|dir|@fn|paths|host,janitor|advanced|default /run/pbo as root (STATE_DIR/lock otherwise); never a world-writable dir
 VZDUMP_MODE|enum:snapshot,suspend,stop|snapshot|vzdump|host||vzdump --mode for every guest not forced to stop
 VZDUMP_STOP_VMIDS|vmids-csv||vzdump|host||these vmids are also backed up with --mode stop (comma-separated)
+PREFLIGHT_POOL_FREE_PCT|int:0:|150|vzdump|host|advanced|preflight: the ZFS pool of a guest needs this much free space, in percent of what its backed-up volumes use
 BACKUP_ORDER|vmids|auto|schedule|host||auto | a comma-separated vmid list (critical first)
 BACKUP_MODE|enum:stream,batch|stream|schedule|host||stream (one-by-one, low disk) | batch (dump all→upload)
+BATCH_FIT_PCT|int:1:100|85|schedule|host|advanced|batch mode runs only when the estimated dumps fit in this percentage of the free space of CACHE_DIR (else stream)
 GLOBAL_LOCK_TIMEOUT|int:0:|7200|schedule|host,janitor||seconds a scheduled run waits in the queue
 SCHEDULE_LOCK_TIMEOUT|int:0:|${GLOBAL_LOCK_TIMEOUT}|schedule|host,janitor|advanced|seconds the prune timer waits for a running run-schedule (and vice versa)
 PRUNE_OWNER|string||schedule|host||cluster: the node that prunes; empty = any node
@@ -107,6 +110,8 @@ RESTIC_SFTP_COMMAND|command||restic|host|secret,exec,local-only,advanced|full ss
 RESTIC_SFTP_CONNECTIONS|int:1:|8|restic|host|advanced|parallel sftp connections (faster restore; Storage Box ~10 max)
 RESTIC_RETRY_LOCK|duration|10m|restic|host,janitor|advanced|backup/copy/prune wait this long on a locked repo (restic >= 0.16)
 RESTIC_PASSWORD_FILE|path|/etc/pbo/restic-pass|restic|host,janitor|advanced,template_janitor=/etc/pbo/restic-pass|repo password (DR key), 0600
+RESTIC_ENV_FILE|path|/etc/pbo/restic.env|restic|host,janitor|local-only,advanced|KEY=VALUE lines exported to restic only (S3, B2, Azure, GCS, rclone credentials), 0600; a missing file is fine
+RESTIC_MIN|version|0.14.0|restic|host,janitor|advanced|the oldest restic pbo runs with (doctor FAIL, install.sh refuses); a rest-server user (RESTIC_REST_USERNAME) needs 0.16.1
 RESTIC_CACHE_DIR|dir|${STATE_DIR}/restic-cache|restic|host,janitor|advanced|the restic metadata cache
 PBO_KNOWN_HOSTS|path|/etc/pbo/known_hosts|restic|host|advanced|where `pbo setup` pins the host key of the SFTP server
 OFFSITE_APPEND_ONLY|bool|false|appendonly|host|advanced|host never forgets/prunes/removes keys offsite (the janitor does)
@@ -135,6 +140,10 @@ CATALOG_MOUNT_WAIT|int:0:|30|integration|host|advanced|seconds a task/CLI restor
 CATALOG_LOCK_TIMEOUT|int:0:|600|integration|host|advanced|seconds a catalogue refresh waits for another one
 CATALOG_MOUNT_BUSY_WAIT|int:0:|900|integration|host|advanced|prune/verify wait this long (s) while a restore reads through the mount, then exit 75
 CATALOG_MAX_AGE|int:1:|7200|integration|host|advanced|doctor warns when the catalogue is older (2 h)
+CATALOG_STAGE_WAIT|int:0:|10|integration|host|advanced|seconds a GUI request waits while another process stages the same archive, then asks to retry
+INGEST_PENDING_MIN|int:1:|10|integration|host|advanced|ingest --pending leaves spool archives younger than this many minutes alone (a PVE job may still write them)
+PVE_SPOOL_MAX_AGE|int:1:|86400|integration|host|advanced|doctor FAIL: spool archives, or ingested snapshots not yet offsite, older than this (s) are stuck (24 h)
+PVE_JOB_WINDOW_MIN|int:0:|60|integration|host|advanced|doctor warns about a PVE backup job to pbo that starts within this many minutes of a pbo timer
 VZDUMP_CONF|path|/etc/vzdump.conf|integration|host|advanced|its storage: line is the default for jobs without one
 PVE_STORAGE_CFG|path|/etc/pve/storage.cfg|integration|host|advanced|read when `pvesh get /storage` fails
 VZDUMP_LOCK|path|/var/run/vzdump.lock|integration|host|advanced|the vzdump node lock: `ingest --pending` waits for no running vzdump
@@ -146,7 +155,6 @@ HOST_BACKUP_PATHS|list|/etc/pve /etc/network/interfaces /etc/network/interfaces.
 HOST_BACKUP_EXCLUDES|list|@fn|hostbackup|host|advanced|never backed up: the DR key, the rest password, private keys (RESTIC_PASSWORD_FILE and RESTIC_REST_PASSWORD_FILE are excluded in any case)
 PBO_PVE_LXC_DIR|dir|/etc/pve/lxc|internal|host|internal|test hook: where CT configs are read
 PBO_PVE_QEMU_DIR|dir|/etc/pve/qemu-server|internal|host|internal|test hook: where VM configs are read
-PBO_SUBUID_FILE|path|/etc/subuid|internal|host|internal|test hook: the subordinate uid ranges (where an unprivileged CT root maps to)
 PBO_PERMS_PARENTS_TOP|dir||internal|host|internal|test hook: the CACHE_DIR parents check (doctor) skips the directories above this one (the test checkout sits below a 0700 home)
 PBO_PERMS_CONFIG_DIR|dir|/etc/pbo|internal|host,janitor|internal|test hook: the config directory pbo owns, which doctor --fix sets to the mode of the rule table; a config in any other directory has that directory checked only (other software keeps files there)
 PBO_PVE_CFS_DIR|dir|/etc/pve|internal|host|internal|test hook: where pmxcfs is mounted; a config below it keeps the pmxcfs modes and is only checked for secret and exec keys
@@ -198,6 +206,38 @@ _cfgdef_HOST_BACKUP_EXCLUDES() {
     fi
     _cs_value_r RESTIC_PASSWORD_FILE
     _CS_R+=" ${RESTIC_REST_PASSWORD_FILE:-/etc/pbo/rest-pass} $tail"
+}
+
+# --- the restic version a config needs (RESTIC_MIN) --------------------------------
+# Here rather than in lib/restic.sh: install.sh sources only this file and the
+# reader, and refuses a restic that is too old before it installs anything.
+#
+# RESTIC_MIN's default, 0.14.0, is the oldest restic that has everything pbo
+# always uses (ADR 0009, "Portability"): `copy --from-repo`, `init
+# --copy-chunker-params --from-repo` and RESTIC_FROM_PASSWORD_FILE (0.14.0
+# renamed --repo2), the sftp.connections option (0.14.0) and repository format
+# 2 with compression, which restic 0.14 writes by default and older ones cannot
+# read. Newer features are optional: --retry-lock (0.16.0) is used only when
+# `restic --help` has it, the snapshot summary (0.17.0) only when present, and
+# `list --reasons` finds a forget reason's snapshot by time and tree where it
+# has no short_id (before 0.17.0).
+# One feature raises the floor where the config uses it: the rest-server login
+# goes to restic as RESTIC_REST_USERNAME/RESTIC_REST_PASSWORD (never on the
+# command line), which restic reads since 0.16.1.
+
+# _version_ge A B: version A >= B, dotted numbers compared part by part.
+_version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]; }
+
+# _restic_need_version <RESTIC_MIN> <RESTIC_REST_USERNAME> → "<version>|<why>":
+# the oldest restic the config runs with. An empty or malformed RESTIC_MIN is
+# the default (doctor names the bad value).
+_restic_need_version() {
+    local min="$1" why="RESTIC_MIN"
+    [[ "$min" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] || { _cs_load; min="${CS_DEFAULT[RESTIC_MIN]}"; }
+    if [[ -n "$2" ]] && ! _version_ge "$min" 0.16.1; then
+        min=0.16.1; why="RESTIC_REST_USERNAME: restic reads the rest-server login from its environment since 0.16.1"
+    fi
+    printf '%s|%s' "$min" "$why"
 }
 
 # --- prose for the generated example ---------------------------------------------
@@ -293,6 +333,11 @@ The Storage Box needs port/key in the ssh command (the repo URL's host label is
 just a name). `pbo setup` pins the host key into /etc/pbo/known_hosts and uses
 StrictHostKeyChecking=yes; accept-new is the trust-on-first-use fallback:
   RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+Other restic backends (s3:, b2:, azure:, gs:, rclone:) read their credentials
+from the environment: put them in RESTIC_ENV_FILE (KEY=VALUE, chmod 600), e.g.
+  AWS_ACCESS_KEY_ID=...
+  AWS_SECRET_ACCESS_KEY=...
+pbo exports them to restic only, never to its own shell or the hooks.
 EOF
             ;;
         appendonly) cat <<'EOF'
@@ -499,6 +544,8 @@ _cs_validate() {
                 || { printf "%s='%s' is not a comma-separated list of vmids" "$k" "$v_shown"; return 1; } ;;
         url)
             [[ "$v" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+$ ]] || { printf "%s is not a URL (scheme://host...)" "$k"; return 1; } ;;
+        version)
+            [[ "$v" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] || { printf "%s='%s' is not a version (e.g. 0.14.0)" "$k" "$v_shown"; return 1; } ;;
         path|dir|string|list|command) : ;;
         *) printf "%s has an unknown schema type '%s'" "$k" "$t"; return 1 ;;
     esac

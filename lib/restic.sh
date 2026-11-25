@@ -39,16 +39,166 @@ _restic_rest_env() {
     fi
     return 0
 }
-_restic() {                    # _restic <repo> <args...>
+# --- RESTIC_ENV_FILE: the backend's environment, for restic only ----------------
+# S3, B2, Azure, GCS and rclone take their credentials from environment variables
+# (AWS_ACCESS_KEY_ID, B2_ACCOUNT_KEY, AZURE_ACCOUNT_KEY, GOOGLE_APPLICATION_CREDENTIALS,
+# RCLONE_CONFIG, ...), which the strict config reader does not export (an
+# exported PATH or LD_PRELOAD would change what root runs). They live in
+# RESTIC_ENV_FILE instead: KEY=VALUE lines in the config grammar
+# (lib/config_parse.sh, origin envfile), read in the subshell of each restic
+# call and set on restic's command there only (env), so pbo's own shell, the
+# programs it runs (vzdump, pct, curl, ...) and the hooks never see them.
+# load_config checks the file once (_restic_env_check) and keeps only its key
+# names. RESTIC_ENV_FILE is local-only: the cluster-shared config cannot name it.
+#
+# Names the file may not set: what changes which program runs or how the shell
+# behaves, what pbo sets for restic itself (the repo, the DR key, the cache,
+# the rest-server login from the config; the host: pbo passes the node as
+# --host on backup only and expects every snapshot query, listings and
+# retention alike, to see all hosts, which a RESTIC_HOST filter would narrow),
+# and pbo's own names: every config key (RESTIC_BIN, RESTIC_SFTP_COMMAND,
+# RESTIC_REST_PASSWORD_FILE, ... belong in the config, where the exec and
+# local-only rules apply to them) and its internal variables. The values reach
+# restic through env(1) only (_restic_pf), so none of these could change what
+# pbo runs anyway; the refusal names the mistake instead of ignoring it.
+_restic_env_refused() {
+    case "$1" in
+        PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PS4|GCONV_PATH|LD_*|BASH_FUNC_*) return 0 ;;
+        RESTIC_REPOSITORY|RESTIC_REPOSITORY_FILE|RESTIC_PASSWORD|RESTIC_PASSWORD_FILE|RESTIC_PASSWORD_COMMAND) return 0 ;;
+        RESTIC_FROM_*|RESTIC_CACHE_DIR|RESTIC_REST_USERNAME|RESTIC_REST_PASSWORD|RESTIC_HOST) return 0 ;;
+        RESTIC_OPTS|PBO_*|CFG_*|RENV_*|_*|EX_*|EUID|UID) return 0 ;;
+    esac
+    if declare -F _cs_core >/dev/null; then _cs_core; else _cs_ensure core; fi
+    [[ -n "${CS_FLAGS[$1]+x}" ]]
+}
+
+# _restic_env_read: read RESTIC_ENV_FILE → _RENV_VAL[K] (the
+# values), RENV_KEYS (the names, in file order), RENV_ERRORS, RENV_WARNINGS
+# ("file:line: message", never a value), RENV_PRESENT (1: the file exists).
+# A missing file is no error: most backends need no environment. The rules are
+# the config file's, tighter for a file that holds nothing but secrets: a
+# regular file (no symlink), owned by root or the user pbo runs as (on a
+# janitor also JANITOR_USER: root reads it before it drops to that user), not
+# writable by group or others and not readable by others. Returns 1 on errors.
+_restic_env_read() {
+    local f="${RESTIC_ENV_FILE:-}" st mode owner k e ju
+    declare -gA _RENV_VAL=()
+    declare -ga RENV_KEYS=() RENV_ERRORS=() RENV_WARNINGS=()
+    RENV_PRESENT=0
+    [[ -n "$f" ]] || return 0
+    [[ -e "$f" || -L "$f" ]] || return 0
+    RENV_PRESENT=1
+    if [[ -L "$f" ]]; then RENV_ERRORS+=("$f:0: a symlink: point RESTIC_ENV_FILE at the file itself"); return 1; fi
+    [[ -f "$f" ]] || { RENV_ERRORS+=("$f:0: not a regular file"); return 1; }
+    st="$(stat -c '%a %u' -- "$f" 2>/dev/null)" || { RENV_ERRORS+=("$f:0: cannot stat the file"); return 1; }
+    mode="${st% *}" owner="${st#* }"
+    if (( (8#$mode & 8#027) )); then
+        RENV_ERRORS+=("$f:0: REFUSING a restic environment file with mode $(printf '%04o' "$((8#$mode))"): it holds credentials, others must not read it and only its owner may write it (chmod 600)")
+    fi
+    if [[ "$owner" != 0 && "$owner" != "$EUID" ]]; then
+        ju=''; [[ "${PBO_ROLE:-host}" != janitor ]] || ju="$(id -u -- "${JANITOR_USER:-restic}" 2>/dev/null)" || ju=''
+        [[ -n "$ju" && "$owner" == "$ju" ]] || RENV_ERRORS+=("$f:0: REFUSING a restic environment file owned by uid $owner (root or the user pbo runs as)")
+    fi
+    (( ${#RENV_ERRORS[@]} == 0 )) || return 1
+    [[ -r "$f" ]] || { RENV_ERRORS+=("$f:0: cannot read the file as uid $EUID"); return 1; }
+    # install.sh has loaded the reader and the schema itself (no lib/common.sh)
+    declare -F _cfg_parse_file >/dev/null && declare -F _cs_core >/dev/null || _cfg_parse_ensure
+    # the reader's own results, scoped to this function (dynamic scope): the
+    # config's CFG_* stay as load_config left them. No CFG_ENV: a reference may
+    # only name a variable an earlier line of this file set.
+    local -A CFG_VAL=() CFG_RAW=() CFG_SRC=() CFG_LINE=() CFG_EXPORT=() CFG_ENV=()
+    local -a CFG_UNKNOWN=() CFG_ERRORS=() CFG_WARNINGS=() CFG_IGNORED=()
+    local _CFG_CS=0
+    _cfg_parse_file "$f" envfile || true
+    for e in "${CFG_ERRORS[@]+"${CFG_ERRORS[@]}"}"; do RENV_ERRORS+=("$e"); done
+    for e in "${CFG_WARNINGS[@]+"${CFG_WARNINGS[@]}"}"; do RENV_WARNINGS+=("$e"); done
+    while IFS= read -r k; do
+        [[ -n "$k" ]] || continue
+        k="${k#* }"
+        if _restic_env_refused "$k"; then
+            RENV_ERRORS+=("$f:${CFG_LINE[$k]}: $k may not be set here: it changes what runs, pbo sets it for restic itself, or it is one of pbo's own names (a config key belongs in the config)")
+            continue
+        fi
+        RENV_KEYS+=("$k"); _RENV_VAL[$k]="${CFG_VAL[$k]}"
+    done < <(for k in "${!CFG_LINE[@]}"; do printf '%s %s\n' "${CFG_LINE[$k]}" "$k"; done | sort -n)
+    (( ${#RENV_ERRORS[@]} == 0 ))
+}
+
+# _restic_env_check: load_config's check of RESTIC_ENV_FILE (when this file is
+# loaded). It keeps the key names and the findings and drops the values, which
+# only the restic subshells read again. A bad file stops pbo like a config line
+# it refuses (78), except for the commands that diagnose it (config, doctor,
+# version, help) and `catalog _umount`, pbo-mount.service's cleanup, which runs
+# no restic and must lazily unmount a dead FUSE mount whatever the file says:
+# they run, and _restic_pf refuses to start restic.
+_restic_env_check() {
+    _restic_env_read || true
+    _RENV_VAL=()
+    (( ${#RENV_ERRORS[@]} )) || return 0
+    case "${PBO_COMMAND:-}" in config|doctor|version|help) return 0 ;; esac
+    [[ "${PBO_COMMAND:-}" == catalog && "${PBO_SUBCOMMAND:-}" == _umount ]] && return 0
+    local e n=0
+    printf 'pbo: RESTIC_ENV_FILE cannot be used:\n' >&2
+    for e in "${RENV_ERRORS[@]}"; do (( n++ < 3 )) || break; printf '  %s\n' "$e" >&2; done
+    printf "pbo: run 'pbo config check' or 'pbo doctor' for details\n" >&2
+    exit "$EX_CONFIG"
+}
+
+# _restic_env_export: in the subshell of one restic call, read the file again
+# (it may have changed since load_config checked it) → _RENV_ARGS, its
+# variables as KEY=VALUE words for env(1). Never assigned in this shell: what
+# the file holds reaches restic alone and cannot change a variable pbo expands
+# for the call (RESTIC_BIN, the options, the rest-server password file).
+_restic_env_export() {
+    local k
+    _RENV_ARGS=()
+    if ! _restic_env_read; then
+        printf 'pbo: restic not run: RESTIC_ENV_FILE: %s\n' "${RENV_ERRORS[0]}" >&2
+        return "$EX_CONFIG"
+    fi
+    for k in "${RENV_KEYS[@]+"${RENV_KEYS[@]}"}"; do _RENV_ARGS+=("$k=${_RENV_VAL[$k]}"); done
+    _RENV_VAL=()
+    return 0
+}
+
+# _restic <repo> <args...>: restic against a repo with the configured password
+# file. _restic_pf <password file> <repo> <args...>: the same with another one
+# (rotate-key). Everything restic gets beyond the config's values (the
+# rest-server login, RESTIC_ENV_FILE) is set inside the subshell only, the
+# file's variables on restic's command (env) alone. Every restic call that
+# opens a repo goes through _restic_pf; `restic version` and `--help`, which
+# need no backend, go through _restic_bin (tests/portability.sh checks that
+# nothing else runs RESTIC_BIN).
+_restic() { _restic_pf "$RESTIC_PASSWORD_FILE" "$@"; }
+_restic_pf() {
+    local pf="$1"; shift
     _restic_opts "$1"
-    # The env prefixes below re-export config vars for the restic child; the RHS
-    # references the outer (config) values, not the sibling prefixes. Intended.
-    # shellcheck disable=SC2097,SC2098
-    ( _restic_rest_env
-      RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
-      RESTIC_FROM_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
-      RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" \
-          "$RESTIC_BIN" -r "$1" "${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}" "${@:2}" )
+    # load_config found the file unusable (a command that diagnoses it runs on)
+    if [[ -n "${RENV_ERRORS[0]+x}" ]]; then
+        printf 'pbo: restic not run: RESTIC_ENV_FILE: %s\n' "${RENV_ERRORS[0]}" >&2
+        return "$EX_CONFIG"
+    fi
+    # the program, its options and the cache, taken from the config before
+    # anything of RESTIC_ENV_FILE is read
+    local bin="$RESTIC_BIN" cache="$RESTIC_CACHE_DIR" opts=("${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}")
+    ( _restic_env_export || exit "$EX_CONFIG"
+      _restic_rest_env
+      exec env -- "${_RENV_ARGS[@]+"${_RENV_ARGS[@]}"}" \
+          RESTIC_PASSWORD_FILE="$pf" RESTIC_FROM_PASSWORD_FILE="$pf" RESTIC_CACHE_DIR="$cache" \
+          "$bin" -r "$1" "${opts[@]+"${opts[@]}"}" "${@:2}" )
+}
+# _restic_bin <args...>: restic without a repo (version, --help): no
+# credentials, no backend environment.
+_restic_bin() { "$RESTIC_BIN" "$@"; }
+
+# _restic_version → the version of RESTIC_BIN ("0.18.0"; a "-dev" or other
+# suffix dropped), empty when it does not run.
+_restic_version() {
+    local v
+    v="$(_restic_bin version 2>/dev/null | awk '$1 == "restic" { print $2; exit }')" || v=''
+    v="${v%%[-+~]*}"
+    [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]] && printf '%s' "$v"
+    return 0
 }
 
 # _restic_w: _restic for WRITE ops (backup/copy/forget/prune/init). Adds
@@ -58,7 +208,7 @@ _restic() {                    # _restic <repo> <args...>
 # --retry-lock needs restic >= 0.16; older binaries just fail fast as before.
 _restic_has_retry_lock() {
     if [[ -z "${_RESTIC_RETRY_LOCK_OK:-}" ]]; then
-        if "$RESTIC_BIN" --help 2>/dev/null | grep -q -- '--retry-lock'; then _RESTIC_RETRY_LOCK_OK=1
+        if _restic_bin --help 2>/dev/null | grep -q -- '--retry-lock'; then _RESTIC_RETRY_LOCK_OK=1
         else _RESTIC_RETRY_LOCK_OK=0; fi
     fi
     [[ "$_RESTIC_RETRY_LOCK_OK" == 1 ]]
@@ -351,14 +501,22 @@ rdo_list() {
         # A split guest's snapshots are in its paths groups too: its reasons come
         # from its guest pass alone (a paths group may keep what the guest pass
         # drops), and keep=false for whatever any pass removes (what prune does).
+        # A reason names its snapshot by short_id only since restic 0.17.0; on
+        # 0.14-0.16 it is found by time and tree in the group's keep list, which
+        # has short_id on every restic pbo runs with. A reason that matches
+        # nothing is dropped, so the merge never fails (and never loses keep).
         archives="$(printf '%s' "$archives" | jq -c --slurpfile fj <(printf '%s' "$fj") '
             ($fj[0] // []) as $g
-            | ( [ $g[]? | select(.pbo_pass == "guest") | ((.keep // []) + (.remove // []))[]? | {key:.short_id, value:true} ] | from_entries ) as $gs
-            | ( [ $g[]? | (.pbo_pass == "guest") as $gp | (.reasons // [])[]
-                  | select($gp or (($gs[.snapshot.short_id] // false) | not))
-                  | {key:(.snapshot.short_id), value:(.matches // [])} ] | from_entries ) as $why
-            | ( [ $g[]? | (.remove // [])[]? | .short_id ] ) as $rem
-            | map( .snapshot as $sid | . + { reasons:($why[$sid] // []), keep:(($rem | index($sid)) == null) } )
+            | ( [ $g[]? | ((.keep // []) + (.remove // []))[]? | select(.short_id != null)
+                  | {key:((.time // "") + "|" + (.tree // "")), value:.short_id} ] | from_entries ) as $byKey
+            | ( [ $g[]? | select(.pbo_pass == "guest") | ((.keep // []) + (.remove // []))[]? | select(.short_id != null) | {key:.short_id, value:true} ] | from_entries ) as $gs
+            | ( [ $g[]? | (.pbo_pass == "guest") as $gp | (.reasons // [])[]?
+                  | (.snapshot.short_id // $byKey[((.snapshot.time // "") + "|" + (.snapshot.tree // ""))]) as $sid
+                  | select($sid != null)
+                  | select($gp or (($gs[$sid] // false) | not))
+                  | {key:$sid, value:(.matches // [])} ] | from_entries ) as $why
+            | ( [ $g[]? | (.remove // [])[]? | .short_id | select(. != null) ] ) as $rem
+            | map( .snapshot as $sid | . + { reasons:($why[$sid // ""] // []), keep:(($rem | index($sid)) == null) } )
         ' 2>/dev/null || printf '%s' "$archives")"
     fi
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
@@ -817,10 +975,10 @@ rdo_rotate_key() {
     [[ "${LOCAL_REPO:-true}" == "true" ]] && repos+=("$RESTIC_CACHE_REPO")
     [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]] && repos+=("$RESTIC_OFFSITE_REPO")
     (( ${#repos[@]} )) || die "$EX_CONFIG" "rotate-key: no repos configured"
-    _restic_rest_env
     # R <passfile> <repo> <args...>: restic against one repo with a given password
-    R() { local pf="$1" r="$2"; shift 2; _restic_opts "$r"
-          RESTIC_PASSWORD_FILE="$pf" RESTIC_CACHE_DIR="$RESTIC_CACHE_DIR" "$RESTIC_BIN" -r "$r" "${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}" "$@"; }
+    # (the wrapper: backend options, rest-server login and RESTIC_ENV_FILE in
+    # the restic subshell only)
+    R() { _restic_pf "$@"; }
     _curkey() { R "$1" "$2" key list --json 2>/dev/null | jq -r '.[]|select(.current==true)|.id' 2>/dev/null; }
     # Three phases, so no failure can leave a repo that only the new (not yet
     # saved) key opens: 1. add + verify the new key everywhere (undo on failure),
@@ -1038,6 +1196,68 @@ _restic_stale_unlock() {
     _restic "$repo" unlock >/dev/null 2>&1 || true
 }
 
+# _restic_need_r: the restic version this config needs into _RN_V, and why
+# into _RN_WHY: RESTIC_MIN, raised for a feature the config uses that needs a
+# newer restic (lib/config_schema.sh _restic_need_version, which install.sh
+# shares).
+_restic_need_r() {
+    local out
+    out="$(_restic_need_version "${RESTIC_MIN:-}" "${RESTIC_REST_USERNAME:-}")"
+    _RN_V="${out%%|*}" _RN_WHY="${out#*|}"
+}
+
+# _doctor_runtime <ok> <bad> <warn> → DRT_LINES, DRT_PROBLEMS, DRT_WARNS: the
+# restic binary against RESTIC_MIN (FAIL below it), RESTIC_ENV_FILE (FAIL when
+# pbo refuses it; only the file and the names of its keys are shown, never a
+# value) and, on a host, the tools the permission rules and the mount need,
+# each with the Debian package that has it (a WARN: pbo runs without them, but
+# CACHE_DIR stays open, the parents go unchecked, a dead mount stays).
+_doctor_runtime() {
+    local ok="$1" bad="$2" warn="$3" v t miss=()
+    DRT_LINES=(); DRT_PROBLEMS=0; DRT_WARNS=0
+    v="$(_restic_version)"
+    _restic_need_r
+    if [[ -z "$v" ]]; then
+        DRT_LINES+=("$bad  restic does not run (RESTIC_BIN=${RESTIC_BIN:-restic}): install restic >= $_RN_V"); DRT_PROBLEMS=1
+    elif ! _version_ge "$v" "$_RN_V"; then
+        DRT_LINES+=("$bad  restic $v is older than $_RN_V, the oldest this config runs with ($_RN_WHY): install a newer restic or point RESTIC_BIN at one"); DRT_PROBLEMS=1
+    else
+        DRT_LINES+=("$ok  restic $v (>= $_RN_V)")
+    fi
+    if [[ -n "${RENV_ERRORS[0]+x}" ]]; then
+        local e; for e in "${RENV_ERRORS[@]}"; do DRT_LINES+=("$bad  RESTIC_ENV_FILE $e (restic is not run)"); DRT_PROBLEMS=$((DRT_PROBLEMS+1)); done
+    elif [[ "${RENV_PRESENT-0}" == 1 ]]; then
+        DRT_LINES+=("$ok  RESTIC_ENV_FILE ${RESTIC_ENV_FILE}: ${#RENV_KEYS[@]} variable(s) for restic only (${RENV_KEYS[*]:-none})")
+    fi
+    if [[ "${RENV_PRESENT-0}" == 1 ]]; then
+        local w; for w in "${RENV_WARNINGS[@]+"${RENV_WARNINGS[@]}"}"; do DRT_LINES+=("$warn  RESTIC_ENV_FILE $w"); DRT_WARNS=$((DRT_WARNS+1)); done
+    fi
+    # host only: a janitor has no CTs to let through and no catalogue mount
+    if ! _is_janitor; then
+        for t in setfacl getfacl setpriv findmnt; do
+            _tool_present "$t" || miss+=("$t (apt install $(_tool_package "$t"))")
+        done
+    fi
+    if (( ${#miss[@]} )); then
+        DRT_LINES+=("$warn  missing tools: ${miss[*]}: the CACHE_DIR ACL, the check of its parents and the mount cleanup need them"); DRT_WARNS=$((DRT_WARNS+1))
+    fi
+}
+
+# _tool_present <name>: a program on PATH (PBO_TOOLS_MISSING, a test hook,
+# names tools to treat as missing).
+_tool_present() {
+    [[ " ${PBO_TOOLS_MISSING-} " != *" $1 "* ]] || return 1
+    command -v "$1" >/dev/null 2>&1
+}
+# _tool_package <name> → the Debian package that ships it.
+_tool_package() {
+    case "$1" in
+        setfacl|getfacl) printf acl ;;
+        setpriv|findmnt|flock|runuser) printf util-linux ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # doctor: a fast health check that surfaces the things that silently rot, repo
 # reachability, permissions (the DR key, CACHE_DIR and the rest of the rule
 # table in lib/perms.sh; `doctor --fix` applies it first), the timer, provider
@@ -1055,6 +1275,10 @@ rdo_doctor() {
     # it. The DR key line comes first, as it always did.
     _doctor_perms "$ok" "$bad" "$warn"
     lines+=("${DP_DR[@]+"${DP_DR[@]}"}"); problems=$((problems+DP_PROBLEMS)); warns=$((warns+DP_WARNS))
+
+    # restic's version, RESTIC_ENV_FILE and the tools the permission checks use
+    _doctor_runtime "$ok" "$bad" "$warn"
+    lines+=("${DRT_LINES[@]+"${DRT_LINES[@]}"}"); problems=$((problems+DRT_PROBLEMS)); warns=$((warns+DRT_WARNS))
 
     # Repo reachable.
     local repo; repo="$(_restic_read_repo)"
@@ -1250,13 +1474,15 @@ _guest_bytes() {
     printf '%s' "$total"
 }
 
-# Do all dumps fit in the cache? (requires 85% margin.)
+# Do all dumps fit in the cache? They may use BATCH_FIT_PCT % of its free space
+# (85 by default: the estimate is rough, and the cache repo grows meanwhile).
 _batch_fits() {
-    local free need=0 v
+    local free need=0 v pct
     free="$(df -PB1 "$CACHE_DIR" 2>/dev/null | awk 'NR==2{print $4}')"
     [[ "$free" =~ ^[0-9]+$ ]] || return 1
+    _cfg_int_r BATCH_FIT_PCT; pct="$_CI_R"; (( pct > 0 )) || pct=85
     for v in "$@"; do need=$(( need + $(_guest_bytes "$v") )); done
-    (( need > 0 && free > need * 100 / 85 ))
+    (( need > 0 && free > need * 100 / pct ))
 }
 
 # _batch_vmid_lock <vmid>: the guest's own lock (the file acquire_vmid_lock

@@ -14,6 +14,10 @@ export PBO_NO_NOTIFY=1
 # directories above the checkout are compared before and after.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -31,12 +35,18 @@ have_acl=0; command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 
 have_setpriv=0; (( is_root )) && command -v setpriv >/dev/null 2>&1 && have_setpriv=1
 
 # the directories above the checkout: the suite must leave them as they are
-hostfp() { local d="$ROOT"; while [[ "$d" != / ]]; do d="$(dirname "$d")"; stat -c '%n %a %u %g' "$d"; getfacl -cpn "$d" 2>/dev/null; done; }
+# and the secret files at their schema defaults (the rule table fixes them when
+# a config leaves its key out): each test config points them into run-perms/
+deffiles="$(bash -c 'source lib/config_schema.sh; _cs_load; for k in RESTIC_ENV_FILE RESTIC_PASSWORD_FILE RESTIC_REST_PASSWORD_FILE NTFY_CREDS_FILE PBO_KNOWN_HOSTS; do printf "%s\n" "${CS_DEFAULT[$k]}"; done')"
+hostfp() {
+    local d="$ROOT" f
+    while [[ "$d" != / ]]; do d="$(dirname "$d")"; stat -c '%n %a %u %g' "$d"; getfacl -cpn "$d" 2>/dev/null; done
+    while IFS= read -r f; do [[ -n "$f" ]] || continue; stat -c '%n %a %u %g %Y' -- "$f" 2>/dev/null || printf '%s absent\n' "$f"; done <<<"$deffiles"
+}
 host_before="$(hostfp)"
 
-# an unprivileged CT whose root maps to 200000 (/etc/subuid fixture), and a privileged one
-printf 'root:200000:65536\n' > "$RUN/subuid"
-printf 'arch: amd64\nhostname: web\nunprivileged: 1\n' > "$RUN/lxc/8001.conf"
+# an unprivileged CT whose root maps to 200000 (its own idmap), and a privileged one
+printf 'arch: amd64\nhostname: web\nunprivileged: 1\nlxc.idmap: u 0 200000 65536\nlxc.idmap: g 0 200000 65536\n' > "$RUN/lxc/8001.conf"
 printf 'arch: amd64\nhostname: priv\n' > "$RUN/lxc/8002.conf"
 ctuid=200000
 
@@ -55,7 +65,7 @@ NTFY_CREDS_FILE=$H/etc/ntfy.creds
 PVE_CATALOG_MOUNT_DIR=$H/mnt/m
 PBO_CATALOG=$H/state/catalog/index.json
 PBO_PVE_LXC_DIR=$RUN/lxc
-PBO_SUBUID_FILE=$RUN/subuid
+RESTIC_ENV_FILE=$H/etc/restic.env
 PBO_PERMS_PARENTS_TOP=$RUN
 PBO_PERMS_CONFIG_DIR=$H/etc
 BACKUP_ORDER=8001
@@ -335,7 +345,7 @@ if (( is_root )) && [[ -n "$jusr" ]]; then
         printf '%s\n' "PBO_ROLE=janitor" "JANITOR_USER=${1:-$jusr}" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" \
             "RESTIC_OFFSITE_REPO=$jdir/repo" "CACHE_DIR=$jdir/cache" "LOG_DIR=$jdir/log" "STATE_DIR=$jdir/state" \
             "LOCK_DIR=$jdir/lock" "RESTIC_PASSWORD_FILE=$jdir/etc/restic-pass" "NTFY_CREDS_FILE=$jdir/etc/ntfy.creds" \
-            "PBO_PERMS_CONFIG_DIR=$jdir/etc" > "$jdir/etc/config"
+            "RESTIC_ENV_FILE=$jdir/etc/restic.env" "PBO_PERMS_CONFIG_DIR=$jdir/etc" > "$jdir/etc/config"
         printf 'pw\n' > "$jdir/etc/restic-pass"; chmod 0644 "$jdir/etc/restic-pass"; chmod 0600 "$jdir/etc/config"
         : > "$jdir/log/audit.jsonl"   # a janitor run as root (the test) would make it at exit, after the check
         chmod 0755 "$jdir/etc" "$jdir/cache" "$jdir/state/restic-cache" "$jdir/lock"
@@ -405,6 +415,6 @@ jl="$(grep -n 'inst_perms;' <<<"$body" | cut -d: -f1 | paste -sd' ' -)"
     && (( BASH_REMATCH[2] > $(grep -n 'inst_integration;' <<<"$body" | cut -d: -f1) )) \
     && ok "install.sh: inst_perms after the files are in place (host and janitor)" || bad "install main order"
 
-[[ "$(hostfp)" == "$host_before" ]] && ok "nothing above the checkout was changed" || bad "host dirs changed: $(diff <(echo "$host_before") <(hostfp))"
+[[ "$(hostfp)" == "$host_before" ]] && ok "nothing above the checkout and no secret file at its default path was changed" || bad "host files changed: $(diff <(echo "$host_before") <(hostfp))"
 printf '\nperms: %d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

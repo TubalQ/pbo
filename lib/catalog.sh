@@ -351,7 +351,8 @@ catalog_materialize() {
         # staged already, or a cache archive the mount can serve inline: the normal
         # path below (reuse, or link), with a short lock wait; else stage detached
         [[ -f "$dest" ]] || (( use_mount )) || _catalog_stage_detached "$base" "$tier" "$snap"
-        _catalog_stage_lock "$base" -w 10 || die "$EX_TEMPFAIL" "catalog: $base is being staged right now; retry in a few minutes"
+        _cfg_int_r CATALOG_STAGE_WAIT
+        _catalog_stage_lock "$base" -w "$_CI_R" || die "$EX_TEMPFAIL" "catalog: $base is being staged right now; retry in a few minutes"
     else
         _catalog_stage_lock "$base" -w "${GLOBAL_LOCK_TIMEOUT:-7200}" || die "$EX_TEMPFAIL" "catalog: $base is being staged by another process"
     fi
@@ -526,6 +527,47 @@ catalog_mount_run() {
     _restic "$RESTIC_CACHE_REPO" mount --allow-other "$m"
 }
 
+# catalog _umount: the ExecStopPost of pbo-mount.service. restic unmounts on
+# SIGTERM; this covers a restic that died hard and left a dead FUSE mount
+# ("Transport endpoint is not connected"), which would make the next start
+# fail. It reads the mount point from the config (PVE_CATALOG_MOUNT_DIR), so
+# the unit names no path that can differ from it, and lazily unmounts only a
+# FUSE mount there: nothing mounted is fine, any other filesystem (a mistyped
+# key pointing at a real mount) is left alone. Never fails the unit's stop.
+catalog_umount_run() {
+    local m="${PVE_CATALOG_MOUNT_DIR:-/run/pbo/mnt}" fst
+    m="${m%/}"
+    [[ "$m" == /?* ]] || { log_warn "catalog: PVE_CATALOG_MOUNT_DIR '$m' is not an absolute path: nothing unmounted"; return 0; }
+    fst="$(_catalog_mount_fstype "$m")"
+    if [[ -z "$fst" ]]; then
+        log_info "catalog: nothing mounted at $m"; return 0
+    fi
+    case "$fst" in
+        fuse|fuse.*) ;;
+        *) log_warn "catalog: $m is a $fst mount, not restic's FUSE mount: left alone"; return 0 ;;
+    esac
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then log_info "[dry-run] catalog: would unmount $m (lazy, $fst)"; return 0; fi
+    if umount -l -- "$m" 2>/dev/null; then log_info "catalog: unmounted $m (lazy, $fst)"
+    else log_warn "catalog: could not unmount $m ($fst)"; fi
+    return 0
+}
+
+# _catalog_mount_fstype <dir> → the type of the filesystem mounted exactly at
+# <dir> (empty: none). findmnt (util-linux); without it the kernel's mount
+# table, whose paths escape a blank as \040.
+_catalog_mount_fstype() {
+    local d="$1" mp ty
+    if command -v findmnt >/dev/null 2>&1; then
+        findmnt -n -o FSTYPE --mountpoint "$d" 2>/dev/null | tail -1
+        return 0
+    fi
+    while read -r _ mp ty _; do
+        mp="${mp//\\040/ }"
+        [[ "$mp" == "$d" ]] && printf '%s\n' "$ty"
+    done < /proc/self/mounts 2>/dev/null | tail -1
+    return 0
+}
+
 # _catalog_refresh_hook <what>: after run-schedule and prune, with the
 # integration on, refresh the index in a child pbo. A failure is a warning and
 # never fails the caller (the pbo-catalog.timer tries again within 15 minutes).
@@ -552,6 +594,7 @@ rdo_catalog() {
         materialize) catalog_materialize "$@" ;;
         release)     catalog_release "$@" ;;
         _mount)      catalog_mount_run "$@" ;;
+        _umount)     catalog_umount_run "$@" ;;
         *) die "$EX_USAGE" "catalog refresh [--out <file>] | show | materialize [--background] <archive> | release [--all]" ;;
     esac
 }

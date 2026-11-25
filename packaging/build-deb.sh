@@ -33,12 +33,15 @@ install -d "$ROOT/usr/share/pbo/templates"; install -m 0644 "$SRC"/templates/pbo
 install -m 0644 "$SRC"/README.md "$SRC"/RUNBOOK.md "$SRC"/SECURITY.md "$SRC"/CHANGELOG.md "$ROOT/usr/share/doc/pbo/"
 install -m 0644 "$SRC"/LICENSE "$ROOT/usr/share/doc/pbo/copyright"
 
+# restic >= 0.14.0: the default of RESTIC_MIN (lib/config_schema.sh; doctor and
+# install.sh check the config's own minimum). acl: setfacl/getfacl for the
+# CACHE_DIR entry of unprivileged CTs; util-linux: flock, setpriv, findmnt.
 cat > "$ROOT/DEBIAN/control" <<CTL
 Package: pbo
 Version: $DEBVER
 Architecture: all
 Maintainer: TubalQ <71977914+TubalQ@users.noreply.github.com>
-Depends: bash (>= 5), restic (>= 0.16), jq, zstd, util-linux, curl, openssl, openssh-client
+Depends: bash (>= 5), restic (>= 0.14.0), jq, zstd, util-linux, acl, curl, openssl, openssh-client
 Suggests: proxmox-ve
 Breaks: pbo-web
 Section: admin

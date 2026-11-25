@@ -18,8 +18,9 @@ readonly JANITOR_COMMANDS="init doctor list usage verify prune unlock rotate-key
 
 # _role_check <command>: refuse guest operations on a janitor, and a config that
 # claims both roles. Called from main() after load_config. Under `pbo config
-# check|template` (PBO_CFG_LENIENT=1, set only by main()) a broken role config
-# is not fatal: check reports it as an error at its line (_cfg_check_values).
+# check|template` and `catalog _umount` (PBO_CFG_LENIENT=1, set only by main())
+# a broken role config is not fatal: check reports it as an error at its line
+# (_cfg_check_values).
 # The janitor drops to JANITOR_USER first, which reads the config again (0640
 # root:<JANITOR_USER>), except for `config check|set|unset` run as root: they
 # are about /etc/pbo/config itself, which the janitor user may read but not

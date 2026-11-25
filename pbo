@@ -70,6 +70,8 @@ source "${SELF_DIR}/lib/metrics.sh"
 source "${SELF_DIR}/lib/menu.sh"
 # shellcheck source=lib/perms.sh
 source "${SELF_DIR}/lib/perms.sh"
+# shellcheck source=lib/report.sh
+source "${SELF_DIR}/lib/report.sh"
 
 readonly VERSION="0.6.0-dev"
 
@@ -106,12 +108,14 @@ Commands:
   status                      running jobs, queue length, who holds the global lock
   metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
-  doctor [--fix [--fix-parents]] [--perms-only]
-                              health check (repo, timer, permissions, per-guest age);
-                              --fix applies the permission table (modes, owners, the CACHE_DIR
+  doctor [--fix [--fix-parents]] [--perms-only] | doctor --report
+                              health check (repo, timer, permissions, restic version, per-guest
+                              age); --fix applies the permission table (modes, owners, the CACHE_DIR
                               ACL; audited, with --dry-run listed only), --fix-parents also lets
                               unprivileged CTs pass the directories above CACHE_DIR (u:<uid>:--x),
-                              --perms-only checks (or fixes) permissions alone
+                              --perms-only checks (or fixes) permissions alone. --report: the
+                              environment for a bug report (versions, filesystem, backend types,
+                              tools; no host name, URL, path or secret)
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   job start <command> [args]  run an action in the background (backup, restore, verify, prune,
                               test-restore, ...); prints the job id at once
@@ -165,7 +169,7 @@ Commands:
   ingest --vmid <vmid> --archive <path>
                               upload an archive a PVE backup job wrote to the pbo spool (the
                               vzdump hook runs this; guest lock only, cache and offsite)
-  ingest --pending            ingest spool archives older than 10 min (unless vzdump runs) and
+  ingest --pending            ingest spool archives older than INGEST_PENDING_MIN (10 min) unless vzdump runs, and
                               copy offsite the ingested snapshots whose copy failed
   integrate status            the Proxmox integration: mode, PVE versions, plugin, storage, hook,
                               spool, catalogue, PVE jobs to pbo, the storage.cfg/vzdump.conf recipe
@@ -299,7 +303,8 @@ cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result 
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
 cmd_doctor() {
-    _doctor_args "$@" || die "$EX_USAGE" "unknown doctor flag: $DOCTOR_BAD_ARG (use --fix, --fix-parents, --perms-only, --dry-run)"
+    _doctor_args "$@" || die "$EX_USAGE" "unknown doctor flag: $DOCTOR_BAD_ARG (use --fix, --fix-parents, --perms-only, --report, --dry-run)"
+    if (( DOCTOR_REPORT )); then rdo_doctor_report; return; fi
     # --fix changes modes, owners and ACLs: the command record in audit.jsonl
     # must not claim read_only (a dry run still is)
     (( DOCTOR_FIX )) && AUDIT_RW_OVERRIDE=1
@@ -447,10 +452,17 @@ main() {
     # refuses, and `config template` does not depend on it, so neither stops on
     # a line the reader refuses. Set here only, never from the environment: a
     # lenient load elsewhere would run a command on what is left of the config.
+    # `catalog _umount` (pbo-mount.service's ExecStopPost) loads leniently too
+    # and runs on a RESTIC_ENV_FILE pbo refuses: it only lazily unmounts a FUSE
+    # mount at PVE_CATALOG_MOUNT_DIR and runs no restic, and a dead mount left
+    # there would make the next start fail.
     PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0
     if [[ "$PBO_COMMAND" == config ]]; then
         PBO_SUBCOMMAND="${1:-show}"
         case "$PBO_SUBCOMMAND" in check|template) PBO_CFG_LENIENT=1 ;; esac
+    elif [[ "$PBO_COMMAND" == catalog ]]; then
+        PBO_SUBCOMMAND="${1:-}"
+        [[ "$PBO_SUBCOMMAND" == _umount ]] && PBO_CFG_LENIENT=1
     fi
     load_config
     json_open

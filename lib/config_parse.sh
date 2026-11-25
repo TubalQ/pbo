@@ -256,13 +256,14 @@ _cfg_record() {
     local f="$1" o="$2" n="$3" k="$4" x="$7" known=0 fl='' prev
     if [[ "${_CFG_CS:-0}" != 1 ]]; then known=1
     elif [[ -n "${CS_FLAGS[$k]+x}" ]]; then known=1; fl=",${CS_FLAGS[$k]},"; fi
-    if [[ -n "$x" ]]; then
+    # an envfile is exported as a whole (to restic only): export there is plain
+    if [[ -n "$x" && "$o" != envfile ]]; then
         if (( known )); then
             CFG_WARNINGS+=("$f:$n: export $k: pbo 0.6 reads $k but does not export it to the programs it runs")
         elif _cfg_export_allowed "$k"; then
             CFG_EXPORT[$k]="$5"; known=1
         else
-            CFG_ERRORS+=("$f:$n: export $k is not allowed: a config may export only the proxy variables (http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY); use a systemd drop-in (Environment=) for others, or RESTIC_ENV_FILE once pbo has it")
+            CFG_ERRORS+=("$f:$n: export $k is not allowed: a config may export only the proxy variables (http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY); put variables for restic (backend credentials) in RESTIC_ENV_FILE, others in a systemd drop-in (Environment=)")
             return 0
         fi
     fi
@@ -294,7 +295,9 @@ _cfg_record() {
 
 # _cfg_parse_file <file> [origin]: read one config file into the results (added
 # to what earlier files gave, the way a later sourced file overrides an earlier
-# one). origin: shared, local (default) or file. Returns 1 when the file has errors.
+# one). origin: shared, local (default), file, or envfile (RESTIC_ENV_FILE: the
+# same grammar, any variable name, export allowed; _restic_env_read gives it
+# results of its own). Returns 1 when the file has errors.
 #
 # Grammar, per line (ADR 0009): a UTF-8 BOM on line 1 and a trailing CR are
 # dropped (warnings); blank lines and lines whose first non-blank is # are
@@ -325,8 +328,11 @@ _cfg_parse_file() {
         CFG_ERRORS+=("$file:0: cannot read the file"); return 1
     fi
     # the core of the schema is enough (which keys exist, their flags): it is
-    # all load_config loads on a plain start
-    _CFG_CS=0; if declare -F _cs_core >/dev/null; then _cs_core; _CFG_CS=1; fi
+    # all load_config loads on a plain start. An envfile (RESTIC_ENV_FILE,
+    # lib/restic.sh) is no config: its keys are restic's environment, not
+    # schema keys, so it is read as if no schema were loaded (every name
+    # counts, and no message ever repeats a value).
+    _CFG_CS=0; if [[ "$origin" != envfile ]] && declare -F _cs_core >/dev/null; then _cs_core; _CFG_CS=1; fi
     # byte-wise: the grammar is ASCII, and C-locale matching is faster
     local LC_ALL=C
     local nerr="${#CFG_ERRORS[@]}" n=0 l t k v x val body after r ok sq="'" slow="${_CFG_SLOW:-0}"

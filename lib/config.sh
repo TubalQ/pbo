@@ -100,13 +100,19 @@ _config_rows() {
 }
 
 # _config_envelope <rows>: the `config` result object around the key rows.
+# restic_env: RESTIC_ENV_FILE as load_config found it (lib/restic.sh): the
+# names of its variables and the number of findings, never a value.
 _config_envelope() {
     # file_schema: what the file declares (PBO_CONFIG_VERSION has a default now)
     jq -c --arg f "${PBO_CONFIG_LOADED:-}" --arg sf "$(_config_shared_file)" --arg ver "${CFG_VAL[PBO_CONFIG_VERSION]:-}" \
         --arg lf "${PBO_CONFIG_LOCAL:-}" --argjson schema "${PBO_CONFIG_SCHEMA:-1}" --arg role "${PBO_ROLE:-host}" \
+        --arg ef "${RESTIC_ENV_FILE:-}" --arg ep "${RENV_PRESENT-0}" --arg ek "${RENV_KEYS[*]-}" --arg en "$( [[ -n "${RENV_ERRORS[0]+x}" ]] && echo "${#RENV_ERRORS[@]}" || echo 0 )" \
         '{status:"ok", ok:true, file:(if $f == "" then null else $f end), shared_file:(if $sf == "" then null else $sf end),
           local_file:(if $lf == "" then null else $lf end), config_schema:$schema,
-          file_schema:(if $ver == "" then null else ($ver | tonumber? // $ver) end), role:$role, keys:.}' <<<"$1"
+          file_schema:(if $ver == "" then null else ($ver | tonumber? // $ver) end), role:$role,
+          restic_env:{file:(if $ef == "" then null else $ef end), present:($ep == "1"),
+                      variables:($ek | split(" ") | map(select(length > 0))), errors:($en | tonumber)},
+          keys:.}' <<<"$1"
 }
 
 # config [show] | list [--all]
@@ -139,6 +145,8 @@ _config_view() {
             (if .secret then (if .set then "<set>" else "<unset>" end) elif .value == "" then "-" else (.value | mask | cut) end),
             .source, (if .known then (.type | pretty) else "unknown key" end) ] | @tsv' <<<"$out"
     } | { column -t -s $'\t' 2>/dev/null || cat; }
+    # the variables RESTIC_ENV_FILE gives restic: their names only
+    jq -r '.restic_env | select(.present) | "\nRESTIC_ENV_FILE \(.file): \(.variables | length) variable(s) for restic only\(if (.variables | length) > 0 then " (" + (.variables | join(" ")) + ")" else "" end)\(if .errors > 0 then "; pbo refuses the file (pbo config check)" else "" end)"' <<<"$out"
 }
 
 # config get KEY: the effective value (a secret: <set> or <unset>).
@@ -389,8 +397,17 @@ _config_check_cmd() {
         [[ "$role" == janitor ]] || role=host
     fi
     _cfg_check_values "$role"
+    # RESTIC_ENV_FILE (lib/restic.sh): load_config checked it; its findings are
+    # listed under its own name (key names and line numbers, never a value).
+    # A finding there stops every command but this one, doctor and version.
+    local -a show_files=("${PBO_CONFIG_FILES[@]+"${PBO_CONFIG_FILES[@]}"}")
+    if [[ -z "$file" && "${RENV_PRESENT-0}" == 1 ]]; then
+        show_files+=("$RESTIC_ENV_FILE")
+        CFG_ERRORS+=("${RENV_ERRORS[@]+"${RENV_ERRORS[@]}"}")
+        CFG_WARNINGS+=("${RENV_WARNINGS[@]+"${RENV_WARNINGS[@]}"}")
+    fi
     # errors every command stops on that are not the reader's (the role checks,
-    # the janitor user's access above)
+    # the janitor user's access above, RESTIC_ENV_FILE)
     nstop=$(( ${#CFG_ERRORS[@]} - nref ))
     # the lines pbo ignores are errors here: nothing in a config should be dropped
     CFG_ERRORS+=("${CFG_IGNORED[@]+"${CFG_IGNORED[@]}"}")
@@ -410,7 +427,7 @@ _config_check_cmd() {
 
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         local rec='' diffs='' fails='' k src
-        for f in "${PBO_CONFIG_FILES[@]}"; do
+        for f in "${show_files[@]+"${show_files[@]}"}"; do
             rec+="$f"$'\x1e'"$(_config_entries "$f")"$'\x1d'
         done
         if (( compare )); then
@@ -436,7 +453,7 @@ _config_check_cmd() {
     else
         local l kind msg
         (( ${#PBO_CONFIG_FILES[@]} )) || printf 'no config file: pbo uses the defaults\n'
-        for f in "${PBO_CONFIG_FILES[@]}"; do
+        for f in "${show_files[@]+"${show_files[@]}"}"; do
             while IFS=$'\x1f' read -r l kind msg; do
                 [[ -n "$kind" ]] && printf '%s:%s: %s: %s\n' "$f" "$l" "$kind" "$msg"
             done < <(_config_entries "$f")
@@ -445,7 +462,7 @@ _config_check_cmd() {
             for l in "${CCB_LINES[@]+"${CCB_LINES[@]}"}"; do printf '%s\n' "$l"; done
             [[ -z "$CCB_OK" ]] || printf '%s\n' "$CCB_OK"
         fi
-        printf 'pbo config check: %d error(s), %d warning(s) in %d file(s)\n' "$nerr" "$nwarn" "${#PBO_CONFIG_FILES[@]}"
+        printf 'pbo config check: %d error(s), %d warning(s) in %d file(s)\n' "$nerr" "$nwarn" "${#show_files[@]}"
         if (( nref )); then
             printf "pbo refuses this config: fix the lines above (pbo 0.6 reads KEY=VALUE lines and does not run the config as shell code)\n"
         elif (( nstop )); then

@@ -38,9 +38,11 @@
 the schema (`lib/config_schema.sh`) and the read-only `pbo config` commands, M2
 the config grammar (the reader next to `source`), M3 loading (the reader
 replaces `source`), M4 the writer (`pbo config set|unset`), M5 retention per
-guest, M6 permissions, M7 the cache move, M8 the wizard. This ADR is filled in
-as the milestones land: grammar, schema format, writer, the move's state
-machine, the retention equivalence argument, and the permission table.
+guest, M6 permissions, M7 the cache move, M8 the wizard, MP portability
+(nothing that differs between installations hard-coded; part 1 without the
+writer, part 2 with it). This ADR is filled in as the milestones land:
+grammar, schema format, writer, the move's state machine, the retention
+equivalence argument, the permission table, and the portability rules.
 
 ### Config grammar (M2)
 
@@ -83,7 +85,8 @@ keeps working).
   config keys to child processes); accepted and recorded in `CFG_EXPORT` for
   `http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (M3 exports
   those to the programs pbo runs); refused for anything else, with the hint to
-  use a systemd drop-in (`Environment=`) or, once it exists, `RESTIC_ENV_FILE`.
+  put variables for restic in `RESTIC_ENV_FILE` (see "Portability"), others
+  in a systemd drop-in (`Environment=`).
   An exported `PATH`, `IFS`, `BASH_ENV` or `LD_PRELOAD` would change what root
   runs. An unquoted `{` on an export line is refused: `export` is a declaration
   builtin, so bash brace-expands its argument (`export KEEP_LOCAL={1,2}` sets
@@ -181,9 +184,10 @@ variables; nothing the config says can run, export or overwrite anything else.
   bash but no longer run as code (CHANGELOG 0.6.0 migration notes). pbo does not
   run on the rest of the file: a dropped line would silently fall back to a
   default (another repo, another retention). Lenient mode (`PBO_CFG_LENIENT`,
-  set only by main() for `config check` and `config template`) keeps the
-  accepted lines and goes on, so check can report and template does not depend
-  on the config.
+  set only by main() for `config check`, `config template` and `catalog
+  _umount`) keeps the accepted lines and goes on, so check can report, template
+  does not depend on the config, and pbo-mount.service's cleanup (a lazy
+  unmount of a FUSE mount, no restic) still runs on a config pbo refuses.
 - **Variables.** `PBO_CONFIG_LOCAL` is always the local file (`/etc/pbo/config`
   or `PBO_CONFIG`), whether it exists or not: the only file pbo writes. 0.5's
   `_cfg_set` (setup, menu) and `_integ_set_mode` (integrate) wrote to
@@ -425,8 +429,8 @@ where to point METRICS_FILE).
   user is a test or dev setup. The DR key's and the other secrets' owner on a
   host is reported, not changed.
 
-**Parents.** For each unprivileged CT's mapped root (from `lxc.idmap` or
-`/etc/subuid`, `_ct_root_uid`) and each directory above the real CACHE_DIR,
+**Parents.** For each unprivileged CT's mapped root (from its `lxc.idmap`,
+else 100000: `_ct_root_uid`) and each directory above the real CACHE_DIR,
 root enters the directory and `setpriv --reuid U --regid U --clear-groups --
 test -x .` asks the kernel whether U may pass it (ACLs included). Each
 directory is judged on its own, so one pass names every directory that blocks.
@@ -451,3 +455,163 @@ that pass; with `--fix` the changes (`FIXED`, or `WOULD FIX` in a dry run) and
 `changes: [...]` in its JSON. `doctor --fix` marks its audit.jsonl command
 record `read_only: false` (`AUDIT_RW_OVERRIDE`); with `--dry-run` it stays
 true.
+
+### Portability (MP, part 1)
+
+**Principle.** Everything that can differ between hosts is a schema key with a
+default, or is derived at run time: paths, names, times, limits, the backend
+and uids. What is genuinely fixed (pmxcfs at `/etc/pve`, `/proc`, the two
+install layouts, the shared system directories pbo refuses to touch) is listed
+with its reason. Part 1 is everything that needs no config writer; the timer
+schedules (systemd drop-ins written by `config set`) and per-node storage ids
+in a cluster come with the writer in part 2.
+
+**The lint.** `tests/hardcode.sh` scans what runs on a host (`pbo`, `lib/`
+without the schema, `install.sh`, `systemd/`, `pve-plugin/`) for absolute
+paths, host names and IP addresses, and clock times outside comments. A
+literal fallback of a config key (`${KEY:-...}`) counts as the schema's value:
+tests/config.sh proves each equals the key's default. Everything else must
+match an entry of `tests/hardcode.allow` (an extended regex over
+`<file>:<value>` and its reason); an entry that matches nothing fails the lint
+too, so the list is what the code really holds. Fixed on the way:
+preflight read `/etc/pve/storage.cfg` instead of `PVE_STORAGE_CFG`,
+`_local_node` read `/etc/pve/.members` instead of the pmxcfs directory
+(`PBO_PVE_CFS_DIR`), and install.sh named the default log, state and cache
+directories instead of taking them from the schema.
+
+**RESTIC_ENV_FILE.** S3, B2, Azure, GCS and rclone take their credentials
+from environment variables, which the strict reader does not export (an
+exported `PATH` or `LD_PRELOAD` changes what root runs). They live in
+`RESTIC_ENV_FILE` (default `/etc/pbo/restic.env`; local-only: the
+cluster-shared config cannot point every node at a file in pmxcfs, which
+passes the mode check and could carry variables that make restic or a backend
+SDK run a program):
+
+- The config grammar (`_cfg_parse_file` with origin `envfile`): any variable
+  name, `export` allowed, a `${NAME}` only to a name set earlier in the same
+  file (never pbo's environment), no message ever repeats a value.
+- Names that change what runs, that pbo sets for restic itself, or that are
+  pbo's own are refused with their line: `PATH`, `IFS`, `ENV`, `BASH_ENV`,
+  `LD_*`, `GCONV_PATH`, `BASH_FUNC_*` and the like; `RESTIC_REPOSITORY*`,
+  `RESTIC_PASSWORD*`, `RESTIC_FROM_*`, `RESTIC_CACHE_DIR`,
+  `RESTIC_REST_USERNAME`/`PASSWORD` (from the config); `RESTIC_HOST`, which
+  since restic 0.17 filters every snapshot command by host, while pbo passes
+  the node as `--host` on backup only and expects listings and retention to
+  see all hosts; every config key (`RESTIC_BIN`, `RESTIC_SFTP_COMMAND`,
+  `RESTIC_REST_PASSWORD_FILE`, `RESTIC_CACERT`, ...: they belong in the
+  config, where the exec and local-only rules apply) and pbo's internal names
+  (`RESTIC_OPTS`, `PBO_*`, `CFG_*`, `RENV_*`, `_*`, `EX_*`).
+- File rules, those of the config tightened for a file that holds nothing but
+  secrets: a regular file (no symlink), owned by root or the user pbo runs as
+  (on a janitor also JANITOR_USER: root reads the file before it drops to
+  that user), not writable by group or others, not readable by others. A
+  missing file is fine. The permission table fixes it to 0600 (janitor: the
+  user's, 0400).
+- Scope: load_config checks the file once and keeps only its key names
+  (`RENV_KEYS`); the values are read again in the subshell of each restic
+  call and set on restic's command alone (`env -- KEY=VALUE ... restic`,
+  `_restic_pf`), never as variables of that shell: the program, its options
+  and the rest-server password file are taken from the config before the file
+  is read, so even a name the list missed cannot change what pbo runs or
+  reads. pbo's shell, the programs it runs
+  (vzdump, pct, systemctl, curl) and the hooks never see them. Every restic
+  call that opens a repo goes through `_restic_pf` (rotate-key's own password
+  files too); `restic version` and `--help` go through `_restic_bin`, without
+  the environment; tests/portability.sh checks that nothing else runs
+  `RESTIC_BIN`. The rest-server login is now exported in that subshell too
+  (rotate-key exported it into pbo's shell).
+- A file pbo refuses stops every command with 78, like a refused config line,
+  except those that diagnose it: `config` (check lists the file's errors by
+  line), `doctor` (FAIL per finding), `version` and `help`, and `catalog
+  _umount` (below). There a restic call is refused with the reason instead of
+  being run without the credentials. install.sh's upgrade guard checks the
+  file with the same code and refuses the install while pbo would refuse it.
+
+**pbo-mount.service.** Its `ExecStopPost` unmounted the fixed `/run/pbo/mnt`,
+while `PVE_CATALOG_MOUNT_DIR` is a key: with another mount point a dead FUSE
+mount stayed behind. `pbo catalog _umount` reads the config and lazily
+unmounts what is mounted at that directory only when it is a FUSE mount
+(findmnt; the kernel's mount table without it): nothing mounted is fine,
+another filesystem there is left alone. It runs no restic, so it loads the
+config leniently (as `config check` does) and is exempt from the
+RESTIC_ENV_FILE stop: when restic died because of a refused config line or
+env file, the dead mount still goes, and the next start does not fail on it.
+The units keep the install.sh path (`/usr/local/lib/pbo`) and
+`packaging/build-deb.sh` rewrites them; a test installs both layouts
+(install.sh's own functions into a tree, the .deb for real when `dpkg-deb` is
+there) and checks that every program a unit runs exists there, runs, and is
+called with a command pbo has (and, for `catalog`, a subcommand it has).
+
+**RESTIC_MIN.** The default, 0.14.0, is the oldest restic with everything
+pbo always uses: `copy --from-repo`, `init --copy-chunker-params --from-repo`
+and `RESTIC_FROM_PASSWORD_FILE` (0.14.0 renamed `--repo2`), the
+`sftp.connections` option (0.14.0), and repository format 2, which 0.14
+writes by default and older releases cannot read. The rest is older (`--no-lock`
+for `cat`, `dump`, `forget --json` with reasons, `--group-by ''`, `mount
+--allow-other`, percentages for `--read-data-subset`) or optional: `--retry-lock`
+(0.16.0) is used only when `restic --help` lists it, the snapshot summary
+(0.17.0) only when present. A forget reason names its snapshot by `short_id`
+only since 0.17.0; `list --reasons` finds it by time and tree in the group's
+keep list on older releases. One feature raises the floor where it is used:
+the rest-server login goes to restic in its environment, never on its command
+line, which restic reads since 0.16.1 (`RESTIC_REST_USERNAME` set: 0.16.1).
+pbo uses no `rewrite`, no `--skip-if-unchanged`, no JSON field newer than
+these. Doctor FAILs below the minimum; install.sh refuses before any pbo file
+is copied (`--force` installs anyway) and names what to install, downloading
+nothing. Both read the cluster-shared config and the local one, so a
+rest-server login or a raised `RESTIC_MIN` in the shared file counts. The .deb depends on restic (>= 0.14.0) instead of (>= 0.16), so
+distributions that ship 0.14 can install it; CI still runs one pinned
+release, so the range below it is supported by this analysis, not by a test
+run (README, "Compatibility").
+
+**Thresholds.** The fixed values an operator could reasonably need to change
+became advanced keys with the old value as default: `PREFLIGHT_POOL_FREE_PCT`
+(150: a ZFS pool's free space against what the guest's volumes use),
+`BATCH_FIT_PCT` (85: how much of CACHE_DIR's free space batch mode may plan
+for), `INGEST_PENDING_MIN` (10 min), `PVE_SPOOL_MAX_AGE` (24 h),
+`PVE_JOB_WINDOW_MIN` (60 min) and `CATALOG_STAGE_WAIT` (10 s). The waits,
+TTLs and lock timeouts were keys already. Arithmetic reads them through
+`_cfg_int_r`, which falls back to the default for a value that is not a whole
+number (doctor names it), so a typo never breaks a backup. Protocol constants
+stay: exit codes, the catalogue and JSON versions, pbo's own polling steps,
+the PVE versions the integration needs.
+
+**Dependencies.** `setfacl`/`getfacl` (the CACHE_DIR entry for unprivileged
+CTs) come from `acl`, which minimal Debian installs lack; `setpriv` (the
+parents check) and `findmnt` (the mount cleanup) from `util-linux`. The .deb
+depends on both, install.sh installs them, doctor names the exact package
+when one is missing.
+
+**Time.** vzdump names an archive after the node's local time, and pbo's own
+names and `ts=` tags do the same (`date +%Y_%m_%d-%H_%M_%S`); the ts is only
+ever compared as text. Instants are instants: the catalogue's ctime is the
+snapshot's restic time (with its offset), the timers' next run is parsed with
+the zone systemctl printed it in. Retention is restic's: it buckets each
+snapshot by the local day of the offset it recorded, which is the node's zone
+when the snapshot was taken, and pbo passes that plan through. The storage
+plugin's fallback ctime reads the name as local time. tests/portability.sh
+runs these paths under UTC, +05:30 and -03:00; for retention it takes the
+snapshots in each zone and checks that zone's own plan, which differs
+between the three. A PVE job's next run is compared with pbo's
+timer times as minutes of the local day, which is what both are.
+
+**A CT's mapped root.** `_ct_root_uid` takes the CT's own `lxc.idmap: u 0`
+line in its main section, else 100000. pve-container never reads
+`/etc/subuid`: a CT without an idmap always runs its root as 100000, so pbo
+read root's range there (0.5) and put the CACHE_DIR ACL on another uid when
+an admin had changed that range. It no longer reads the file. Tested with
+idmaps (split ranges, g lines, a snapshot section); never the real files.
+
+**`pbo doctor --report`.** An environment report for a bug report, text or
+JSON: pbo's version and layout (deb, install.sh or source), the PVE package
+versions, restic, kernel, perl, bash, systemd and OS release, the UTC offset,
+single node or cluster (node count and quorum, from pmxcfs' member list), the
+filesystem type of CACHE_DIR and whether it has POSIX ACLs (read-only: ZFS
+acltype, mount options), the backend type of each repo (sftp, rest, s3, b2,
+azure, gs, swift, rclone, local, other), append-only, the integration mode,
+whether RESTIC_ENV_FILE exists and how many variables it sets, and which
+optional tools exist. It never prints a node or host name, URL, user, path or
+value: every field is a version, a count, a type or a yes/no, and a value that
+is not version-shaped is shown as "other". tests/portability.sh plants
+secrets, URLs, users, hosts, a port and paths in the config and checks that
+none appears.

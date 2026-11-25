@@ -9,6 +9,10 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # a time budget run alone at the end, so the parallel load cannot make them
 # flaky. Output keeps the "=== <suite> ===" headers CI turns into annotations.
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 # The config corpus (0.6 M2, M3, ADR 0009): the strict reader's verdict on every config a
 # suite loads through load_config is logged, and for each file it accepts, the
 # keys bash reads differently when it sources the file in a clean subshell
@@ -20,7 +24,7 @@ cd "$(dirname "$0")/.." || exit 1
 export PBO_TEST_CONFIG_LOG="$PWD/run-config-corpus/log"
 rm -rf run-config-corpus; mkdir -p run-config-corpus; : > "$PBO_TEST_CONFIG_LOG"
 
-par_suites=(run restic schedule ownership catalog ingest integrate install perl menu host appendonly verify policy retention notify metrics restoretest json jobs regressions perms)
+par_suites=(run restic schedule ownership catalog ingest integrate install perl menu host appendonly verify policy retention notify metrics restoretest json jobs regressions perms portability hardcode)
 serial_suites=(config config_parse)   # time-budget assertions: run without other load
 jobs="${PBO_TEST_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || jobs=2

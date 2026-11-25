@@ -23,6 +23,7 @@ STATE_DIR=/var/lib/pbo                       # jobs, lock holders, restore-test 
 # Add extra vmids here to force stop mode for them too (comma-separated).
 VZDUMP_MODE=snapshot                         # vzdump --mode for every guest not forced to stop
 VZDUMP_STOP_VMIDS=                           # these vmids are also backed up with --mode stop (comma-separated)
+#PREFLIGHT_POOL_FREE_PCT=150                 # preflight: the ZFS pool of a guest needs this much free space, in percent of what its backed-up volumes use
 
 # --- schedule ---
 # auto  = back up every guest ON THIS NODE (LXC + VM), auto-discovering new ones.
@@ -33,6 +34,7 @@ VZDUMP_STOP_VMIDS=                           # these vmids are also backed up wi
 # repo lock). Empty = any node may prune (restic's lock keeps concurrent attempts safe).
 BACKUP_ORDER=auto                            # auto | a comma-separated vmid list (critical first)
 BACKUP_MODE=stream                           # stream (one-by-one, low disk) | batch (dump all→upload)
+#BATCH_FIT_PCT=85                            # batch mode runs only when the estimated dumps fit in this percentage of the free space of CACHE_DIR (else stream)
 GLOBAL_LOCK_TIMEOUT=7200                     # seconds a scheduled run waits in the queue
 #SCHEDULE_LOCK_TIMEOUT=7200                  # seconds the prune timer waits for a running run-schedule (and vice versa); the default follows GLOBAL_LOCK_TIMEOUT
 PRUNE_OWNER=                                 # cluster: the node that prunes; empty = any node
@@ -95,6 +97,11 @@ DOCTOR_MAX_AGE=172800                        # 48h, `pbo doctor` flags a guest w
 # just a name). `pbo setup` pins the host key into /etc/pbo/known_hosts and uses
 # StrictHostKeyChecking=yes; accept-new is the trust-on-first-use fallback:
 #   RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+# Other restic backends (s3:, b2:, azure:, gs:, rclone:) read their credentials
+# from the environment: put them in RESTIC_ENV_FILE (KEY=VALUE, chmod 600), e.g.
+#   AWS_ACCESS_KEY_ID=...
+#   AWS_SECRET_ACCESS_KEY=...
+# pbo exports them to restic only, never to its own shell or the hooks.
 #RESTIC_BIN=restic                           # the restic binary (tests point it at a scratch binary)
 #LOCAL_REPO=true                             # true = cached (local repo + copy), false = offsite only
 #OFFSITE_ENABLED=true                        # false = local repo only (no offsite copy)
@@ -104,6 +111,8 @@ DOCTOR_MAX_AGE=172800                        # 48h, `pbo doctor` flags a guest w
 #RESTIC_SFTP_CONNECTIONS=8                   # parallel sftp connections (faster restore; Storage Box ~10 max)
 #RESTIC_RETRY_LOCK=10m                       # backup/copy/prune wait this long on a locked repo (restic >= 0.16)
 #RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass   # repo password (DR key), 0600
+#RESTIC_ENV_FILE=/etc/pbo/restic.env         # KEY=VALUE lines exported to restic only (S3, B2, Azure, GCS, rclone credentials), 0600; a missing file is fine
+#RESTIC_MIN=0.14.0                           # the oldest restic pbo runs with (doctor FAIL, install.sh refuses); a rest-server user (RESTIC_REST_USERNAME) needs 0.16.1
 #RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache  # the restic metadata cache; the default follows STATE_DIR
 #PBO_KNOWN_HOSTS=/etc/pbo/known_hosts        # where `pbo setup` pins the host key of the SFTP server
 
@@ -156,6 +165,10 @@ DOCTOR_MAX_AGE=172800                        # 48h, `pbo doctor` flags a guest w
 #CATALOG_LOCK_TIMEOUT=600                    # seconds a catalogue refresh waits for another one
 #CATALOG_MOUNT_BUSY_WAIT=900                 # prune/verify wait this long (s) while a restore reads through the mount, then exit 75
 #CATALOG_MAX_AGE=7200                        # doctor warns when the catalogue is older (2 h)
+#CATALOG_STAGE_WAIT=10                       # seconds a GUI request waits while another process stages the same archive, then asks to retry
+#INGEST_PENDING_MIN=10                       # ingest --pending leaves spool archives younger than this many minutes alone (a PVE job may still write them)
+#PVE_SPOOL_MAX_AGE=86400                     # doctor FAIL: spool archives, or ingested snapshots not yet offsite, older than this (s) are stuck (24 h)
+#PVE_JOB_WINDOW_MIN=60                       # doctor warns about a PVE backup job to pbo that starts within this many minutes of a pbo timer
 #VZDUMP_CONF=/etc/vzdump.conf                # its storage: line is the default for jobs without one
 #PVE_STORAGE_CFG=/etc/pve/storage.cfg        # read when `pvesh get /storage` fails
 #VZDUMP_LOCK=/var/run/vzdump.lock            # the vzdump node lock: `ingest --pending` waits for no running vzdump

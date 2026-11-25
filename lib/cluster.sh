@@ -11,9 +11,9 @@
 
 # _local_node → this node's pmxcfs name (fallback: short hostname).
 _local_node() {
-    local n=""
-    [[ -r /etc/pve/.members ]] && command -v jq >/dev/null 2>&1 \
-        && n="$(jq -r '.nodename // empty' /etc/pve/.members 2>/dev/null)"
+    local n="" m="${PBO_PVE_CFS_DIR:-/etc/pve}/.members"
+    [[ -r "$m" ]] && command -v jq >/dev/null 2>&1 \
+        && n="$(jq -r '.nodename // empty' "$m" 2>/dev/null)"
     [[ -n "$n" ]] || n="$(hostname -s 2>/dev/null || hostname)"
     printf '%s' "$n"
 }

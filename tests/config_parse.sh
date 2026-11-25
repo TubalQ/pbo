@@ -14,6 +14,10 @@ export PBO_NO_NOTIFY=1
 # whole suite loaded (load_config's test hook).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -46,6 +50,18 @@ if [[ "${1:-}" == --corpus ]]; then
         && ok "it reports the key crlf.cfg reads differently from bash (DIFF records reach the log)" || bad "crlf.cfg's difference not in the corpus log"
     grep -q "^ERROR	$ROOT/run-config-parse/bad.cfg:9: command substitution" "$log" \
         && ok "it reports the line bad.cfg has that pbo refuses (ERROR records reach the log)" || bad "bad.cfg's error not in the corpus log"
+    # no suite reads (or doctor --fix changes) the machine's own secret files:
+    # every RESTIC_ENV_FILE a load resolved is inside the checkout, every other
+    # secret file inside it or absent (SECRETFILE records, _cfg_test_log_files)
+    probs=''
+    while IFS=$'\t' read -r k p c; do
+        [[ -n "$k" ]] || continue
+        [[ "$k" == RESTIC_ENV_FILE || -e "$p" ]] && probs+="  $k=$p ($c)"$'\n'
+    done < <(awk -F'\t' -v r="$ROOT/" '$1 == "SECRETFILE" && index($3, r) != 1 { print $2 "\t" $3 "\t" $4 }' "$log" | sort -u)
+    [[ -z "$probs" ]] && ok "no config a suite loaded points a secret file (RESTIC_ENV_FILE, the password files, NTFY_CREDS_FILE) at the machine's own" \
+        || bad "secret files outside the checkout (set them to a path in run*/):"$'\n'"$probs"
+    grep -q "^SECRETFILE	RESTIC_ENV_FILE	$ROOT/" "$log" \
+        && ok "the resolved secret files reach the log (SECRETFILE records)" || bad "no SECRETFILE record for RESTIC_ENV_FILE in the corpus log"
     # most suites skip themselves without restic: the same test here, not
     # whether a run-*/ dir exists (one may be left over from an earlier run)
     if command -v restic >/dev/null 2>&1; then
@@ -607,13 +623,13 @@ if [[ "$(id -u)" == 0 ]] && id nobody >/dev/null 2>&1 && command -v setpriv >/de
     mkdir -p "$nt/state"; chown nobody "$nt/state"
     printf '_cfg_config_files() { _CFG_FPATH=("%s/c-shared" "%s/c-local"); _CFG_FORIGIN=(shared local); }\n' "$nt" "$nt" >> "$nt/lib/config_parse.sh"
     printf 'KEEP_LOCAL=5\n' > "$nt/c-shared"; chown root:root "$nt/c-shared"; chmod 0640 "$nt/c-shared"
-    NB() { (cd /tmp && setpriv --reuid=nobody --regid="$(id -g nobody)" --clear-groups env -u PBO_CONFIG STATE_DIR="$nt/state" LOG_DIR="$nt/state/log" CACHE_DIR="$nt/state/cache" "$nt/pbo" "$@"); }
+    NB() { (cd /tmp && setpriv --reuid=nobody --regid="$(id -g nobody)" --clear-groups env -u PBO_CONFIG STATE_DIR="$nt/state" LOG_DIR="$nt/state/log" CACHE_DIR="$nt/state/cache" RESTIC_PASSWORD_FILE="$nt/restic-pass" "$nt/pbo" "$@"); }
     out="$(NB version 2>&1)"; rc=$?
     [[ $rc == 0 && "$out" == *"pbo: note: $nt/c-shared is not readable by uid $(id -u nobody)"*"skipped"* && "$out" == *"pbo 0.6"* ]] \
         && ok "a non-root caller that cannot read the shared file: a note, pbo runs on the rest (exit 0)" || bad "unreadable shared as nobody: rc=$rc $out"
     out="$(NB --json config get KEEP_LOCAL 2>/dev/null)"
     jq -e '.value == "2" and .source == "default"' >/dev/null <<<"$out" && ok "... the skipped file's keys are the defaults" || bad "unreadable shared get: $out"
-    out="$(cd /tmp && env -u PBO_CONFIG STATE_DIR="$nt/state" LOG_DIR="$nt/state/log" CACHE_DIR="$nt/state/cache" LOCK_DIR="$nt/state/lock" "$nt/pbo" --json config get KEEP_LOCAL 2>&1)"
+    out="$(cd /tmp && env -u PBO_CONFIG STATE_DIR="$nt/state" LOG_DIR="$nt/state/log" CACHE_DIR="$nt/state/cache" LOCK_DIR="$nt/state/lock" RESTIC_PASSWORD_FILE="$nt/restic-pass" "$nt/pbo" --json config get KEEP_LOCAL 2>&1)"
     jq -e '.value == "5" and .source == "shared"' >/dev/null <<<"$out" && ok "... root still reads it" || bad "shared as root: $out"
     rm -rf "$nt"
 else echo "  (skip: no root/nobody/setpriv for the unreadable shared file check)"; fi

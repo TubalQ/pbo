@@ -3,6 +3,10 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/schedule.sh: step 9 (run-schedule + status), fake backup binary.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 BIN=./pbo; ROOT="$PWD"
 rm -rf "$ROOT/run/schedule"; mkdir -p "$ROOT/run/schedule/state/jobs" "$ROOT/run/schedule/bin" "$ROOT/run/schedule/conf"
 # Proxmox mocked: the test must not see the real host's guests (on a PVE node the

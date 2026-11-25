@@ -6,6 +6,10 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 
 BIN=./pbo
 export PBO_CONFIG="$PWD/etc/config.dev"

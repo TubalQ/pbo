@@ -10,6 +10,10 @@ export PBO_NO_NOTIFY=1
 # file pbo writes, are tested here too. Nothing outside run-config/ is touched.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
+# own files: point them into the checkout, at paths nothing creates (a config
+# line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -36,7 +40,7 @@ out="$(S '
     for k in "${CS_ORDER[@]}"; do
         [[ "$seen" == *" $k "* ]] && echo "duplicate $k"; seen+="$k "
         case "${CS_TYPE[$k]}" in
-            bool|duration|path|dir|string|list|vmids|vmids-csv|url|command) ;;
+            bool|duration|path|dir|string|list|vmids|vmids-csv|url|command|version) ;;
             int:*) [[ "${CS_TYPE[$k]}" =~ ^int:[0-9]*:[0-9]*$ ]] || echo "bad int type $k" ;;
             enum:*) [[ "${CS_TYPE[$k]}" =~ ^enum:[A-Za-z0-9_,-]+$ ]] || echo "bad enum $k" ;;
             *) echo "unknown type $k: ${CS_TYPE[$k]}" ;;
@@ -176,13 +180,16 @@ out="$(S 'for k in $CS_ENV_SWITCHES; do _cs_has "$k" && printf "%s(schema) " "$k
 out="$(S '
     for k in $(cat tests/*.sh | sed -nE "s/^[[:space:]]*(echo \"|printf .)?([A-Z][A-Z0-9_]*)=.*/\2/p" | sort -u); do
         case "$k" in IFS|KEEP_OFSITE_DAILY|PATH|RUN|ROOT|BIN|W|TS|D|H|I|S|P|V|A|BR|OUT|OUT2|LIST|USAGE|TPL|TAG|STO|STORE|SRC|MARK|HOOK|HID|SPOOL|SLOCK|VTS|VMARK|VLOCK|LOCKPID|LOCKDIR|ROOTOK|RE|REAL_PLUGIN|PLUGIN|OFFSITE|DEFER|GLOBAL_LOCK|FAKE_LOG|PATH_NOACL|MY_OWN_KEY_NOBODY_KNOWS|STOREID) continue ;; esac
+        # tests/portability.sh and tests/hardcode.sh: their shell variables, and the
+        # variables of a RESTIC_ENV_FILE fixture (restic'"'"'s environment, not config keys)
+        case "$k" in ALLOW|CFG|E|ENVF|FILES|IR|LI|M|PF_BACKUP_VOLUMES|RR|SP|TZ|ZONES|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|XPROBE_TOKEN|REFV|SCHEMA_DEFS) continue ;; esac
         [[ "$k" == MOCK_* || "$k" == PBO_INSTALL_* || "$k" == PBO_AUDIT_* ]] && continue
         case "$k" in PBO_CONFIG|PBO_CONFIG_LOADED|PBO_CONFIG_SHARED_LOADED) continue ;; esac   # set by load_config, not keys
         _cs_env_switch "$k" && continue
         _cs_has "$k" || printf "%s " "$k"
     done')"
 [[ -z "$out" ]] && ok "keys in the test configs are schema keys" || bad "test config keys not in the schema: $out"
-out="$(S 'for k in PBO_PVE_LXC_DIR PBO_PVE_QEMU_DIR PBO_SUBUID_FILE PBO_PVE_STORAGE_CFG PBO_PVE_TEMPLATE_DIR PBO_PVE_PLUGIN_CHECK PBO_CATALOG; do _cs_flag "$k" internal >/dev/null || printf "%s " "$k"; done')"
+out="$(S 'for k in PBO_PVE_LXC_DIR PBO_PVE_QEMU_DIR PBO_PVE_STORAGE_CFG PBO_PVE_TEMPLATE_DIR PBO_PVE_PLUGIN_CHECK PBO_CATALOG; do _cs_flag "$k" internal >/dev/null || printf "%s " "$k"; done')"
 [[ -z "$out" ]] && ok "test hooks are flagged internal" || bad "not internal: $out"
 
 # --- flags ---------------------------------------------------------------------------------------

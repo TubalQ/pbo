@@ -39,10 +39,31 @@ a copy somewhere safe.
 Nothing exotic:
 
 - A Proxmox host (`pct`, `qm`, `vzdump`).
-- `restic`, `jq`, `zstd`, `flock`, `curl`, `openssl`, `openssh-client`. `install.sh`
-  installs whatever's missing.
-- An SFTP target you can log into with a key. Storage Box paths are relative because the
-  account is chrooted, which is expected.
+- `restic` 0.14.0 or newer (`RESTIC_MIN`; a rest-server login needs 0.16.1), `jq`,
+  `zstd`, `curl`, `openssl`, `openssh-client`, `acl` (`setfacl`, `getfacl`) and
+  `util-linux` (`flock`, `setpriv`, `findmnt`). `install.sh` installs whatever's
+  missing and refuses a restic older than the config needs; `pbo doctor` checks both.
+- A restic repository: an SFTP target you can log into with a key (Storage Box paths
+  are relative because the account is chrooted, which is expected), a rest-server
+  (append-only, see below), a local or mounted directory, or any other restic backend
+  (S3, B2, Azure, GCS, rclone, ...), whose credentials go in `RESTIC_ENV_FILE`.
+
+## Compatibility
+
+What the test suite and CI cover, and what has not been tested. `pbo doctor --report`
+prints the same facts about your host (versions, filesystem, backend types, tools; no
+host name, URL, path or secret), for a bug report.
+
+| Area | Tested | Not tested |
+|---|---|---|
+| Proxmox VE | The Proxmox integration (`pbo integrate`, the storage plugin) needs pve-manager >= 9.2.29 and libpve-storage-perl >= 9.1.18 (install.sh checks them); `tests/integration/` runs on a real PVE 9.2 host. CI runs every suite against mocks of `pct`, `qm`, `vzdump`, `pvesh`, `pvesm` and stub PVE perl modules. | PVE 8 and older. Standalone mode only uses `pct`, `qm` and `vzdump` and may work there, but no release is tested on it. |
+| restic | CI pins one release (see `.github/workflows/ci.yml`); the suites use real local repositories. | Versions between `RESTIC_MIN` (0.14.0) and the pinned one: the minimum comes from the features pbo uses (ADR 0009, "Portability"), not from a test run. |
+| Install layouts | Both: install.sh (`/usr/local/lib/pbo`) and the .deb (`/usr/lib/pbo`); every systemd unit is checked in each layout. | Other prefixes. |
+| CACHE_DIR filesystem | ext4-like filesystems with POSIX ACLs, a filesystem without ACL support (mocked), the ACL mask, an unprivileged CT's mapped root passing the parents (as root). | ZFS with `acltype=posixacl`, btrfs and xfs on real hardware; NFS and CIFS (not refused yet, but ACLs and renames there are untested). |
+| Backends | Local directory repositories (real restic). `tests/integration/pve.sh` runs backup, restore and prune on a PVE host and, with a janitor, the append-only path against a real rest-server. `RESTIC_ENV_FILE` is checked to reach restic and nothing else. | SFTP servers (the wizard's ssh command is tested, a transfer is not), S3, B2, Azure, GCS, rclone and the other restic backends against real services. |
+| Clusters | Which node backs up which guest, from mocked cluster views, and the cluster-shared config (`/etc/pve/pbo/config`). | A real multi-node cluster. |
+| Time zones | Archive names, the catalogue's times and the timers' next run under UTC, +05:30 and -03:00; retention, which restic plans by the local day each snapshot recorded, with snapshots taken in each of those zones. | Daylight-saving transitions. |
+| Users | The suites run as a plain user in CI; run as root they also cover owners, `setpriv` and `chown`. | |
 
 ## Install
 
@@ -273,8 +294,9 @@ Commands:
   policy get <vmid>           a guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
   doctor [--fix [--fix-parents]] [--perms-only]
-                              health check (repo, timer, permissions, alerts, verify, per-guest
-                              age); --fix applies the permission table first
+                              health check (repo, timer, restic version, permissions, alerts,
+                              verify, per-guest age); --fix applies the permission table first
+  doctor --report             the environment for a bug report (no host name, URL, path or secret)
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   timers                      the pbo timers: enabled, next and last run, last result
   config [show]               the effective configuration (secrets never shown)
@@ -536,6 +558,26 @@ unencrypted, but the config is not harmless either: it can hold an ntfy token an
 topic (on a public ntfy server the topic is the password) and the SFTP command. Keep
 it 0600 and out of version control; `pbo config` never prints those values (only
 `<set>` or `<unset>`) and masks credentials in URLs.
+
+Backends that take credentials from the environment (S3, B2, Azure, GCS, rclone) get
+them from `RESTIC_ENV_FILE` (default `/etc/pbo/restic.env`): `KEY=VALUE` lines in the
+same grammar as the config, owned by root and not readable by others (0600). pbo
+exports them to restic and nothing else; a missing file is fine, a file others can
+read or write stops every restic command (exit 78). `pbo doctor` and `pbo config
+check` name the file and its keys, never a value. For example, for
+`RESTIC_OFFSITE_REPO=s3:s3.example.net/bucket/pbo`:
+
+```bash
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+Thresholds that suit one site but not another are advanced keys with the old fixed
+value as default: `PREFLIGHT_POOL_FREE_PCT`, `BATCH_FIT_PCT`, `INGEST_PENDING_MIN`,
+`PVE_SPOOL_MAX_AGE`, `PVE_JOB_WINDOW_MIN`, `CATALOG_STAGE_WAIT` (and the waits and TTLs
+that were keys before). `tests/hardcode.sh` keeps paths, host names and clock times
+out of the code: each one is a schema default, derived, or listed with its reason in
+`tests/hardcode.allow`.
 
 ## Contributing
 

@@ -8,7 +8,9 @@ behaviour; the entry says so when it does.
 Planned (ADR 0009): a config schema, `pbo config list|get|set|unset|check|template`,
 a strict KEY=VALUE reader instead of sourcing the config, moving CACHE_DIR with
 `pbo config set CACHE_DIR`, retention grouped per guest, `pbo doctor --fix`, and
-nothing that differs between installations hard-coded.
+nothing that differs between installations hard-coded (part 1 landed:
+`RESTIC_ENV_FILE`, `RESTIC_MIN`, threshold keys, `pbo doctor --report`, the
+hard-coding lint; the timer schedules and per-node storage ids follow).
 
 Changes behaviour: **the config is no longer run as code.** pbo 0.5 sourced
 `/etc/pbo/config` (and `/etc/pve/pbo/config`) as shell code. pbo 0.6 reads them
@@ -198,6 +200,82 @@ Added
 - `install.sh` runs `pbo doctor --fix --perms-only` once the files are in
   place (host and janitor) and shows the result; it never fails the install.
 
+- `RESTIC_ENV_FILE` (advanced, local-only; default `/etc/pbo/restic.env`; ADR
+  0009, "Portability"): `KEY=VALUE` lines in the config grammar (quotes,
+  `export`, `${NAME}` to a name set earlier in the file), given to restic and
+  nothing else. This is where S3, B2, Azure, GCS and rclone credentials go
+  (`AWS_ACCESS_KEY_ID=...`); a `rest:`, `sftp:` or local repo needs none. A
+  missing file is fine. A file that is a symlink, owned by another user,
+  writable by group or others or readable by others, or that sets `PATH`,
+  `LD_*`, `RESTIC_PASSWORD*`, `RESTIC_REPOSITORY*`, `RESTIC_FROM_*`,
+  `RESTIC_CACHE_DIR`, `RESTIC_HOST` (pbo expects every snapshot query to see
+  all hosts), the rest-server login, a config key (`RESTIC_BIN`,
+  `RESTIC_REST_PASSWORD_FILE`, ...: they belong in the config) or one of pbo's
+  internal names, stops every restic command (exit 78, like a config line pbo
+  refuses); `pbo config check` lists its errors by line and `pbo doctor`
+  reports them as FAIL. The values are read in the subshell of each restic call
+  and set on restic's command alone (`env`), so they cannot change what pbo
+  runs: pbo's own shell, the programs it runs and the hooks never see them, and
+  doctor, `config list|show|check` and the report show the file and its key
+  names, never a value. The cluster-shared config cannot name the file. The
+  permission table checks it (0600 or 0400, `doctor --fix`), and `install.sh`
+  refuses an upgrade while pbo would refuse the file (`--force` installs
+  anyway).
+- `pbo catalog _umount`: the `ExecStopPost` of pbo-mount.service. It reads
+  `PVE_CATALOG_MOUNT_DIR` from the config and lazily unmounts what is mounted
+  there only when it is a FUSE mount (nothing mounted is fine, another
+  filesystem is left alone). It runs no restic, so it also runs on a config
+  line or a RESTIC_ENV_FILE pbo refuses: the dead mount of a restic that
+  failed because of them is still removed.
+- `RESTIC_MIN` (advanced; default 0.14.0, the oldest restic with every feature
+  pbo always uses: `copy --from-repo`, `RESTIC_FROM_PASSWORD_FILE`,
+  `sftp.connections`, repository format 2; ADR 0009 has the list). A
+  rest-server login (`RESTIC_REST_USERNAME`) needs 0.16.1, which reads it from
+  the environment. `pbo doctor` reports the restic version and FAILs below the
+  minimum; `install.sh` refuses before it copies any pbo file and names what to
+  install (`--force` installs anyway); it reads the cluster-shared config and
+  the local one, as pbo does. Nothing is downloaded. `pbo list --reasons` works
+  on 0.14 to 0.16 too, whose forget JSON names a reason's snapshot without its
+  id: pbo finds it by time and tree.
+- Thresholds that differ between sites are advanced keys, with the old fixed
+  values as defaults: `PREFLIGHT_POOL_FREE_PCT` (150, the free space a guest's
+  ZFS pool needs against what its volumes use), `BATCH_FIT_PCT` (85, the share
+  of CACHE_DIR's free space batch mode may plan for), `INGEST_PENDING_MIN` (10,
+  minutes before `ingest --pending` takes a spool archive), `PVE_SPOOL_MAX_AGE`
+  (86400 s, doctor's limit for a stuck spool archive or offsite copy),
+  `PVE_JOB_WINDOW_MIN` (60, doctor's window around pbo's timers) and
+  `CATALOG_STAGE_WAIT` (10 s, a GUI request waiting for another staging of the
+  same archive). A value that is not a whole number falls back to the default
+  (doctor names it).
+- `pbo doctor` names missing tools with the package to install: `setfacl` and
+  `getfacl` (acl), `setpriv` and `findmnt` (util-linux).
+- `pbo doctor --report [--json]`: an environment report to attach to a bug
+  report: pbo's version and layout (deb, install.sh, source), the PVE package
+  versions, restic, kernel, perl, bash, systemd and OS release, the UTC offset,
+  single node or cluster (node count, quorum), CACHE_DIR's filesystem type and
+  POSIX ACL support, each repo's backend type (sftp, rest, s3, b2, azure, gs,
+  swift, rclone, local), append-only, the integration mode, whether
+  RESTIC_ENV_FILE exists (and its number of variables) and which optional tools
+  exist. No node or host name, URL, user, path or secret.
+- `tests/hardcode.sh`: a lint in CI (through tests/all.sh) that fails on an
+  absolute path, host name, IP address or clock time in `pbo`, `lib/`,
+  `install.sh`, `systemd/` or `pve-plugin/` that is not a schema default, a
+  comment, or an entry with its reason in `tests/hardcode.allow` (an entry that
+  matches nothing fails too).
+- `tests/portability.sh`: RESTIC_ENV_FILE's scope and refusals, `catalog
+  _umount`, every systemd unit in both install layouts (the .deb built for
+  real), RESTIC_MIN in doctor and install.sh, the new threshold keys, the
+  dependencies, timestamps under UTC, +05:30 and -03:00 (archive names, the
+  catalogue's ctime, the timers' next run, and that the retention plan restic
+  makes from the local day each snapshot recorded is passed through unchanged),
+  `_ct_root_uid` with custom idmaps, and `doctor --report` with secrets, URLs,
+  hosts and paths planted in the config. Every suite points RESTIC_ENV_FILE
+  into the checkout, and the config corpus check fails when a config a suite
+  loaded resolves a secret file to one of the machine's own.
+- README: a compatibility matrix (what the suites and CI test, and what they
+  do not: PVE versions, restic versions, layouts, filesystems, backends,
+  clusters, time zones).
+
 Changed
 - Doctor's permission lines come from the rule table. The DR key line, the
   CACHE_DIR lines (open, closed, closed without a CT's ACL entry: FAIL) and the
@@ -249,6 +327,26 @@ Changed
   A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
   every run; the host label is only a name, the ssh command says where to
   connect).
+- pbo-mount.service runs `pbo catalog _umount` after it stops instead of
+  `umount -l /run/pbo/mnt`: with another `PVE_CATALOG_MOUNT_DIR` a dead FUSE
+  mount was left behind.
+- The `.deb` depends on `restic (>= 0.14.0)` (was `>= 0.16`) and on `acl`;
+  `install.sh` installs `acl` and `util-linux` when `setfacl`, `getfacl`,
+  `setpriv` or `findmnt` is missing.
+- Every restic call that opens a repo goes through one wrapper, which exports
+  RESTIC_ENV_FILE and the rest-server login in its own subshell: `rotate-key`
+  exported the rest-server password into pbo's shell, and ran restic outside
+  the wrapper.
+- `_ct_root_uid` no longer reads `/etc/subuid`: without an `lxc.idmap: u 0`
+  line pve-container always maps CT root to 100000 and ignores that file, so a
+  custom root range there put the CACHE_DIR ACL (and doctor's check of its
+  parents) on a uid the CT does not run as, and its vzdump failed.
+- Preflight reads storage.cfg from `PVE_STORAGE_CFG`, and the node name comes
+  from the pmxcfs directory pbo is configured with; `install.sh` takes the
+  default log, state and cache directories from the schema. All three had the
+  default path written out.
+- The refusal of `export FOO=...` in the config points restic's variables to
+  `RESTIC_ENV_FILE`.
 
 ## 0.5.0 (unreleased)
 

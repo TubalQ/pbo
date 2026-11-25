@@ -51,9 +51,10 @@ readonly INTEG_TESTED="pve-manager=9.2.32 libpve-storage-perl=9.1.18 qemu-server
 readonly INTEG_PACKAGES="pve-manager libpve-storage-perl qemu-server pve-container"
 readonly INTEG_HOOK_MARKER="# pbo: added by 'pbo integrate enable' (remove with 'pbo integrate disable')"
 readonly PBO_CATALOG_TIMER=pbo-catalog.timer
-readonly INTEG_SPOOL_MAX_AGE=86400    # doctor: spool archives older than this are stuck
-readonly INTEG_JOB_WINDOW_MIN=60      # doctor: a job within this many minutes of a pbo timer
-# times of day of pbo's own timers (systemd/*.timer), for that warning
+# doctor's spool age limit (PVE_SPOOL_MAX_AGE) and job window (PVE_JOB_WINDOW_MIN)
+# are config keys since 0.6. The times of day of pbo's own timers
+# (systemd/*.timer), for the window warning; they become config keys with the
+# timer schedules.
 readonly INTEG_PBO_TIMES="pbo.timer=05:00 pbo-prune.timer=06:30 pbo-verify.timer=10:00"
 
 INTEG_STEPS=()     # what enable/disable changed (with --dry-run: would change)
@@ -299,14 +300,15 @@ _integ_minute_of_day() {
 }
 
 # _integ_near_timers <minute> → "pbo.timer (05:00)" etc. for every pbo timer
-# within INTEG_JOB_WINDOW_MIN minutes of <minute> (around midnight too).
+# within PVE_JOB_WINDOW_MIN minutes of <minute> (around midnight too).
 _integ_near_timers() {
-    local m="$1" kv u hm tm d out=()
+    local m="$1" kv u hm tm d out=() win
+    _cfg_int_r PVE_JOB_WINDOW_MIN; win="$_CI_R"
     for kv in $INTEG_PBO_TIMES; do
         u="${kv%%=*}"; hm="${kv#*=}"
         tm=$(( 10#${hm%%:*} * 60 + 10#${hm#*:} ))
         d=$(( m > tm ? m - tm : tm - m )); (( d > 720 )) && d=$(( 1440 - d ))
-        (( d < INTEG_JOB_WINDOW_MIN )) && out+=("$u ($hm)")
+        (( d < win )) && out+=("$u ($hm)")
     done
     (( ${#out[@]} )) && printf '%s' "${out[*]}"
     return 0
@@ -773,7 +775,7 @@ integrate_disable() {
             INTEG_WARNINGS+=("the spool holds ${#left[@]} archive(s) (${left[*]}): disable stops here unless 'pbo ingest --pending' takes them")
             log_warn "integrate: ${INTEG_WARNINGS[-1]}"
         else
-            die "$EX_TEMPFAIL" "integrate disable: ${#left[@]} archive(s) are still in the spool $spool/dump (${left[*]}): 'pbo ingest --pending' takes archives older than 10 minutes; run 'pbo integrate disable' again after that. PBO_INTEGRATION is already standalone; the storage and the hook stay until then."
+            die "$EX_TEMPFAIL" "integrate disable: ${#left[@]} archive(s) are still in the spool $spool/dump (${left[*]}): 'pbo ingest --pending' takes archives older than ${INGEST_PENDING_MIN:-10} minutes; run 'pbo integrate disable' again after that. PBO_INTEGRATION is already standalone; the storage and the hook stay until then."
         fi
     fi
 
@@ -883,20 +885,22 @@ _doctor_integration_setup() {
     fi
     if [[ -n "$path" || "$(jq -r .files <<<"$spj")" != 0 ]]; then
         [[ "$(jq -r .same_fs_as_cache <<<"$spj")" == true ]] || _di_bad "the spool ${PVE_SPOOL_DIR%/} is not on CACHE_DIR's filesystem: ingest cannot rename archives into the cache"
-        local age n; n="$(jq -r .files <<<"$spj")"; age="$(jq -r '.oldest_age // 0' <<<"$spj")"
-        if (( n > 0 && age > INTEG_SPOOL_MAX_AGE )); then
+        local age n maxage; n="$(jq -r .files <<<"$spj")"; age="$(jq -r '.oldest_age // 0' <<<"$spj")"
+        _cfg_int_r PVE_SPOOL_MAX_AGE; maxage="$_CI_R"
+        if (( n > 0 && age > maxage )); then
             _di_bad "$n archive(s) in the spool, the oldest $(( age / 3600 ))h old: ingest failed ('pbo ingest --pending', see the PVE task log)"
         elif (( n > 0 )); then
             _di_warn "$n archive(s) waiting in the spool (ingest --pending takes them)"
         fi
     fi
     # ingested snapshots whose offsite copy failed (recorded for ingest --pending)
-    local nc oldc
+    local nc oldc smax
     nc="$(_ingest_copy_list | wc -l)"
+    _cfg_int_r PVE_SPOOL_MAX_AGE; smax="$_CI_R"
     if (( nc > 0 )); then
-        oldc="$(find "$(_ingest_copy_dir)" -maxdepth 1 -type f -name '*_*' -mmin +$(( INTEG_SPOOL_MAX_AGE / 60 )) 2>/dev/null | wc -l)"
+        oldc="$(find "$(_ingest_copy_dir)" -maxdepth 1 -type f -name '*_*' -mmin +$(( smax / 60 )) 2>/dev/null | wc -l)"
         if (( oldc > 0 )); then
-            _di_bad "$nc ingested snapshot(s) are in the cache repo but not offsite, $oldc for more than $(( INTEG_SPOOL_MAX_AGE / 3600 ))h: run 'pbo ingest --pending' (records in $(_ingest_copy_dir))"
+            _di_bad "$nc ingested snapshot(s) are in the cache repo but not offsite, $oldc for more than $(( smax / 3600 ))h: run 'pbo ingest --pending' (records in $(_ingest_copy_dir))"
         else
             _di_warn "$nc ingested snapshot(s) wait for their offsite copy (ingest --pending takes them)"
         fi
