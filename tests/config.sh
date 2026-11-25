@@ -371,6 +371,41 @@ out="$(env -i PATH="$PATH" bash -c 'set -u; source lib/common.sh; source lib/res
 $BIN config template --role web >/dev/null 2>&1; rc=$?
 [[ $rc == 64 ]] && ok "config template --role <other>: exit 64" || bad "template bad role rc=$rc"
 
+# config template and help run before load_config: no config is needed, read or
+# checked, and nothing is written (they work as any user on a machine without
+# /etc/pbo). A copy of the entry point sources tests/fixtures/stateless_guard.sh,
+# which stops pbo (99) in any function that reads the config, makes a directory,
+# takes a lock or writes a log, audit or JSON marker file. Every path pbo could
+# use points into $sl/none, which must still not exist afterwards.
+sl="$RUN/stateless"; mkdir -p "$sl/tree"
+{ sed '$d' pbo; printf '%s\n' 'source "$SELF_DIR/../../../tests/fixtures/stateless_guard.sh"'; tail -n 1 pbo; } > "$sl/tree/pbo"
+chmod 755 "$sl/tree/pbo"; ln -s "$ROOT/lib" "$sl/tree/lib"
+no="$sl/none"
+SLR() { env PBO_CONFIG="$no/config" LOG_DIR="$no/log" STATE_DIR="$no/state" LOCK_DIR="$no/lock" CACHE_DIR="$no/cache" \
+        TMPDIR="$no/tmp" PBO_PVE_CFS_DIR="$no/pve" PVE_STORAGE_CFG="$no/pve/storage.cfg" VZDUMP_CONF="$no/vzdump.conf" \
+        PBO_SYSTEMD_DIR="$no/systemd" "$sl/tree/pbo" "$@"; }
+# the guard itself: a command that loads the config stops at once
+out="$(SLR config show 2>&1)"; rc=$?
+[[ $rc == 99 && "$out" == *"stateless_guard: load_config ran"* ]] && ok "stateless guard: a command that loads the config stops (99) in it" || bad "stateless guard control: rc=$rc $out"
+before="$(find "$sl" | sort)"
+SLR config template > "$RUN/t-sl" 2>"$RUN/t-sl.err"; rc=$?
+[[ $rc == 0 ]] && cmp -s "$RUN/t-sl" etc/config.example && [[ ! -s "$RUN/t-sl.err" ]] \
+    && ok "config template with PBO_CONFIG, LOG_DIR and STATE_DIR not there: exit 0, prints etc/config.example" \
+    || bad "stateless template: rc=$rc $(head -3 "$RUN/t-sl.err") $(diff etc/config.example "$RUN/t-sl" | head -5)"
+SLR config template --role janitor > "$RUN/tj-sl" 2>/dev/null; rc=$?
+[[ $rc == 0 ]] && cmp -s "$RUN/tj-sl" "$RUN/tj" && ok "config template --role janitor: the same without a config" || bad "stateless janitor template: rc=$rc"
+out="$(SLR --json config template 2>/dev/null)"; rc=$?
+[[ $rc == 0 ]] && jq -e '.ok and .command == "config" and .role == "host"' >/dev/null 2>&1 <<<"$out" \
+    && [[ "$(jq -j .template <<<"$out" | wc -l)" == "$(wc -l < etc/config.example)" ]] && ok "config template --json: the template without a config (json_emit masks URL users in it)" || bad "stateless template --json: rc=$rc ${out:0:200}"
+out="$(SLR --json config template --role web 2>/dev/null)"; rc=$?
+[[ $rc == 64 ]] && jq -e '.ok == false and .exit == 64' >/dev/null 2>&1 <<<"$out" && ok "config template: a usage error stays 64 with its JSON error, no log" || bad "stateless template usage: rc=$rc $out"
+SLR help > "$RUN/help-sl" 2>&1; rc=$?
+[[ $rc == 0 ]] && cmp -s "$RUN/help-sl" <(./pbo --help) && ok "help without a config: exit 0, the usage text" || bad "stateless help: rc=$rc $(head -3 "$RUN/help-sl")"
+out="$(SLR --json help 2>/dev/null)"; rc=$?
+[[ $rc == 0 ]] && jq -e '.ok and .command == "help" and (.usage | test("^pbo: "))' >/dev/null 2>&1 <<<"$out" && ok "help --json without a config" || bad "stateless help --json: rc=$rc ${out:0:200}"
+[[ "$(find "$sl" | sort)" == "$before" && ! -e "$no" ]] && ok "config template and help created nothing (no directory, log, audit record, lock or temp file)" \
+    || bad "stateless commands wrote: $(diff <(echo "$before") <(find "$sl" | sort))"
+
 # the hand-written janitor example only uses keys the schema gives the janitor role
 out="$(S 'for k in $(sed -nE "s/^#?([A-Z][A-Z0-9_]*)=.*/\1/p" etc/config.janitor.example | sort -u); do _cs_has_role "$k" janitor || printf "%s " "$k"; done')"
 [[ -z "$out" ]] && ok "every key in etc/config.janitor.example is a janitor key in the schema" || bad "janitor example keys: $out"

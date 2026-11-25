@@ -26,8 +26,16 @@
 # PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_BIN (the pbo symlink;
 # the compat alias goes next to it), PBO_INSTALL_SHARED_CFG (the cluster-shared
 # config; none in test mode unless set), PBO_INSTALL_PBO (the pbo inst_perms
-# runs). In test mode inst_host_units writes no notification templates
-# (/etc/pve), so tests/portability.sh can install the units into a tree.
+# runs), PBO_INSTALL_CFS_DIR (pmxcfs, for the member list) and
+# PBO_INSTALL_VZDUMP_CONF (both: none in test mode unless set). In test mode
+# inst_host_units writes no notification templates (/etc/pve), so
+# tests/portability.sh can install the units into a tree.
+#
+# The closing message (inst_final_message) says what is in place, read the way
+# `pbo integrate status` reads it and never changed to find out: each timer
+# enabled or not (systemctl is-enabled), the pbo storage in storage.cfg, the
+# hook line in vzdump.conf. Only what is missing gets its next step; with
+# nothing in place (a fresh install) that is the full guidance.
 #
 # Upgrade guard (0.6, ADR 0009): before any file is replaced, the existing
 # config is read with the strict reader of this source tree, the way pbo 0.6
@@ -49,10 +57,15 @@ SYSTEMCTL=systemctl
 DPKG_QUERY=dpkg-query
 STORAGE_CFG=/etc/pve/storage.cfg
 SHARED_CFG=/etc/pve/pbo/config
+CFS_DIR=/etc/pve
+VZDUMP_CONF=/etc/vzdump.conf
 if [[ "${PBO_INSTALL_TEST:-0}" == 1 ]]; then
     CFGDIR="${PBO_INSTALL_CFGDIR:-$CFGDIR}"
     SHARED_CFG="${PBO_INSTALL_SHARED_CFG:-}"
     STORAGE_CFG="${PBO_INSTALL_STORAGE_CFG:-$STORAGE_CFG}"
+    # no member list (a single node) unless the test gives one
+    CFS_DIR="${PBO_INSTALL_CFS_DIR:-$CFGDIR/no-pmxcfs}"
+    VZDUMP_CONF="${PBO_INSTALL_VZDUMP_CONF:-$CFGDIR/no-vzdump.conf}"
     PLUGIN_DIR="${PBO_INSTALL_PLUGIN_DIR:-$PLUGIN_DIR}"
     SYSTEMCTL="${PBO_INSTALL_SYSTEMCTL:-$SYSTEMCTL}"
     DPKG_QUERY="${PBO_INSTALL_DPKG_QUERY:-$DPKG_QUERY}"
@@ -292,6 +305,84 @@ inst_cfg_pbo_storages() {
     sed -nE 's/^pbo:[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1/p' "$STORAGE_CFG" | paste -sd' ' -
 }
 
+# --- what is in place (the closing message; read only) ------------------------
+# inst_unit_enabled <unit>: systemd has <unit> enabled, as `pbo integrate
+# status` and `pbo timers` ask it.
+inst_unit_enabled() { "$SYSTEMCTL" is-enabled "$1" >/dev/null 2>&1; }
+
+# inst_cfg_value <key> → the value pbo would use for <key> from the existing
+# config (read, never sourced), empty when no file sets it: the cluster-shared
+# file, then the local one, as pbo merges them. The reader drops an exec or
+# local-only key from the shared file (PBO_VZDUMP_HOOK, PVE_STORAGE_ID), as pbo
+# does, so those come from the local file only.
+inst_cfg_value() {
+    inst_cfg_reader
+    _cfg_reset; declare -gA CFG_ENV=()
+    if [[ -n "$SHARED_CFG" && -r "$SHARED_CFG" ]]; then _cfg_parse_file "$SHARED_CFG" shared || true; fi
+    if [[ -r "$CFGDIR/config" ]]; then _cfg_parse_file "$CFGDIR/config" local || true; fi
+    printf '%s' "${CFG_VAL[$1]:-}"
+}
+
+# inst_vzdump_conf → the vzdump.conf `pbo integrate` writes its hook line to:
+# VZDUMP_CONF from the existing config, else the default above (in test mode
+# PBO_INSTALL_VZDUMP_CONF). An empty value is the default, as in lib/integrate.sh.
+inst_vzdump_conf() {
+    local v; v="$(inst_cfg_value VZDUMP_CONF)"
+    printf '%s' "${v:-$VZDUMP_CONF}"
+}
+
+# inst_storage_id → the id of this node's pbo storage: PVE_STORAGE_ID from the
+# existing config (a local-only key, so never from the cluster-shared file),
+# else the schema's derived default, which pbo computes the same way: pbo on a
+# single node, pbo-<node> in a cluster, an entry pbo made for this node keeps
+# its id (_cfgdef_PVE_STORAGE_ID).
+inst_storage_id() {
+    local id
+    id="$(inst_cfg_value PVE_STORAGE_ID)"
+    inst_cfg_reader
+    if [[ -z "$id" ]]; then
+        local PBO_PVE_CFS_DIR="$CFS_DIR" PVE_STORAGE_CFG="$STORAGE_CFG"
+        _cfgdef_PVE_STORAGE_ID; id="$_CS_R"
+    fi
+    printf '%s' "$id"
+}
+
+# inst_storage_state <id> → absent | spool | catalog-only: the pbo entry <id>
+# in storage.cfg, with a path (the spool PVE jobs write to) or without one
+# (`integrate enable both --catalog-only`: browsing and restores only).
+inst_storage_state() {
+    [[ -r "$STORAGE_CFG" ]] || { printf absent; return 0; }
+    awk -v id="$1" '
+        /^[A-Za-z][A-Za-z0-9_-]*:[ \t]+[^ \t]+[ \t]*$/ { on = ($1 == "pbo:" && $2 == id); if (on) found = 1; next }
+        on && /^[ \t]+[^ \t]/ { if ($1 == "path") path = 1; next }
+        { on = 0 }
+        END { print (found ? (path ? "spool" : "catalog-only") : "absent") }' "$STORAGE_CFG" 2>/dev/null || printf absent
+}
+
+# inst_hook_state → ours | missing | foreign <path>: the script vzdump runs,
+# the last `script:` line of VZDUMP_CONF as PVE reads it, against the paths
+# `pbo integrate` counts as its own (_integ_is_our_hook): PBO_VZDUMP_HOOK from
+# the local config when set, else the hook next to pbo, plus the hooks of both
+# install layouts. pbo finds "next to pbo" through readlink -f, so with a
+# symlink in LIBDIR the line names the resolved directory: both forms count.
+inst_hook_state() {
+    local last='' hk p ours=()
+    [[ -r "$VZDUMP_CONF" ]] && last="$(sed -nE 's/^script:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$VZDUMP_CONF" | tail -1)"
+    [[ -n "$last" ]] || { printf missing; return 0; }
+    hk="$(inst_cfg_value PBO_VZDUMP_HOOK)"
+    if [[ -n "$hk" ]]; then
+        ours=("$hk")
+    else
+        ours=("$LIBDIR/vzdump-hook")
+        p="$(readlink -f -- "$LIBDIR" 2>/dev/null)" && [[ -n "$p" ]] && ours+=("$p/vzdump-hook")
+    fi
+    ours+=(/usr/local/lib/pbo/vzdump-hook /usr/lib/pbo/vzdump-hook)
+    for p in "${ours[@]}"; do
+        [[ "$last" == "$p" ]] && { printf ours; return 0; }
+    done
+    printf 'foreign %s' "$last"
+}
+
 # inst_plugin_remove: PboPlugin.pm out of PLUGIN_DIR, and a daemon reload. Never
 # while storage.cfg has a pbo storage: PVE skips a section of an unknown type and
 # drops it at the next write of storage.cfg.
@@ -312,7 +403,11 @@ inst_integration_files() {
     for u in pbo-catalog.service pbo-catalog.timer pbo-mount.service; do
         install -m 0644 "$SRC/systemd/$u" "$UNITDIR/$u"
     done
-    echo "    units pbo-catalog.service, pbo-catalog.timer, pbo-mount.service (not enabled)"
+    # install.sh enables none of them: `pbo integrate enable` starts the timer,
+    # pbo starts the mount when a restore needs it
+    local st="not enabled: 'pbo integrate enable' starts it"
+    inst_unit_enabled pbo-catalog.timer && st="enabled"
+    echo "    units pbo-catalog.service, pbo-catalog.timer ($st), pbo-mount.service (started on demand)"
 }
 
 inst_deps() {
@@ -503,7 +598,9 @@ inst_web_remove() {
 }
 
 inst_host_units() {
-    echo "==> systemd units (installed, NOT enabled)"
+    # install.sh never enables a unit; which timers are enabled is in the
+    # closing message (on an upgrade they may well be)
+    echo "==> systemd units (installed; install.sh enables none, their state is listed at the end)"
     install -m 0644 "$SRC/systemd/pbo.service"       "$UNITDIR/pbo.service"
     install -m 0644 "$SRC/systemd/pbo.timer"         "$UNITDIR/pbo.timer"
     install -m 0644 "$SRC/systemd/pbo-prune.service" "$UNITDIR/pbo-prune.service"
@@ -543,7 +640,102 @@ inst_integration() {
     inst_integration_files
 }
 
+# The host's timers and what each does, in the order the closing message lists them.
+HOST_TIMERS=(pbo.timer pbo-prune.timer pbo-verify.timer pbo-test-restore.timer)
+declare -A HOST_TIMER_DESC=(
+    [pbo.timer]="backups, nightly: SCHEDULE_BACKUP"
+    [pbo-prune.timer]="prune, weekly: SCHEDULE_PRUNE"
+    [pbo-verify.timer]="integrity, weekly, 1/12 of the data per run: SCHEDULE_VERIFY"
+    [pbo-test-restore.timer]="restore test, weekly, one guest per run: SCHEDULE_TEST_RESTORE"
+)
+
+# inst_final_timers: the timers part of the closing message. None enabled (a
+# fresh install): how to enable them. Otherwise each timer's state, and the
+# command for each one that is not enabled.
+inst_final_timers() {
+    local t on=() off=()
+    for t in "${HOST_TIMERS[@]}"; do
+        if inst_unit_enabled "$t"; then on+=("$t"); else off+=("$t"); fi
+    done
+    if (( ${#on[@]} == 0 )); then
+        printf '\nThe wizard offers to enable the schedule at the end. To do it by hand instead:\n'
+        for t in "${HOST_TIMERS[@]}"; do printf '  %-39s  (%s)\n' "systemctl enable --now $t" "${HOST_TIMER_DESC[$t]}"; done
+    else
+        printf '\nTimers (install.sh never enables or disables one):\n'
+        for t in "${HOST_TIMERS[@]}"; do
+            if [[ " ${on[*]} " == *" $t "* ]]; then printf '  %-24s %-12s (%s)\n' "$t" enabled "${HOST_TIMER_DESC[$t]}"
+            else printf '  %-24s %-12s (%s): systemctl enable --now %s\n' "$t" "NOT enabled" "${HOST_TIMER_DESC[$t]}" "$t"; fi
+        done
+    fi
+    cat <<EOF
+'$BIN timers' shows when each runs; 'pbo config set SCHEDULE_BACKUP "<OnCalendar>"'
+changes it (a drop-in next to the unit, the timer restarted if enabled).
+EOF
+}
+
+# inst_final_integration: the Proxmox part of the closing message (both,
+# integrated). Nothing in place yet (a fresh install, or the integration never
+# enabled): the steps to enable it once the repo exists. All in place: what is
+# there, no step. Partly: what is there, what is missing, and `pbo integrate
+# enable`, which converges (it adds only what is missing).
+# A catalogue-only storage (`integrate enable both --catalog-only`) takes no
+# PVE jobs, so it needs no hook and a foreign one blocks nothing; its next
+# step keeps --catalog-only, since a plain enable would give the storage a
+# spool and the hook line (or refuse, over a foreign hook). Integrated mode has
+# no catalogue-only form: there the spool and the hook are what is missing.
+inst_final_integration() {
+    local id st hook have=() miss=() note='' co=0 co_flag=''
+    id="$(inst_storage_id)"; st="$(inst_storage_state "$id")"; hook="$(inst_hook_state)"
+    if [[ "$st" == catalog-only && "$MODE" == both ]]; then co=1; co_flag=' --catalog-only'; fi
+    case "$st" in
+        spool)        have+=("storage $id present") ;;
+        catalog-only)
+            have+=("storage $id present (catalogue only: no spool, no hook)")
+            (( co )) || miss+=("a spool (path) for storage $id: in integrated mode PVE jobs are the only backups, and a catalogue-only storage takes none") ;;
+        *)            miss+=("storage $id") ;;
+    esac
+    case "$hook" in
+        ours) have+=("the hook line in $VZDUMP_CONF") ;;
+        foreign\ *)
+            if (( co )); then
+                have+=("$VZDUMP_CONF runs another hook (script: ${hook#foreign }), left as is: a catalogue-only storage needs none")
+            else
+                note="$VZDUMP_CONF runs another hook (script: ${hook#foreign }): 'pbo integrate enable' refuses to replace it, PVE jobs to '$id' are not ingested until it goes"
+                miss+=("the hook line in $VZDUMP_CONF")
+            fi ;;
+        *)  (( co )) || miss+=("the hook line in $VZDUMP_CONF") ;;
+    esac
+    if inst_unit_enabled pbo-catalog.timer; then have+=("pbo-catalog.timer enabled"); else miss+=("pbo-catalog.timer enabled"); fi
+    # the mode is written last by `integrate enable`: a config that still
+    # says another one (or none) has not finished the switch
+    [[ "$CFG_MODE" == "$MODE" ]] || miss+=("PBO_INTEGRATION=$MODE in $CFGDIR/config (it says ${CFG_MODE:-standalone})")
+    if (( ${#have[@]} == 0 )); then cat <<EOF
+
+Proxmox integration: $MODE. The storage plugin, the vzdump hook and the units are
+in place; the storage itself is not created yet. Once the repo exists:
+  $BIN --dry-run integrate enable $MODE    (what it would change)
+  $BIN integrate enable $MODE              (adds the pbo storage, the hook line in
+                                         $VZDUMP_CONF, pbo-catalog.timer)
+EOF
+        return 0
+    fi
+    printf '\nProxmox integration: %s.\n' "$MODE"
+    local e
+    for e in "${have[@]}"; do printf '  in place: %s\n' "$e"; done
+    (( ${#miss[@]} )) || return 0
+    for e in "${miss[@]}"; do printf '  MISSING:  %s\n' "$e"; done
+    [[ -z "$note" ]] || printf '  %s\n' "$note"
+    cat <<EOF
+To complete it ('$BIN integrate status' shows the details):
+  $BIN --dry-run integrate enable $MODE$co_flag    (what it would change)
+  $BIN integrate enable $MODE$co_flag              (adds only what is missing)
+EOF
+}
+
 inst_final_message() {
+    # the vzdump.conf `pbo integrate` uses (VZDUMP_CONF in the config): the
+    # hook state, the next steps and the uninstall hint all name that file
+    VZDUMP_CONF="$(inst_vzdump_conf)"
     cat <<EOF
 
 Installed: pbo (Proxmox Backup Offsite).
@@ -553,24 +745,9 @@ Installed: pbo (Proxmox Backup Offsite).
                               the timers — everything.
   Interface:  $BIN menu       open the interactive prompt
   Health:     $BIN doctor     check repo, timer, key perms, per-guest age
-
-The wizard offers to enable the schedule at the end. To do it by hand instead:
-  systemctl enable --now pbo.timer         (backups, nightly: SCHEDULE_BACKUP)
-  systemctl enable --now pbo-prune.timer   (prune, weekly: SCHEDULE_PRUNE)
-  systemctl enable --now pbo-verify.timer  (integrity, weekly, 1/12 of the data per run: SCHEDULE_VERIFY)
-  systemctl enable --now pbo-test-restore.timer  (restore test, weekly, one guest per run: SCHEDULE_TEST_RESTORE)
-'$BIN timers' shows when each runs; 'pbo config set SCHEDULE_BACKUP "<OnCalendar>"'
-changes it (a drop-in next to the unit, the timer restarted if enabled).
 EOF
-    if [[ "$MODE" != standalone ]]; then cat <<EOF
-
-Proxmox integration: $MODE. The storage plugin, the vzdump hook and the units are
-in place; the storage itself is not created yet. Once the repo exists:
-  $BIN --dry-run integrate enable $MODE    (what it would change)
-  $BIN integrate enable $MODE              (adds the pbo storage, the hook line in
-                                         /etc/vzdump.conf, pbo-catalog.timer)
-EOF
-    fi
+    inst_final_timers
+    [[ "$MODE" == standalone ]] || inst_final_integration
     if (( WEB_REMOVED )); then cat <<EOF
 
 pbo-web (the 0.4 web UI) was removed. Close TCP 8008 in the Proxmox firewall
@@ -581,7 +758,7 @@ EOF
     cat <<EOF
 
 Uninstall: first '$BIN integrate disable' (if the Proxmox integration is on: it
-removes the pbo storage and the hook line from /etc/vzdump.conf; a vzdump.conf
+removes the pbo storage and the hook line from $VZDUMP_CONF; a vzdump.conf
 naming a missing hook fails every backup on this node), then remove $LIBDIR,
 $BIN, units in $UNITDIR and $PLUGIN_FILE. Config/creds in $CFGDIR are kept.
 EOF

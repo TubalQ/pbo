@@ -193,9 +193,10 @@ _cfg_test_log_files() {
 #   PBO_CONFIG_SHARED_LOADED  the shared file, when it was read
 #   PBO_CONFIG_EXPLICIT       PBO_CONFIG as given (jobs pass it on)
 # plus the reader's results (CFG_VAL, CFG_SRC, CFG_ENV, ...) for config and
-# doctor. PBO_CFG_LENIENT=1 (main(), `pbo config check|template` and `catalog
-# _umount` only): lines the reader refuses are left out instead of stopping
-# pbo, so check can report them and the mount cleanup still runs.
+# doctor. PBO_CFG_LENIENT=1 (main(), `pbo config check` and `catalog _umount`
+# only): lines the reader refuses are left out instead of stopping pbo, so
+# check can report them and the mount cleanup still runs. `help` and `config
+# template` never call this (main(), _pbo_stateless): they read no config.
 load_config() {
     PBO_CONFIG_EXPLICIT="${PBO_CONFIG:-}"
     # when this process read its config (microseconds, no fork): a process

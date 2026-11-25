@@ -413,6 +413,21 @@ Changed
   --isolate`/`--restricted`, `test-restore --restricted`).
 
 Fixed
+- `pbo config template` and `pbo help` read the machine's config (without
+  `PBO_CONFIG`), created pbo's directories and appended a read-only record to
+  the audit log. They now run before the config is loaded: no config file is
+  needed or read, nothing is written, and they work as any user on a machine
+  without `/etc/pbo`.
+- `install.sh` on an upgrade said that the pbo storage was not created yet and
+  listed every timer as not enabled, even when the storage, the vzdump hook
+  line and the timers were in place. Its closing message now reads the state
+  (systemctl is-enabled, storage.cfg, vzdump.conf; nothing is changed to find
+  out): each timer enabled or not, `storage <id> present`, and the next step
+  (`pbo integrate enable <mode>`) only for what is missing. A fresh install
+  gets the same guidance as before. It checks the files `pbo integrate` uses
+  (`VZDUMP_CONF`, and `PBO_VZDUMP_HOOK` as pbo's own hook), and a
+  catalogue-only storage needs no hook (a foreign one is left as is) and gets
+  `integrate enable both --catalog-only` as its next step.
 - `pbo list` and `pbo metrics` took any word: a misspelt `--reasons` was read
   as a vmid (an empty list, exit 0), and a misspelt `--no-write` wrote
   METRICS_FILE. Both now refuse an unknown flag with 64.
