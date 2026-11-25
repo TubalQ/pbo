@@ -102,6 +102,7 @@ grep -q '^pbo_test_restore_last_success 0$' <<<"$m" && ok "metrics: last test_re
 cat > "$RUN/restored.conf" <<'CONF'
 arch: amd64
 hostname: test8001
+meta: rtime=1768453200000,uid=abcdefghij0123456789
 net0: name=eth0,bridge=vmbr0,hwaddr=02:00:00:00:00:01,ip=dhcp
 onboot: 1
 rootfs: teststore:vm-9099-disk-0,size=1G
@@ -127,6 +128,7 @@ r="$(jq -cR 'fromjson? // empty' "$H" | tail -1)"
 jq -e '(.stripped|sort)==(["dev0","hookscript","lxc.cgroup2.devices.allow","lxc.hook.pre-start","lxc.mount.entry","lxc.mount.fstab","lxc.net.0.type","mp1","mp2","mp3","virtiofs0"]|sort)' >/dev/null <<<"$r" \
     && ok "allowlist: everything not known-safe stripped and recorded (bind/dev mounts, devN, hooks, raw lxc mount/net, unknown keys, another guest's volume)" || bad "stripped ($(jq -c .stripped <<<"$r"))"
 ! grep -q "pct set 9099 --delete mp0" "$MOCK_LOG" && ok "volume mount point (new empty volume) kept" || bad "volume mp deleted"
+! grep -q "pct set 9099 --delete meta" "$MOCK_LOG" && ok "meta (read-only metadata of newer pve-container) kept, not deleted" || bad "meta deleted"
 grep -q "pct set 9099 --delete net0" "$MOCK_LOG" && ok "network removed" || bad "net0 not removed"
 # start must come after every delete
 awk '/pct start 9099/{s=NR} /pct set 9099 --delete/ && !/--delete protection/{d=NR} END{exit !(s>d && d>0)}' "$MOCK_LOG" && ok "boot only after isolation" || bad "boot order ($(grep 9099 "$MOCK_LOG"))"

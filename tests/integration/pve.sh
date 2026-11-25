@@ -48,6 +48,7 @@ done
 _n=0
 W="$(mktemp -d /var/tmp/pbo-it.XXXXXX)"; chmod 0755 "$W"
 mkdir -p "$W"/{cache,state,log,lock}
+chmod 0700 "$W/lock"   # the permission rules want LOCK_DIR closed (doctor warns otherwise)
 created=()
 cleanup() {
     local rc=$?

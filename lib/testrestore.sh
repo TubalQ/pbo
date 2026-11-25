@@ -67,9 +67,11 @@ _tr_isolate_net() {
 # every config key must be known-safe; volume-backed disks and mount points only
 # when their value is a storage volume. Everything else is removed before boot
 # (_tr_strip_host), and _tr_isolated refuses the boot if anything unsafe remains.
+# meta: read-only metadata pve-container writes itself (creation/restore time, a
+# uid); it binds nothing to the host and cannot be deleted (pct refuses).
 # raw lxc keys: only uid/gid maps, resource limits and dropping capabilities;
 # device access (lxc.cgroup2.devices.*), apparmor profiles and the rest are not safe.
-_TR_LXC_SAFE='^(arch|parent|cmode|console|cores|cpulimit|cpuunits|digest|features|hostname|lock|memory|nameserver|onboot|ostype|protection|rootfs|searchdomain|startup|swap|tags|template|timezone|tty|unprivileged|unused[0-9]+|mp[0-9]+|lxc\.idmap|lxc\.cgroup2?\.(cpu|cpuset|memory|pids|io|blkio)\.[a-z0-9_.]+|lxc\.cap\.drop)$'
+_TR_LXC_SAFE='^(arch|parent|cmode|console|cores|cpulimit|cpuunits|digest|features|hostname|lock|memory|meta|nameserver|onboot|ostype|protection|rootfs|searchdomain|startup|swap|tags|template|timezone|tty|unprivileged|unused[0-9]+|mp[0-9]+|lxc\.idmap|lxc\.cgroup2?\.(cpu|cpuset|memory|pids|io|blkio)\.[a-z0-9_.]+|lxc\.cap\.drop)$'
 _TR_QEMU_SAFE='^(acpi|parent|agent|balloon|bios|boot|bootdisk|cores|cpu|cpulimit|cpuunits|digest|efidisk[0-9]+|hotplug|kvm|localtime|lock|machine|memory|meta|name|numa|onboot|ostype|protection|scsihw|smbios1|sockets|startup|tablet|tags|template|tpmstate[0-9]+|vcpus|vga|vmgenid|unused[0-9]+|(ide|sata|scsi|virtio)[0-9]+)$'
 
 _tr_conf_file() { [[ "$1" == qemu ]] && printf '%s/%s.conf' "${PBO_PVE_QEMU_DIR:-/etc/pve/qemu-server}" "$2" || printf '%s/%s.conf' "${PBO_PVE_LXC_DIR:-/etc/pve/lxc}" "$2"; }

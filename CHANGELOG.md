@@ -459,6 +459,11 @@ Fixed
   existed.
 - Doctor's messages about the config file and its directory said root runs the
   config as code.
+- Restores to a new vmid and restore tests of containers failed at the isolation
+  step on pve-container 6.1.28 and later: those versions write a read-only `meta:`
+  line (restore time, a uid) into every container config, which pbo treated as
+  host-bound and could not delete. It is metadata only and now kept, as it was
+  for VMs.
 
 Docs
 - ADR 0009 (config schema, reader, writer, retention per guest, permissions,
