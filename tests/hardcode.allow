@@ -41,7 +41,6 @@
 ^lib/menu.sh:(/var/cache/pbo|/root/.ssh/id_ed25519|/root/pbo-dr-key.txt|/var/tmp/pbo-restore-)$   suggestions the setup wizard offers (the operator can change each); the wizard is reworked with the config writer
 ^lib/menu.sh:(ntfy.example.com|uXXXXX-subN.your-storagebox.de)$                                   placeholders in the wizard's prompts
 
-# --- the timer schedules: config keys once pbo can write timer drop-ins ---------------
-^systemd/pbo[a-z-]*\.timer:[0-9:]+$                       OnCalendar= of the timers
-^(install.sh|lib/menu.sh):(05:00|06:30|10:00|12:30)$      the timer times, named in help texts
-^lib/integrate.sh:(05:00|06:30|10:00)$                    INTEG_PBO_TIMES: the timer times doctor compares PVE jobs with
+# --- the timer schedules (SCHEDULE_* keys, drop-ins written by lib/timers.sh) ---------
+^systemd/pbo[a-z-]*\.timer:[0-9:]+$                       OnCalendar= of the units: the schema defaults (tests/schedule_config.sh checks they agree); a custom schedule is a drop-in
+^lib/menu.sh:(05:00|06:30|10:00)$                         the setup wizard's timer questions name the default times (the wizard is reworked in M8)

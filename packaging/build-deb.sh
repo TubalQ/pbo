@@ -72,6 +72,13 @@ if [ "$1" = configure ]; then
         fi
     fi
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload || true
+    # the timer schedules of an existing config (SCHEDULE_*) as drop-ins next to
+    # the units: drop-ins in /etc survive an upgrade, this re-applies a config
+    # edited by hand. Reported only, like the config check.
+    if [ -f /etc/pbo/config ]; then
+        rc=0; out="$(/usr/sbin/pbo timers apply 2>&1)" || rc=$?
+        [ "$rc" = 0 ] || { echo "pbo: 'pbo timers apply' (exit $rc):"; printf '%s\n' "$out" | sed 's/^/    /'; }
+    fi
     # Proxmox notification templates, cluster-wide via pmxcfs (plain cp, no chmod)
     if [ -d /etc/pve ]; then
         mkdir -p /etc/pve/notification-templates/default 2>/dev/null \

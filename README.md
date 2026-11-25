@@ -61,7 +61,7 @@ host name, URL, path or secret), for a bug report.
 | Install layouts | Both: install.sh (`/usr/local/lib/pbo`) and the .deb (`/usr/lib/pbo`); every systemd unit is checked in each layout. | Other prefixes. |
 | CACHE_DIR filesystem | ext4-like filesystems with POSIX ACLs, a filesystem without ACL support (mocked), the ACL mask, an unprivileged CT's mapped root passing the parents (as root). | ZFS with `acltype=posixacl`, btrfs and xfs on real hardware; NFS and CIFS (not refused yet, but ACLs and renames there are untested). |
 | Backends | Local directory repositories (real restic). `tests/integration/pve.sh` runs backup, restore and prune on a PVE host and, with a janitor, the append-only path against a real rest-server. `RESTIC_ENV_FILE` is checked to reach restic and nothing else. | SFTP servers (the wizard's ssh command is tested, a transfer is not), S3, B2, Azure, GCS, rclone and the other restic backends against real services. |
-| Clusters | Which node backs up which guest, from mocked cluster views, and the cluster-shared config (`/etc/pve/pbo/config`). | A real multi-node cluster. |
+| Clusters | Which node backs up which guest, from mocked cluster views; the cluster-shared config (`/etc/pve/pbo/config`); per-node storage ids, `pbo integrate` and job ownership with a mocked member list of one and three nodes. | A real multi-node cluster. |
 | Time zones | Archive names, the catalogue's times and the timers' next run under UTC, +05:30 and -03:00; retention, which restic plans by the local day each snapshot recorded, with snapshots taken in each of those zones. | Daylight-saving transitions. |
 | Users | The suites run as a plain user in CI; run as root they also cover owners, `setpriv` and `chown`. | |
 
@@ -271,6 +271,20 @@ A few things worth getting right:
   and wins on conflicts.
 - Prune from one node only, since it takes an exclusive lock. Set `PRUNE_OWNER` to pin
   it to a node.
+- Give the nodes different backup times (`pbo config set SCHEDULE_BACKUP "*-*-*
+  03:00:00"` on one, another time on the next): they share one repo, and restic's
+  lock and the uplink are shared too. The schedule is per node: `--shared` writes it
+  for every node, but only the node that ran the command gets its timer updated; the
+  others pick it up with `pbo timers apply` (doctor names the difference).
+- With the Proxmox integration each node gets its own pbo storage, `pbo-<node>`,
+  limited to that node (`--nodes <node>`) and pointing at that node's spool:
+  storage.cfg is one file for the whole cluster, and a storage has one path. A
+  single node keeps the id `pbo`. Create the Proxmox backup jobs per node, each on
+  its node's storage (`Node: <node>`, `Storage: pbo-<node>`): a job for all nodes on
+  one node's storage fails on the others, and pbo does not count it as backing up
+  their guests. A cluster that turned the integration on before 0.6 keeps its
+  `pbo` storage; doctor suggests the move (see RUNBOOK, "Clusters"). `PVE_STORAGE_ID`
+  is per node: the cluster-shared config cannot set it.
 
 ## Commands
 
@@ -294,11 +308,14 @@ Commands:
   policy get <vmid>           a guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
   doctor [--fix [--fix-parents]] [--perms-only]
-                              health check (repo, timer, restic version, permissions, alerts,
-                              verify, per-guest age); --fix applies the permission table first
+                              health check (repo, timer and its schedule, restic version, permissions,
+                              alerts, verify, per-guest age); --fix applies the permission table and
+                              the timer drop-ins first
   doctor --report             the environment for a bug report (no host name, URL, path or secret)
   guests                      every guest: policy, newest snapshot, staleness, last restore test
-  timers                      the pbo timers: enabled, next and last run, last result
+  timers                      the pbo timers: enabled, schedule and its source, next and last run,
+                              last result
+  timers apply                write the timers' schedule drop-ins from the config (SCHEDULE_*)
   config [show]               the effective configuration (secrets never shown)
   version                     pbo, restic and JSON contract versions
   notify-test                 send a test alert through every active backend
@@ -367,7 +384,7 @@ install time:
 | `install.sh --integration` | Who backs up a guest |
 |---|---|
 | `standalone` (default) | `pbo.timer`, as before; nothing in the Proxmox GUI |
-| `both` | a Proxmox backup job to the `pbo` storage, if one selects the guest; `pbo.timer` the rest |
+| `both` | a Proxmox backup job to the pbo storage, if one selects the guest; `pbo.timer` the rest |
 | `integrated` | only Proxmox backup jobs (doctor fails on a guest no job selects) |
 
 `install.sh` installs the storage plugin, the vzdump hook and the units (with
@@ -381,6 +398,10 @@ pbo integrate enable both --catalog-only   # browse and restore only, no backup 
 pbo integrate status                  # mode, storage, hook, spool, jobs, who owns which guest
 pbo integrate disable                 # back to standalone (refused while a Proxmox job targets pbo)
 ```
+
+The storage is called `pbo` on a single node and `pbo-<node>` in a cluster (see
+[Clusters](#clusters)); `PVE_STORAGE_ID` sets another id. `pbo integrate status` and
+`pbo config get PVE_STORAGE_ID` show the one in use.
 
 In the GUI, under the `pbo` storage:
 
@@ -581,6 +602,24 @@ check` name the file and its keys, never a value. For example, for
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 ```
+
+The timers' schedules are keys too, in systemd's `OnCalendar=` syntax (`man
+systemd.time`): `SCHEDULE_BACKUP` (pbo.timer, default `*-*-* 05:00:00`),
+`SCHEDULE_PRUNE` (`Sun *-*-* 06:30:00`), `SCHEDULE_VERIFY` (`Wed *-*-* 10:00:00`),
+`SCHEDULE_TEST_RESTORE` (`Sat *-*-* 10:00:00`), `SCHEDULE_CATALOG` (`*:0/15`) and on a
+janitor `SCHEDULE_JANITOR` (`*-*-* 12:30:00`), plus `SCHEDULE_*_DELAY` for the
+timers' `RandomizedDelaySec=`. `pbo config set SCHEDULE_BACKUP "Mon..Fri *-*-*
+22:30:00"` checks the value with `systemd-analyze` (a value systemd cannot parse,
+or one with unit-file syntax in it, is refused and nothing is written), writes a
+drop-in `/etc/systemd/system/pbo.timer.d/schedule.conf`, reloads systemd and,
+if the timer is enabled, resets its persistent state (stop, `systemctl clean
+--what=state`, start again if it was running): the next run is computed from now,
+so moving a time earlier than the last run does not start the job at once. The
+unit files keep the defaults; unsetting a key removes its drop-in. `pbo timers`
+shows the calendar systemd runs and where the configured one comes from;
+`pbo timers apply` (run by install.sh, so a reinstall keeps the schedule) and `pbo
+doctor --fix` write the drop-ins from the config, and doctor warns when one does
+not match it.
 
 Thresholds that suit one site but not another are advanced keys with the old fixed
 value as default: `PREFLIGHT_POOL_FREE_PCT`, `BATCH_FIT_PCT`, `INGEST_PENDING_MIN`,

@@ -14,10 +14,13 @@ export PBO_NO_NOTIFY=1
 # run-portability/ is touched.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-# the schema defaults of RESTIC_ENV_FILE and NTFY_CREDS_FILE are the machine's
-# own files: point them into the checkout, at paths nothing creates (a config
-# line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds"
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -439,7 +442,10 @@ done
 [[ "$got" == "$want " ]] && ok "the new keys have today's values as defaults ($want)" || bad "defaults: $got"
 out="$(grep -nE 'readonly (INGEST_PENDING_MIN|INTEG_SPOOL_MAX_AGE|INTEG_JOB_WINDOW_MIN)|\* 3 / 2|need \* 100 / 85|stage_lock "\$base" -w 10' lib/*.sh)"
 [[ -z "$out" ]] && ok "the old fixed values are gone from the code" || bad "fixed values: $out"
-L() { bash -c 'set -u; source lib/common.sh; source lib/config_schema.sh; source lib/integrate.sh 2>/dev/null; source lib/ingest.sh; '"$1" 2>&1; }
+# (the window against the configured schedule: the systemctl wrapper reports a
+# 05:00 calendar for every unit, so systemd's own view is left out here)
+L() { bash -c 'set -u; source lib/common.sh; source lib/config_schema.sh; source lib/timers.sh; _sched_effective_r() { _SE_R=""; }
+    source lib/integrate.sh 2>/dev/null; source lib/ingest.sh; '"$1" 2>&1; }
 [[ "$(L 'PVE_JOB_WINDOW_MIN=60; _integ_near_timers 380')" == "pbo-prune.timer (06:30)" \
    && "$(L 'PVE_JOB_WINDOW_MIN=90; _integ_near_timers 380')" == "pbo.timer (05:00) pbo-prune.timer (06:30)" ]] \
     && ok "PVE_JOB_WINDOW_MIN: the window doctor warns in" || bad "job window: $(L 'PVE_JOB_WINDOW_MIN=90; _integ_near_timers 380')"

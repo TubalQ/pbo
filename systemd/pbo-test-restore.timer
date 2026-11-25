@@ -3,6 +3,10 @@ Description=Weekly pbo restore test (rotates through the guests)
 Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
+# The defaults of SCHEDULE_TEST_RESTORE (OnCalendar=) and SCHEDULE_TEST_RESTORE_DELAY
+# (RandomizedDelaySec=) in lib/config_schema.sh; tests check they agree.
+# `pbo config set SCHEDULE_TEST_RESTORE ...` changes it with a drop-in
+# (pbo-test-restore.timer.d/schedule.conf): an edit here is undone by a reinstall.
 # Saturdays 10:00: away from the nightly backup, the Sunday prune and the
 # Wednesday verify. One guest per run (TR_PER_RUN), oldest-tested first.
 OnCalendar=Sat *-*-* 10:00:00

@@ -128,7 +128,7 @@ catalog_refresh() {
     local idx
     idx="$(jq -cn --slurpfile c <(printf '%s' "$cj") --slurpfile o <(printf '%s' "$oj") \
         --argjson cen "$cen" --argjson oen "$oen" --argjson now "$(date +%s)" --argjson v "$CATALOG_VERSION" \
-        --arg node "$(_local_node)" --arg sid "${PVE_STORAGE_ID:-pbo}" --arg stg "${PVE_STAGING_DIR:-}" --arg spool "${PVE_SPOOL_DIR:-}" \
+        --arg node "$(_local_node)" --arg sid "$(_pve_storage_id)" --arg stg "${PVE_STAGING_DIR:-}" --arg spool "${PVE_SPOOL_DIR:-}" \
         --arg re "$CATALOG_BASENAME_RE" '
         def guests($tier): map(select((.type == "lxc" or .type == "qemu") and (.vmid | test("^[0-9]+$"))
                                       and (.archive | test($re))) | . + {tier:$tier});

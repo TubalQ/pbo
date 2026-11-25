@@ -18,6 +18,37 @@ _local_node() {
     printf '%s' "$n"
 }
 
+# _cluster_node_count → the number of nodes pmxcfs' member list names (1 for a
+# node outside a cluster, which lists itself as a cluster of one, and when the
+# list cannot be read).
+_cluster_node_count() {
+    local m="${PBO_PVE_CFS_DIR:-/etc/pve}/.members" txt='' n=1
+    if [[ -r "$m" ]]; then
+        { IFS= read -r -d '' txt < "$m"; } 2>/dev/null || true
+        [[ "$txt" =~ \"nodes\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && n=$(( 10#${BASH_REMATCH[1]} ))
+    fi
+    (( n >= 1 )) || n=1
+    printf '%s' "$n"
+}
+
+# _cluster_node_names → the names of the cluster's nodes, one per line, as
+# pmxcfs' member list has them (its nodelist); empty when it cannot be read.
+_cluster_node_names() {
+    local m="${PBO_PVE_CFS_DIR:-/etc/pve}/.members"
+    [[ -r "$m" ]] && command -v jq >/dev/null 2>&1 || return 0
+    jq -r '(.nodelist // {}) | if type == "object" then keys[] else empty end' "$m" 2>/dev/null || true
+}
+
+# _pve_storage_id → the id of this node's pbo storage in PVE: PVE_STORAGE_ID as
+# configured, else its derived default (`pbo` on a single node, `pbo-<node>` in
+# a cluster, an entry pbo made for this node keeps its id: lib/config_schema.sh
+# _cfgdef_PVE_STORAGE_ID). Every place that names the storage (integrate, the
+# catalogue, doctor) takes it from here, never a literal.
+_pve_storage_id() {
+    if [[ -n "${PVE_STORAGE_ID:-}" ]]; then printf '%s' "$PVE_STORAGE_ID"; return 0; fi
+    _cs_default_r PVE_STORAGE_ID; printf '%s' "$_CS_R"
+}
+
 # _cluster_local_vmids → vmids on THIS node per the cluster resource view, or
 # EMPTY if there is no cluster/quorum/pvesh (caller then treats guests as local).
 _cluster_local_vmids() {

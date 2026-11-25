@@ -59,18 +59,28 @@ _vzdump_default_storage() {
     else printf local; fi
 }
 
-# _pve_pbo_storage_ids → ids of storages of type pbo, one per line. From the API;
-# when that fails, from the `pbo: <id>` stanzas of storage.cfg. Returns 1 when
-# neither can be read.
+# _pve_pbo_storage_ids → ids of the storages of type pbo that serve this node
+# (no `nodes`, or `nodes` names it), one per line. From the API; when that
+# fails, from the `pbo: <id>` stanzas of storage.cfg. Returns 1 when neither
+# can be read. In a cluster each node has its own pbo storage (pbo-<node>,
+# `--nodes <node>`): a job on another node's storage does not back up this
+# node's guests (vzdump finds that storage unavailable here), so it owns none
+# of them, or nobody would back them up.
 _pve_pbo_storage_ids() {
-    local j
+    local j node; node="$(_local_node)"
     if j="$(pvesh get /storage --output-format json 2>/dev/null)" && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$j"; then
-        jq -r '.[] | select(type == "object" and .type == "pbo") | .storage // empty' <<<"$j"
+        jq -r --arg n "$node" '.[] | select(type == "object" and .type == "pbo")
+            | select((.nodes // "" | tostring | gsub("\\s"; "")) as $l | $l == "" or ($l | split(",") | index($n)))
+            | .storage // empty' <<<"$j"
         return 0
     fi
     local cfg="${PVE_STORAGE_CFG:-/etc/pve/storage.cfg}"
     [[ -r "$cfg" ]] || return 1
-    sed -nE 's/^pbo:[[:space:]]+([A-Za-z0-9][A-Za-z0-9._-]*)[[:space:]]*$/\1/p' "$cfg"
+    awk -v n="$node" '
+        function done_() { if (id != "" && (nodes == "" || index("," nodes ",", "," n ","))) print id; id = ""; nodes = "" }
+        /^[A-Za-z][A-Za-z0-9_-]*:[ \t]+[^ \t]+[ \t]*$/ { done_(); if ($1 == "pbo:" && $2 ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) id = $2; next }
+        /^[ \t]+nodes[ \t]/ { if (id != "") { nodes = $0; sub(/^[ \t]+nodes[ \t]+/, "", nodes); gsub(/[ \t]/, "", nodes) } }
+        END { done_() }' "$cfg"
     return 0
 }
 

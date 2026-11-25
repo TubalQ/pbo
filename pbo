@@ -40,6 +40,8 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/views.sh
 source "${SELF_DIR}/lib/views.sh"
+# shellcheck source=lib/timers.sh
+source "${SELF_DIR}/lib/timers.sh"
 # shellcheck source=lib/config_schema.sh
 source "${SELF_DIR}/lib/config_schema.sh"
 # shellcheck source=lib/config.sh
@@ -109,9 +111,10 @@ Commands:
   metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
   doctor [--fix [--fix-parents]] [--perms-only] | doctor --report
-                              health check (repo, timer, permissions, restic version, per-guest
-                              age); --fix applies the permission table (modes, owners, the CACHE_DIR
-                              ACL; audited, with --dry-run listed only), --fix-parents also lets
+                              health check (repo, timer and its schedule, permissions, restic version,
+                              per-guest age); --fix applies the permission table (modes, owners, the
+                              CACHE_DIR ACL) and the timer drop-ins (audited, with --dry-run listed
+                              only), --fix-parents also lets
                               unprivileged CTs pass the directories above CACHE_DIR (u:<uid>:--x),
                               --perms-only checks (or fixes) permissions alone. --report: the
                               environment for a bug report (versions, filesystem, backend types,
@@ -123,7 +126,11 @@ Commands:
   policy get <vmid>           the guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
                               change it (writes the guest's pbo-* Proxmox tags, others untouched)
-  timers                      the pbo timers: enabled, next and last run, last result
+  timers                      the pbo timers: enabled, the schedule and where it comes from
+                              (default or config: SCHEDULE_*), next and last run, last result
+  timers apply                write the timers' schedule drop-ins from the config (<timer>.d/
+                              schedule.conf; none for a default), daemon-reload, restart the
+                              enabled ones whose schedule changed (install.sh runs it)
   config [show]               the effective configuration (secrets never shown)
   config list [--all]         the keys for this role: value, source, type (--all: test hooks and
                               the other role's keys too)
@@ -136,7 +143,9 @@ Commands:
                               exec or per-node key); --yes confirms a new repo (no data is moved);
                               --force writes a key the schema does not know. Keys managed by another
                               command (PBO_INTEGRATION: pbo integrate) are refused. CACHE_DIR: an
-                              empty cache only (the new directory is created with its permissions)
+                              empty cache only (the new directory is created with its permissions).
+                              SCHEDULE_* (systemd OnCalendar=, checked with systemd-analyze): the
+                              timer's drop-in is written and an enabled timer restarted
   config unset <KEY>... [--shared] [--yes]
                               remove keys from the file: the default (or the shared file) applies
   config template [--role host|janitor]
@@ -186,7 +195,10 @@ Commands:
                               spool, catalogue, PVE jobs to pbo, the storage.cfg/vzdump.conf recipe
   integrate enable <both|integrated> [--catalog-only] [--yes]
                               add the pbo storage to PVE (and, unless --catalog-only, the spool
-                              path and the vzdump hook), start pbo-catalog.timer, set the mode
+                              path and the vzdump hook), start pbo-catalog.timer, set the mode.
+                              Its id is PVE_STORAGE_ID: pbo on a single node, pbo-<node> (--nodes
+                              <node>, pinned in the local config) in a cluster; an entry pbo
+                              already made for this node keeps its id
   integrate disable [--yes]   back to standalone: mode first, then hook, storage and timer go
                               (refused while an enabled PVE job writes to pbo)
 
@@ -476,6 +488,9 @@ main() {
     elif [[ "$PBO_COMMAND" == catalog ]]; then
         PBO_SUBCOMMAND="${1:-}"
         [[ "$PBO_SUBCOMMAND" == _umount ]] && PBO_CFG_LENIENT=1
+    elif [[ "$PBO_COMMAND" == timers ]]; then
+        # `timers apply` stays root on a janitor: the drop-ins are root's
+        PBO_SUBCOMMAND="${1:-}"
     fi
     load_config
     json_open

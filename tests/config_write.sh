@@ -20,6 +20,9 @@ for m in tests/mocks/*; do install -m 0755 "$m" "$RUN/bin/"; done   # never the 
 export PATH="$RUN/bin:$PATH" MOCK_LOG="$RUN/calls" MOCK_SYSTEMCTL_DIR="$RUN/sysd" MOCK_CONF_DIR="$RUN"
 # the directories pbo uses, also for a run whose config does not name them
 export CACHE_DIR="$RUN/cache" LOG_DIR="$RUN/log" STATE_DIR="$RUN/state" LOCK_DIR="$RUN/lock"
+# pmxcfs too (the derived PVE_STORAGE_ID reads its member list and storage.cfg
+# on every start): paths nothing creates; TB names its own cluster filesystem
+export PBO_PVE_CFS_DIR="$RUN/none/pve" PVE_STORAGE_CFG="$RUN/none/pve/storage.cfg"
 CFG="$RUN/config"; export PBO_CONFIG="$CFG"
 
 # mk [line...]: the generated example with this run's directories, then the lines
@@ -282,13 +285,21 @@ out="$(TB --json config set --shared KEEP_OFFSITE_DAILY 28 KEEP_OFFSITE_MONTHLY 
 cp "$SH" "$RUN/shared.before"
 for a in "NTFY_TOKEN tk_x:secret" "RESTIC_SFTP_COMMAND ssh:secret" "RESTIC_BIN /usr/bin/restic:runs a program" "PBO_VZDUMP_HOOK /x:runs a program" \
          "CACHE_DIR $RUN/x:decides where each node keeps its cache" "RESTIC_CACHE_REPO $RUN/x/repo:decides where each node keeps its cache" \
-         "PVE_SPOOL_DIR $RUN/x/spool:decides where each node keeps its cache"; do
+         "PVE_SPOOL_DIR $RUN/x/spool:decides where each node keeps its cache" "PVE_STORAGE_ID pbo-pve1:is per node"; do
     # (split on purpose: KEY VALUE)
     # shellcheck disable=SC2086
     out="$(TB config set --shared ${a%%:*} --yes 2>&1)"; rc=$?
     [[ $rc == 78 ]] && grep -q "${a#*:}" <<<"$out" && cmp -s "$RUN/shared.before" "$SH" \
         && ok "--shared refuses ${a%% *} (${a#*:})" || bad "shared refusal ${a%% *}: rc=$rc $out"
 done
+# PVE_STORAGE_ID is per node: a value in the shared file (another node's pinned
+# id, copied there) is ignored, and each node keeps its own derived id
+cp "$RUN/pve/.members" "$RUN/members.keep"
+printf '{"nodename":"pve2","version":4,"cluster":{"name":"lab","version":3,"nodes":3,"quorate":1},"nodelist":{}}\n' > "$RUN/pve/.members"
+printf 'PVE_STORAGE_ID=pbo-pve1\n' >> "$SH"
+out="$(TB config get PVE_STORAGE_ID 2>/dev/null)"; rc=$?
+[[ $rc == 0 && "$out" == pbo-pve2 ]] && ok "a PVE_STORAGE_ID in the shared file is ignored: the node keeps its own pbo-<node>" || bad "shared storage id: rc=$rc $out"
+cp "$RUN/shared.before" "$SH"; cp "$RUN/members.keep" "$RUN/pve/.members"
 out="$(TB config unset --shared CACHE_DIR 2>&1)"; rc=$?
 [[ $rc == 78 ]] && grep -q 'decides where each node keeps its cache' <<<"$out" && cmp -s "$RUN/shared.before" "$SH" \
     && ok "unset --shared CACHE_DIR is refused too (every node's cache would move), the shared file unchanged" || bad "unset shared cache: rc=$rc $out"

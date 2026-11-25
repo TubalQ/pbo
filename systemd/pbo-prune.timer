@@ -3,6 +3,10 @@ Description=Weekly pbo retention (prune)
 Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
+# The defaults of SCHEDULE_PRUNE (OnCalendar=) and SCHEDULE_PRUNE_DELAY
+# (RandomizedDelaySec=) in lib/config_schema.sh; tests check they agree.
+# `pbo config set SCHEDULE_PRUNE ...` changes it with a drop-in
+# (pbo-prune.timer.d/schedule.conf): an edit here is undone by a reinstall.
 # Sundays 06:30, after the nightly backups have run all week.
 OnCalendar=Sun *-*-* 06:30:00
 Persistent=true

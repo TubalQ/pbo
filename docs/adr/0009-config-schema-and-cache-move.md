@@ -609,7 +609,7 @@ and uids. What is genuinely fixed (pmxcfs at `/etc/pve`, `/proc`, the two
 install layouts, the shared system directories pbo refuses to touch) is listed
 with its reason. Part 1 is everything that needs no config writer; the timer
 schedules (systemd drop-ins written by `config set`) and per-node storage ids
-in a cluster come with the writer in part 2.
+in a cluster came with the writer in part 2 (below).
 
 **The lint.** `tests/hardcode.sh` scans what runs on a host (`pbo`, `lib/`
 without the schema, `install.sh`, `systemd/`, `pve-plugin/`) for absolute
@@ -760,3 +760,171 @@ value: every field is a version, a count, a type or a yes/no, and a value that
 is not version-shaped is shown as "other". tests/portability.sh plants
 secrets, URLs, users, hosts, a port and paths in the config and checks that
 none appears.
+
+### Portability (MP, part 2): timer schedules, per-node storage ids
+
+**Timer schedules.** The times were fixed in `systemd/*.timer` (and repeated in
+install.sh's messages and doctor's job-window check), so another schedule meant
+editing a unit file that the next reinstall or package upgrade put back.
+
+- **Keys.** `SCHEDULE_BACKUP`, `SCHEDULE_PRUNE`, `SCHEDULE_VERIFY`,
+  `SCHEDULE_TEST_RESTORE`, `SCHEDULE_CATALOG` (host) and `SCHEDULE_JANITOR`
+  (janitor: the roles column, so `config set` refuses the other role's keys),
+  and `SCHEDULE_*_DELAY` for the `RandomizedDelaySec=` of each timer that has
+  one (not pbo.timer: its start should be predictable). All advanced, so a new
+  config follows the defaults. A default is the value in the unit file, which
+  keeps it: the unit works without pbo's config, and tests/schedule_config.sh
+  checks that every unit has its keys and that the two agree. The mapping
+  timer -> keys is one table in `lib/timers.sh`.
+- **Types.** `calendar` (OnCalendar=) and `timespan` (RandomizedDelaySec=).
+  A value becomes a line of a unit file, so before systemd judges the syntax
+  it must be plain text there: letters, digits, blanks and `* : , . / ~ - + _`
+  only (a `%` is a specifier, `\` continues the line, `=` and `[` start a
+  setting or a section, a newline a new line; the writer refuses control
+  characters anyway). Then `systemd-analyze calendar|timespan` (offline, changes
+  nothing) decides; without it (a CI container) a narrow check accepts only
+  the common forms (weekdays, `[year-]month-day`, `hour:minute[:second]`, a
+  time zone; numbers with units), every number in its range (hour 0-23, minute
+  and second 0-59, month 1-12, day 1-31, year 1970-2199, a repetition only from
+  a number), and a time zone only when it is UTC or a file in the zoneinfo
+  database, so what it lets through systemd takes too. Anything else is refused
+  rather than guessed: the drop-in clears the unit's calendar first, and a value
+  systemd then ignores leaves the timer with no trigger. A default is valid by
+  construction and not checked again (doctor validates every key on each run).
+- **Drop-ins, not unit edits.** A timer whose keys differ from their defaults
+  gets `<PBO_SYSTEMD_DIR>/<timer>.d/schedule.conf` (`PBO_SYSTEMD_DIR`, an
+  internal key, is `/etc/systemd/system`; the .deb's units in
+  `/usr/lib/systemd/system` read drop-ins there too): `[Timer]`, `OnCalendar=`
+  (empty: OnCalendar= is a list, the unit's entry must go) and the value,
+  `RandomizedDelaySec=` only when its key differs. A timer at its defaults has
+  no drop-in; an old one is removed, and the `.d` directory when that leaves it
+  empty (an admin's `override.conf` stays; `schedule.conf` sorts after it, so
+  the config wins). The file is written atomically (temp file in the directory,
+  0644, rename), never through a symlink, and never for a value pbo refuses
+  (that timer keeps what it has; the run exits 78).
+- **Who applies them.** The `apply-schedule` on_change hook of `config
+  set|unset`, after the write, for the timers whose keys changed, from the
+  values just written (the shell still holds the old ones); `pbo timers apply`
+  for every timer of the role, which install.sh runs after installing the units
+  and the .deb's postinst after an upgrade, so a reinstall keeps a custom
+  schedule; `pbo doctor --fix`. After a change: `systemctl daemon-reload` once.
+  A plain restart is not enough: every pbo timer has `Persistent=true`, and
+  systemd computes a calendar timer's next elapse from its last trigger (the
+  stamp file), so a new time earlier than the last run would have elapsed
+  already and the job would start at once (a full backup at midday, a prune
+  with its exclusive lock, a test restore booting a guest). So a schedule
+  change resets the timer's persistent state: each changed timer that
+  `is-enabled` is stopped before its drop-in is written (a stopped timer is not
+  re-armed by the reload), `systemctl clean --what=state` removes its stamp
+  after the reload (systemd 247 or later; when it fails the report says the
+  timer may start at once), and it is started again when it was running. Its
+  next run is then the first elapse of the new calendar from now; a run missed
+  under the old schedule is not caught up, which is the lesser surprise. A
+  disabled timer stays disabled, an enabled one that was not running stays
+  stopped (pbo never enables or starts a timer of its own accord). Without
+  systemctl the step is skipped with a note; a failing stop, reload or start is
+  a failed after-write hook (69, the config stays written). A dry run says what
+  it would write and calls nothing. On a janitor `config set|unset` and `timers
+  apply` stay root (the drop-ins are root's, in the systemd directory), and
+  `doctor --fix` started as root applies them before it drops to JANITOR_USER
+  and hands the result on, as the permission pass does
+  (`PBO_SCHED_FIX_REPORT`); the doctor running as JANITOR_USER audit-logs those
+  changes ("... (as root, before dropping to <user>)"), root writes nothing into
+  that user's LOG_DIR.
+- **The cluster-shared file.** A schedule there reaches every node's config,
+  but the hook runs only on the node that wrote it. The others are not changed
+  behind their back: their doctor warns that the drop-in does not match, and
+  `pbo timers apply` (or `doctor --fix`) there applies it.
+- **Doctor.** A drop-in that differs from what the config wants (drift), one
+  the config no longer wants (stale), a schedule pbo refuses, unit files
+  systemd has not reloaded (`NeedDaemonReload`, also after a drop-in was
+  removed), and a calendar in systemd (`TimersCalendar`) that is not the
+  config's are warnings: the timer runs, on another schedule than the config
+  says. The last one catches an `override.conf` from `systemctl edit` that sets
+  `OnCalendar=` (the way to change a time before 0.6) and a reload that did not
+  happen; both sides are compared in systemd's normalized form
+  (`systemd-analyze calendar`), and not at all without it. The PVE job window
+  (`PVE_JOB_WINDOW_MIN`) compares a job's next run, as a minute of the local
+  day, with the minutes at which the backup, prune and verify timers run (the
+  calendar systemd runs when it says, else the configured one): plain
+  `HH:MM[:SS]` (lists too) is read directly, anything else
+  (wildcards, repetitions, a time zone) is expanded with `systemd-analyze
+  calendar --iterations`, which prints local times; a schedule whose times
+  cannot be worked out, or that pbo refuses, is left out rather than guessed.
+- **`pbo timers`** shows the calendar systemd runs (falling back to the
+  configured one), the source of the configured one (default, config, shared,
+  env, as `config list` says it), and notes a drop-in that does not match and a
+  calendar in systemd that is not the config's.
+
+**Per-node storage ids.** `pbo integrate enable` created `pbo` with `--nodes
+<this node>` and this node's spool as `path`. storage.cfg is one file for the
+cluster: a second node enabling the integration found `pbo` there, of type pbo,
+and converged its path to its own spool, which broke the first node's.
+
+- **Decision.** `PVE_STORAGE_ID`'s default is derived (`_cfgdef_PVE_STORAGE_ID`,
+  bash alone, no fork, since set_defaults runs on every start): `pbo` when
+  pmxcfs' member list names at most one node (a node outside a cluster lists
+  itself as a cluster of one) or cannot be read, so every single-node
+  installation is unchanged; else `pbo-<node>`. An entry pbo already made for
+  this node keeps its id: `pbo-<node>` if storage.cfg has it, else the first
+  entry of type pbo whose `nodes` names this node or that has no `nodes` (it
+  serves every node). So a cluster that enabled the integration before 0.6, or
+  a node that joined a cluster after enabling it, is not renamed by the
+  upgrade. A `PVE_STORAGE_ID` in the local config or the environment always
+  wins. It is a per-node value (`local-only`): a `PVE_STORAGE_ID` in the
+  cluster-shared file is ignored (doctor FAIL), set it per node; otherwise one
+  node's id would be every node's, and the remedy doctor names (a local unset)
+  could not undo it.
+- **Pinned on enable.** A derived per-node id is written to the local config in
+  the same transaction as `PBO_INTEGRATION` (step 8, last). From then on the id
+  does not depend on what pmxcfs shows (a start while /etc/pve is not mounted,
+  a node that leaves the cluster), and `config list` shows it as configured.
+  `pbo` is never pinned (a single node's config stays as it was).
+- **Another node's storage.** enable refuses (69, nothing changed) an existing
+  pbo entry whose `nodes` leave this node out: converging it would repoint a
+  storage another node uses. An entry this node shares with others (in a
+  cluster: no `nodes`, or a list that names another node too) may be used as
+  it is, but enable refuses when step 4 would change its path: to this node's
+  spool (it repoints the others) or, with `--catalog-only`, away (their jobs
+  lose their backup target). The refusal's hint offers `config unset
+  PVE_STORAGE_ID` only when that changes the id; while a shared entry serves
+  this node the derived default keeps its id, so the hint says to set
+  `pbo-<node>`. disable refuses (78, before any change) an entry whose `nodes`
+  leave this node out: a config copied from another node names that node's
+  pinned id, its jobs are not counted here, and `pvesm remove` would delete it
+  for the cluster. A shared entry is not removed by disable either: this node
+  is taken off its `nodes` (`pvesm set --nodes <the others>`, from the entry or
+  pmxcfs' node list), so only the last node removes it, and this node's
+  default id becomes `pbo-<node>`. Doctor FAILs a storage whose `nodes` leave
+  this node out (PVE runs no job of this node on it). In a cluster where `pbo`
+  serves more than this node, doctor warns and names the move, node by node:
+  disable or retarget this node's jobs, `integrate disable`, set
+  `PVE_STORAGE_ID pbo-<node>`, `integrate enable`, recreate the jobs per node by
+  hand. An entry made before 0.6 with `nodes <this node>` is already this
+  node's own storage: no warning. pbo never edits jobs.cfg (ADR 0007), so it
+  does not move them itself.
+- **Ownership.** A job owns guests here only when its storage serves this node
+  (no `nodes`, or `nodes` names it): a job for every node on another node's
+  storage fails on this node, so counting it would leave this node's guests to
+  nobody (fail open, as everywhere in ownership).
+- **One id everywhere.** The catalogue (`storage_id`), `integrate
+  status|enable|disable`, doctor and the job checks take the id from
+  `_pve_storage_id` (the configured or derived value); the vzdump hook and the
+  plugin never named it (they match the type `pbo` and PVE's storeid).
+
+**Tests.** `tests/schedule_config.sh` (the keys against the units, drop-ins
+written and removed, reload, and stop / `clean --what=state` / start in that
+order for a running enabled timer only, refused values with and without
+systemd-analyze, dry run, `timers [apply]`, doctor's warnings and `--fix`, the
+calendar systemd runs against the config through the systemctl mock,
+install.sh over fresh units, the janitor's keys and its root pass through a
+fake runuser, the job window)
+and the cluster part of `tests/integrate.sh` (a mocked member list of one and
+three nodes: the derived id, an entry kept, an explicit id, another node's
+storage refused, enable/status/disable with `pbo-<node>`, ownership, the
+move warning). Both run a copy of pbo that stops (99) when a path it resolved
+(the config files, the directories, the PVE paths, the systemd directory) lies
+outside the suite's run directory, before any command runs and before any
+config or drop-in write (`tests/fixtures/run_dir_guard.sh`), and every suite
+points `PBO_SYSTEMD_DIR` into the checkout, so no test can read or change a
+host's units.

@@ -1260,7 +1260,8 @@ _tool_package() {
 
 # doctor: a fast health check that surfaces the things that silently rot, repo
 # reachability, permissions (the DR key, CACHE_DIR and the rest of the rule
-# table in lib/perms.sh; `doctor --fix` applies it first), the timer, provider
+# table in lib/perms.sh; `doctor --fix` applies it first), the timer and its
+# schedule (lib/timers.sh; `doctor --fix` writes the drop-ins too), provider
 # snapshots, and, per guest, how old the newest snapshot is (catches a guest
 # that quietly stopped being backed up, e.g. one whose data lives on a backup=0
 # mountpoint).
@@ -1295,6 +1296,11 @@ rdo_doctor() {
         if systemctl is-enabled pbo-catalog.timer >/dev/null 2>&1; then lines+=("$ok  pbo-catalog.timer enabled")
         else lines+=("$warn  pbo-catalog.timer not enabled (the PVE storage view goes stale; 'pbo integrate enable' turns it on)"); warns=$((warns+1)); fi
     fi
+    # The timer schedules (SCHEDULE_*): the drop-ins as the config says
+    # (lib/timers.sh; `doctor --fix` writes them)
+    _sched_ensure
+    _doctor_schedule "$ok" "$bad" "$warn"
+    lines+=("${DSC_LINES[@]+"${DSC_LINES[@]}"}"); problems=$((problems+DSC_PROBLEMS)); warns=$((warns+DSC_WARNS))
 
     # Append-only offsite (host side): prove the server refuses deletes.
     _doctor_append_only "$ok" "$bad" "$warn"

@@ -3,6 +3,10 @@ Description=Daily pbo janitor run (retention + verify + freshness)
 Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
+# The defaults of SCHEDULE_JANITOR (OnCalendar=) and SCHEDULE_JANITOR_DELAY
+# (RandomizedDelaySec=) in lib/config_schema.sh; tests check they agree.
+# `pbo config set SCHEDULE_JANITOR ...` changes it with a drop-in
+# (pbo-janitor.timer.d/schedule.conf): an edit here is undone by a reinstall.
 # Midday, well clear of the hosts' nightly backups. Prune and backup still
 # serialize on the restic lock (RESTIC_RETRY_LOCK) if they ever meet.
 OnCalendar=*-*-* 12:30:00

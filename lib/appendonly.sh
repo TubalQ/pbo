@@ -37,6 +37,8 @@ _role_check() {
             # PBO_JANITOR_ALLOW_ROOT=1 exists for the test suite only.
             local stay=0
             [[ "$cmd" == config ]] && case "${PBO_SUBCOMMAND:-}" in check|set|unset) stay=1 ;; esac
+            # the timer drop-ins are root's files in the systemd directory
+            [[ "$cmd" == timers && "${PBO_SUBCOMMAND:-}" == apply ]] && stay=1
             if [[ "$EUID" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 ]]; then
                 # root writes nothing into the janitor user's LOG_DIR: not the
                 # audit line of a command that stays root (the EXIT trap), not
@@ -51,7 +53,7 @@ _role_check() {
                 id "$ju" >/dev/null 2>&1 || die "$EX_CONFIG" "JANITOR_USER '$ju' does not exist"
                 [[ "$(id -u "$ju")" != 0 ]] || die "$EX_CONFIG" "JANITOR_USER must not be root"
                 # doctor --fix: the owners need root, so that pass runs now (lib/perms.sh)
-                [[ "$cmd" != doctor ]] || _perm_root_pass
+                [[ "$cmd" != doctor ]] || { _perm_root_pass; _sched_ensure; _sched_root_pass; }
                 exec "${PBO_RUNUSER_BIN:-runuser}" -u "$ju" -- "${SELF_DIR}/pbo" "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}"
             fi
             if [[ "${PBO_CFG_LENIENT:-0}" == 1 ]]; then return 0; fi

@@ -3,6 +3,10 @@ Description=Daily pbo offsite backup
 Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
+# The default of SCHEDULE_BACKUP (OnCalendar=) in lib/config_schema.sh; tests
+# check they agree.
+# `pbo config set SCHEDULE_BACKUP ...` changes it with a drop-in
+# (pbo.timer.d/schedule.conf): an edit here is undone by a reinstall.
 # 05:00 every night.
 OnCalendar=*-*-* 05:00:00
 Persistent=true

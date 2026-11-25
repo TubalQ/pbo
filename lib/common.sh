@@ -116,6 +116,17 @@ _cfg_apply() {
     for _ca_k in "${!CFG_EXPORT[@]}"; do export "$_ca_k=${CFG_EXPORT[$_ca_k]}"; done
 }
 
+# _cfg_key_source KEY → config | shared | env | default: where KEY's value
+# comes from, as `pbo config list` names it (the reader's CFG_SRC, the
+# environment snapshot CFG_ENV; a caller without load_config: default).
+_cfg_key_source() {
+    local s=''
+    declare -p CFG_SRC >/dev/null 2>&1 && s="${CFG_SRC[$1]-}"
+    if [[ -n "$s" ]]; then if [[ "${s%%:*}" == shared ]]; then printf shared; else printf config; fi
+    elif declare -p CFG_ENV >/dev/null 2>&1 && [[ -n "${CFG_ENV[$1]:-}" ]]; then printf env
+    else printf default; fi
+}
+
 # _config_refuse: the config has lines the reader refuses. pbo stops (78)
 # rather than run on the rest: a lost line would silently fall back to a
 # default (another repo, another retention). The first three errors, the way
@@ -417,6 +428,17 @@ _cfg_write_ensure() {
         local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
         # shellcheck source=lib/config.sh
         source "$d/config.sh"
+    fi
+}
+
+# _sched_ensure: the timer schedules (lib/timers.sh) loaded; ./pbo sources it,
+# a caller that sourced only some libraries (a test, lib/integrate.sh's job
+# window) gets it here.
+_sched_ensure() {
+    if ! declare -F _sched_apply >/dev/null; then
+        local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
+        # shellcheck source=lib/timers.sh
+        source "$d/timers.sh"
     fi
 }
 

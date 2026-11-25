@@ -439,6 +439,24 @@ inst_perms() {
     return 0
 }
 
+# inst_schedules: the timer schedules of the config (SCHEDULE_*, lib/timers.sh)
+# as drop-ins next to the units just installed, through the pbo just installed
+# (`pbo timers apply`): the units carry the defaults, so a reinstall over a
+# config with a custom schedule keeps it. A drop-in the config no longer wants
+# goes. Its output is shown; it never fails the install (doctor names a drift,
+# `pbo doctor --fix` applies it again).
+inst_schedules() {
+    echo "==> Timer schedules ($BIN timers apply)"
+    local pbo="$BIN" out rc=0
+    [[ "${PBO_INSTALL_TEST:-0}" == 1 && -n "${PBO_INSTALL_PBO:-}" ]] && pbo="$PBO_INSTALL_PBO"
+    out="$(PBO_SYSTEMD_DIR="$UNITDIR" "$pbo" timers apply 2>&1)" || rc=$?
+    [[ -z "$out" ]] || printf '%s\n' "$out" | sed 's/^/    /'
+    if (( rc != 0 )); then
+        echo "    WARNING: the timer schedules could not all be applied (exit $rc); fix the config, then run '$BIN timers apply'."
+    fi
+    return 0
+}
+
 inst_janitor_units() {
     echo "==> systemd units (installed, NOT enabled)"
     sed "s/^User=.*/User=$JUSER/; s/^Group=.*/Group=$JUSER/" "$SRC/systemd/pbo-janitor.service" > "$UNITDIR/pbo-janitor.service"
@@ -452,7 +470,7 @@ Installed: pbo janitor (runs as $JUSER).
   1. Edit $CFGDIR/config: RESTIC_OFFSITE_REPO = the repo directory on this disk.
   2. Put the repo password in $CFGDIR/restic-pass, chown $JUSER, chmod 0400.
   3. Check it:   $BIN doctor        (drops to $JUSER by itself)
-  4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily 12:30)
+  4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily, SCHEDULE_JANITOR)
 
 Started as root, pbo re-execs itself as $JUSER (JANITOR_USER in the config), so
 plain "$BIN doctor" is fine.
@@ -537,10 +555,12 @@ Installed: pbo (Proxmox Backup Offsite).
   Health:     $BIN doctor     check repo, timer, key perms, per-guest age
 
 The wizard offers to enable the schedule at the end. To do it by hand instead:
-  systemctl enable --now pbo.timer         (backups, 05:00 nightly)
-  systemctl enable --now pbo-prune.timer   (prune, Sun 06:30)
-  systemctl enable --now pbo-verify.timer  (integrity, Wed 10:00, 1/12 of the data per run)
-  systemctl enable --now pbo-test-restore.timer  (restore test, Sat 10:00, one guest per run)
+  systemctl enable --now pbo.timer         (backups, nightly: SCHEDULE_BACKUP)
+  systemctl enable --now pbo-prune.timer   (prune, weekly: SCHEDULE_PRUNE)
+  systemctl enable --now pbo-verify.timer  (integrity, weekly, 1/12 of the data per run: SCHEDULE_VERIFY)
+  systemctl enable --now pbo-test-restore.timer  (restore test, weekly, one guest per run: SCHEDULE_TEST_RESTORE)
+'$BIN timers' shows when each runs; 'pbo config set SCHEDULE_BACKUP "<OnCalendar>"'
+changes it (a drop-in next to the unit, the timer restarted if enabled).
 EOF
     if [[ "$MODE" != standalone ]]; then cat <<EOF
 
@@ -595,12 +615,13 @@ main() {
     inst_deps
     inst_restic_check
     inst_program
-    if [[ "$ROLE" == janitor ]]; then inst_perms; inst_janitor_units; exit 0; fi
+    if [[ "$ROLE" == janitor ]]; then inst_perms; inst_janitor_units; inst_schedules; exit 0; fi
     inst_web_remove
     inst_host_units
     inst_integration
     "$SYSTEMCTL" daemon-reload
     inst_perms
+    inst_schedules
     inst_final_message
 
     # --- interactive first-run setup (only on a real terminal) ---

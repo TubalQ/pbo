@@ -32,12 +32,27 @@ VZDUMP_STOP_VMIDS=                           # these vmids are also backed up wi
 # own guests into the shared repo (an explicit list is filtered to local guests).
 # PRUNE_OWNER, cluster only: restrict `prune` to one node (prune needs an exclusive
 # repo lock). Empty = any node may prune (restic's lock keeps concurrent attempts safe).
+# SCHEDULE_*: when each timer runs, in systemd's OnCalendar= syntax (man systemd.time),
+# e.g. "Mon..Fri *-*-* 22:30:00"; the *_DELAY keys are its RandomizedDelaySec=.
+# `pbo config set` writes them to a drop-in (<timer>.d/schedule.conf next to the
+# units) and restarts the timer if it is enabled, its next run computed from now (a
+# time moved earlier does not start the job at once); `pbo timers` shows what is in use.
+# In a cluster, give the nodes different backup times: they share one repo.
 BACKUP_ORDER=auto                            # auto | a comma-separated vmid list (critical first)
 BACKUP_MODE=stream                           # stream (one-by-one, low disk) | batch (dump all→upload)
 #BATCH_FIT_PCT=85                            # batch mode runs only when the estimated dumps fit in this percentage of the free space of CACHE_DIR (else stream)
 GLOBAL_LOCK_TIMEOUT=7200                     # seconds a scheduled run waits in the queue
 #SCHEDULE_LOCK_TIMEOUT=7200                  # seconds the prune timer waits for a running run-schedule (and vice versa); the default follows GLOBAL_LOCK_TIMEOUT
 PRUNE_OWNER=                                 # cluster: the node that prunes; empty = any node
+#SCHEDULE_BACKUP="*-*-* 05:00:00"            # when pbo.timer runs the nightly backup (systemd OnCalendar=)
+#SCHEDULE_PRUNE="Sun *-*-* 06:30:00"         # when pbo-prune.timer runs retention (after a week of nightly backups)
+#SCHEDULE_PRUNE_DELAY=15m                    # RandomizedDelaySec= of pbo-prune.timer (0 = start on time)
+#SCHEDULE_VERIFY="Wed *-*-* 10:00:00"        # when pbo-verify.timer runs the integrity check (away from backup and prune)
+#SCHEDULE_VERIFY_DELAY=30m                   # RandomizedDelaySec= of pbo-verify.timer
+#SCHEDULE_TEST_RESTORE="Sat *-*-* 10:00:00"  # when pbo-test-restore.timer restores and boots one guest
+#SCHEDULE_TEST_RESTORE_DELAY=30m             # RandomizedDelaySec= of pbo-test-restore.timer
+#SCHEDULE_CATALOG="*:0/15"                   # when pbo-catalog.timer refreshes the catalogue (Proxmox integration)
+#SCHEDULE_CATALOG_DELAY=60                   # RandomizedDelaySec= of pbo-catalog.timer
 
 # --- retention (applied by the pbo-prune.timer, or `pbo prune`) ---
 # Per guest, set Proxmox tags instead: pbo-keep-daily-N / -weekly-N / -monthly-N / -yearly-N,
@@ -153,7 +168,7 @@ DOCTOR_MAX_AGE=172800                        # 48h, `pbo doctor` flags a guest w
 # When the jobs cannot be read, pbo.timer backs up every guest (fail open).
 # Switch with `pbo integrate`, not by hand. A janitor is always standalone.
 #PBO_INTEGRATION=standalone                  # standalone | both | integrated
-#PVE_STORAGE_ID=pbo                          # the pbo storage in PVE
+#PVE_STORAGE_ID=pbo                          # the pbo storage in PVE: pbo on a single node, pbo-<node> in a cluster (an entry pbo made for this node keeps its id)
 #PVE_SPOOL_DIR=/var/cache/pbo/spool          # PVE jobs write here (same filesystem as CACHE_DIR); the default follows CACHE_DIR
 #PVE_STAGING_DIR=/var/cache/pbo/staging      # archives staged for a restore from the PVE GUI; the default follows CACHE_DIR
 #PVE_STAGING_TTL=21600                       # seconds a staged archive is kept (6 h)
