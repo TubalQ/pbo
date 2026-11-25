@@ -1,7 +1,7 @@
 # ADR 0005, a web UI on top of the CLI
 
 - **Status:** Superseded by [ADR 0008](0008-remove-web-ui.md) on 2026-11-24:
-  pbo-web is removed in 0.5.0. Accepted 2026-11-22; shipped in 0.4.0
+  pbo-web is removed in 0.5 (first released in 0.6.0). Accepted 2026-11-22; shipped in 0.4.0
   and 0.4.1. Kept as history.
 - **Decision:** pbo gets a web UI that can do what the terminal does. It is a
   frontend only: every action and every read goes through `pbo --json`, so the CLI

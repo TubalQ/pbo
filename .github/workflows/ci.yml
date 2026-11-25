@@ -92,7 +92,7 @@ jobs:
           if dpkg-deb --contents dist/pbo_*_all.deb | grep -E 'pbo-catalog|pbo-mount|PboPlugin|vzdump-hook'; then
             echo "the pbo package must not carry the integration files"; exit 1
           fi
-          # pbo-web is gone (0.5.0): no package, and pbo breaks an old one
+          # pbo-web is gone (since 0.5): no package, and pbo breaks an old one
           if ls dist/pbo-web_* 2>/dev/null; then echo "no pbo-web package any more"; exit 1; fi
           dpkg-deb -f dist/pbo_*_all.deb Breaks | grep -qx 'pbo-web'
           if dpkg-deb --contents dist/pbo_*_all.deb | grep 'pbo-web'; then echo "pbo must not ship pbo-web files"; exit 1; fi

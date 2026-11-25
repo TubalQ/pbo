@@ -3,7 +3,7 @@
 - **Status:** Accepted 2026-11-24, once the Proxmox integration covered backup
   jobs and GUI restores end to end.
 - **Decision:** pbo-web, the web UI from [ADR 0005](0005-web-ui.md), is removed in
-  0.5.0: the Go code (`web/`), the `pbo-web` package, its units, its egress rule,
+  0.5: the Go code (`web/`), the `pbo-web` package, its units, its egress rule,
   its CI job and the web design files. The Proxmox GUI (through the integration of
   [ADR 0006](0006-pve-native-storage.md) and [ADR 0007](0007-install-modes.md)) and
   the CLI (`pbo menu`, the commands, `--json`) are the interfaces.
@@ -12,7 +12,7 @@
 ## Context
 
 ADR 0005 added pbo-web because the terminal was the only interface. Since the
-integration (0.5.0) a Proxmox host can show pbo as a storage in its own GUI:
+integration (0.5) a Proxmox host can show pbo as a storage in its own GUI:
 browse every snapshot of both repos, show a guest's configuration, restore,
 "Backup now" and backup jobs, with Proxmox's own users, ACLs, two-factor login and
 notifications. The per-guest policy was always Proxmox tags, editable in the GUI.
@@ -24,7 +24,7 @@ a third package, and a permission model that had to mirror Proxmox's.
 
 ## What goes, and what covers it
 
-| pbo-web | After 0.5.0 |
+| pbo-web | From 0.5 on |
 |---|---|
 | list guests, snapshots, both tiers | Proxmox GUI, the `pbo` storage; `pbo list`, `pbo guests` |
 | restore wizard (always isolated) | Proxmox GUI restore (**not isolated**, admins only); `pbo restore` (isolated) |

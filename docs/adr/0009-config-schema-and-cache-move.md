@@ -1,7 +1,6 @@
 # ADR 0009, a config schema, a strict reader, and moving the cache directory
 
-- **Status:** Proposed 2026-11-24, for 0.6.0. It becomes Accepted with the 0.6.0
-  release.
+- **Status:** Accepted with the 0.6.0 release. Proposed 2026-11-24.
 - **Goal:** make it easy for other installations to choose the cache directory and
   the other settings and to get permissions right, with nothing hard-coded.
 

@@ -18,6 +18,9 @@ backend credentials, thresholds, per-node storage ids in a cluster).
 ### Upgrading from 0.5
 
 These are the migration notes pbo, `install.sh` and the `.deb` point to.
+0.6.0 is also the first release after 0.4.1: an upgrade from 0.4.1 picks up
+the 0.5 changes as well (pbo-web removed, the optional Proxmox integration),
+so read the 0.5.0 entry below first.
 
 **What can stop the upgrade.**
 
@@ -474,7 +477,10 @@ Docs
   `RESTIC_ENV_FILE`. SECURITY: the config as data, exec keys and the shared
   file, `RESTIC_ENV_FILE`, the permission table.
 
-## 0.5.0 (unreleased)
+## 0.5.0 (not released)
+
+0.5.0 was not released on its own: its only build was the pre-release
+0.5.0-rc1, and everything below ships in 0.6.0.
 
 Changes behaviour: pbo-web is gone, and the Proxmox integration is new (off by
 default). A host that stays `standalone` and never ran pbo-web behaves as 0.4.1.

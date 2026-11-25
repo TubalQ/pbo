@@ -1,6 +1,6 @@
 # ADR 0006, pbo as a native Proxmox VE backup provider
 
-- **Status:** Accepted 2026-11-23, with the [amendments at acceptance](#amendments-at-acceptance-2026-11-23) at the end of this ADR; where they conflict with the text above them, the amendments win. Proposed 2026-11-22. Built in 0.5.0.
+- **Status:** Accepted 2026-11-23, with the [amendments at acceptance](#amendments-at-acceptance-2026-11-23) at the end of this ADR; where they conflict with the text above them, the amendments win. Proposed 2026-11-22. Built in 0.5 (pre-release 0.5.0-rc1); first released in 0.6.0.
 - **See also:** [ADR 0007](0007-install-modes.md), install modes and guest ownership.
 - **Decision (short):** pbo becomes a **native PVE storage type `pbo`** that does **not** set the Backup Provider feature. PVE then lists and restores pbo's existing vzdump `.tar`/`.vma` snapshots through its ordinary file-archive path. Later the same storage becomes a Datacenter -> Backup target: it writes to a spool and a hook hands each archive to `pbo ingest`. A real Backup Provider (`PVE::BackupProvider::Plugin::Base`) is deferred. It gets built only if the first two phases leave a concrete gap.
 - **Supersedes (partly):** ADR 0005's rejection of "Perl on PVE's libraries" and "a plugin inside the PVE GUI" (docs/adr/0005-web-ui.md:32-34). This ADR covers one narrow storage-plugin adapter only. It is a supported public plugin API (storage APIVER), not a patch to pve-manager.
@@ -591,7 +591,7 @@ the decision text above did not cover. These amendments win over the sections ab
     staging and "retry". Offsite-only archives always use `restic dump`.
 19. **Privileged containers.** `pbo restore` and `test-restore` used to turn a
     privileged CT into an unprivileged copy (Proxmox leaves `unprivileged:` out of
-    a privileged CT's config). Fixed in 0.5.0; a GUI
+    a privileged CT's config). Fixed in 0.5; a GUI
     restore through the plugin was never affected, it reads the archive's own
     config. Privileged CTs are GUI-restorable by root only (doctor warns on a
     storage ACL for anyone else); open question 5 is answered by amendment 22,
@@ -599,7 +599,7 @@ the decision text above did not cover. These amendments win over the sections ab
 20. **pbo-web is removed (ADR 0008, 2026-11-24).** Where this ADR says "pbo-web
     stays" (Consequences) or names it as the isolated and test restore path, read
     `pbo restore` and `pbo test-restore` (CLI). The Proxmox GUI through this plugin
-    is the only graphical interface from 0.5.0.
+    is the only graphical interface from 0.5 on.
 21. **GUI restore of a CT with a host bind mount (answers open question 6).**
     When root@pam restores such a CT through the plugin to a new vmid, Proxmox
     keeps the bind mount (`mpN: <host path>`) and the raw `lxc.idmap` lines as
@@ -616,5 +616,5 @@ the decision text above did not cover. These amendments win over the sections ab
 22. **Privileged CTs may stay privileged (answers open question 5).** They are
     GUI-restorable by root@pam only (a privileged restore needs Sys.Modify on `/`,
     and the storage stays admin-only); `pbo restore` and `test-restore` keep them
-    privileged since 0.5.0. A privileged CT with fuse runs in stop mode, so it
+    privileged since 0.5. A privileged CT with fuse runs in stop mode, so it
     belongs in the stop-mode job.

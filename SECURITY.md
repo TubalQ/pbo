@@ -259,7 +259,7 @@ the node but returns at once unless the job writes to a `pbo` storage; if the ho
 file goes missing, every backup on the node fails, which is why `pbo integrate
 disable` (and the package's prerm) remove the line first.
 
-pbo 0.4 had a web UI (`pbo-web`, port 8008); it was removed in 0.5.0, together with
+pbo 0.4 had a web UI (`pbo-web`, port 8008); it was removed in 0.5 (first released in 0.6.0), together with
 its root helper. If you ran it, close TCP 8008 in the firewall.
 
 ### Out of scope

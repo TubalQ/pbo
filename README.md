@@ -491,7 +491,7 @@ place. `pbo restore`
 stays the isolated way (network disconnected, host bindings removed). Keep the
 `pbo` storage's permissions to administrators; doctor warns about anyone else.
 
-pbo 0.4 had its own web UI (`pbo-web`, port 8008). It was removed in 0.5.0: the
+pbo 0.4 had its own web UI (`pbo-web`, port 8008). It was removed in 0.5 (first released in 0.6.0): the
 Proxmox GUI and the CLI cover it. `install.sh` removes an old pbo-web; with .debs
 the `pbo` package breaks `pbo-web`, so apt removes it. Close TCP 8008 afterwards.
 

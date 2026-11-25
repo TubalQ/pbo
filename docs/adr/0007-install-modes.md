@@ -1,6 +1,6 @@
 # ADR 0007, install modes and guest ownership
 
-- **Status:** Accepted 2026-11-23. Built and shipped in 0.5.0.
+- **Status:** Accepted 2026-11-23. Built in 0.5 (pre-release 0.5.0-rc1); first released in 0.6.0.
   Amended 2026-11-24: pbo-web is gone
   ([ADR 0008](0008-remove-web-ui.md)), see the end.
 - **Decision:** The Proxmox integration from [ADR 0006](0006-pve-native-storage.md)
@@ -213,7 +213,7 @@ less.
 
 ## Amendment 2026-11-24: no pbo-web
 
-[ADR 0008](0008-remove-web-ui.md) removes pbo-web in 0.5.0. The package table above
+[ADR 0008](0008-remove-web-ui.md) removes pbo-web in 0.5. The package table above
 loses its two `pbo-web` rows: `pbo` alone is standalone, `pbo` +
 `pbo-pve-storage` can run all three modes. Where this ADR names pbo-web as the
 isolated restore path, read `pbo restore`.
