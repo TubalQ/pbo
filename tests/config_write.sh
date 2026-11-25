@@ -20,12 +20,17 @@ for m in tests/mocks/*; do install -m 0755 "$m" "$RUN/bin/"; done   # never the 
 export PATH="$RUN/bin:$PATH" MOCK_LOG="$RUN/calls" MOCK_SYSTEMCTL_DIR="$RUN/sysd" MOCK_CONF_DIR="$RUN"
 # the directories pbo uses, also for a run whose config does not name them
 export CACHE_DIR="$RUN/cache" LOG_DIR="$RUN/log" STATE_DIR="$RUN/state" LOCK_DIR="$RUN/lock"
+# the cache-move preflight must not see the host's vzdump (a PVE host that runs
+# the suite may run a backup job meanwhile): no vzdump runs
+export PBO_TEST_CM_VZDUMP_PIDS=''
 CFG="$RUN/config"; export PBO_CONFIG="$CFG"
 
 # mk [line...]: the generated example with this run's directories, then the lines
 mk() {
     sed -e "s|^CACHE_DIR=/var/cache/pbo|CACHE_DIR=$RUN/cache|; s|^LOG_DIR=/var/log/pbo|LOG_DIR=$RUN/log|; s|^STATE_DIR=/var/lib/pbo|STATE_DIR=$RUN/state|" etc/config.example > "$CFG"
-    printf '%s\n' "LOCK_DIR=$RUN/lock" "PBO_PVE_LXC_DIR=$RUN/lxc" "NTFY_CREDS_FILE=/nonexistent" "$@" >> "$CFG"
+    # the PVE files a cache move reads (tests/cachemove.sh moves for real)
+    printf '%s\n' "LOCK_DIR=$RUN/lock" "PBO_PVE_LXC_DIR=$RUN/lxc" "PBO_PVE_QEMU_DIR=$RUN/qemu" "PBO_SUBUID_FILE=$RUN/subuid" \
+        "PVE_STORAGE_CFG=$RUN/storage.cfg" "VZDUMP_LOCK=$RUN/vzdump.lock" "PBO_PERMS_PARENTS_TOP=$RUN" "NTFY_CREDS_FILE=/nonexistent" "$@" >> "$CFG"
     chmod 600 "$CFG"
 }
 # rd FILE KEY: KEY as the strict reader reads FILE; bs FILE KEY: as bash sources it
@@ -169,14 +174,17 @@ out="$($BIN config set KEEP_LOCAL 7 2>&1)"; rc=$?
 printf '%s\n' "LOCK_DIR=$RUN/lock" "LOG_DIR=$RUN/log" "STATE_DIR=$RUN/state" > "$RUN/local.cfg"; chmod 600 "$RUN/local.cfg"; rm -f "$SH"
 P="$RUN/pause"; rm -rf "$P"; mkdir -p "$P"
 TEST_PAUSE_DIR="$P" TB config set KEEP_LOCAL 7 >"$RUN/pause.out" 2>&1 & pj=$!
-for _ in $(seq 100); do [[ -e "$P/in" ]] && break; sleep 0.1; done
+paused=0; for _ in $(seq 100); do [[ -e "$P/in" ]] && { paused=1; break; }; sleep 0.1; done
+(( paused )) || bad "lock setup: the first writer did not reach its pause within 10 s ($(tail -n 3 "$RUN/pause.out"))"
 out="$(TB config set KEEP_OFFSITE_WEEKLY 5 2>&1)"; rc2=$?
 held=0; exec 9>>"$RUN/lock/pbo.config"; flock -n 9 || held=1; exec 9>&-
 touch "$P/go"; wait "$pj"; rc=$?
-[[ -e "$P/in" && $rc == 0 && $rc2 == 75 && $held == 1 ]] && grep -q 'another config change is running' <<<"$out" \
-    && [[ "$(rd "$RUN/local.cfg" KEEP_LOCAL)" == 7 && "$(rd "$RUN/local.cfg" KEEP_OFFSITE_WEEKLY)" == '<unset>' ]] && ! tmpleft \
-    && ok "lock: held while the first writer is inside the read-modify-write (a second writer gets 75), the first one's change written" \
-    || bad "lock held: first rc=$rc $(cat "$RUN/pause.out") second rc=$rc2 $out held=$held"
+if (( paused )); then
+    [[ $rc == 0 && $rc2 == 75 && $held == 1 ]] && grep -q 'another config change is running' <<<"$out" \
+        && [[ "$(rd "$RUN/local.cfg" KEEP_LOCAL)" == 7 && "$(rd "$RUN/local.cfg" KEEP_OFFSITE_WEEKLY)" == '<unset>' ]] && ! tmpleft \
+        && ok "lock: held while the first writer is inside the read-modify-write (a second writer gets 75), the first one's change written" \
+        || bad "lock held: first rc=$rc $(cat "$RUN/pause.out") second rc=$rc2 $out held=$held"
+fi
 
 # --- dry run -----------------------------------------------------------------------------------------
 mk; cp "$CFG" "$RUN/before"; touch -d '2026-01-15 05:00:00' "$CFG"; m0="$(stat -c %Y "$CFG")"
@@ -437,7 +445,8 @@ out="$($BIN config set RESTIC_OFFSITE_REPO "$RUN/other-repo" --yes 2>&1 </dev/nu
 out="$($BIN config set RESTIC_CACHE_REPO "$RUN/cache2/repo" 2>&1 </dev/null)"; rc=$?
 [[ $rc == 64 ]] && grep -q 'RESTIC_CACHE_REPO' <<<"$out" && ok "confirm-repo: RESTIC_CACHE_REPO asks too" || bad "confirm cache repo: rc=$rc $out"
 
-# --- CACHE_DIR: an empty cache is created through the permission table, one with data is refused -------
+# --- CACHE_DIR: an empty cache is created through the permission table; one with data is moved -------
+# (the move itself: tests/cachemove.sh; here only that it needs --yes and changes nothing without it)
 mk "RESTIC_CACHE_REPO=$RUN/cache/repo"; rm -rf "$RUN/cache"; mkdir -p "$RUN/cache/repo" "$RUN/cache/spool/dump" "$RUN/cache/staging"
 out="$($BIN config set CACHE_DIR "$RUN/newcache" 2>&1)"; rc=$?
 [[ $rc == 0 && -d "$RUN/newcache" && "$(stat -c %a "$RUN/newcache")" == 750 && "$(rd "$CFG" CACHE_DIR)" == "$RUN/newcache" ]] \
@@ -446,11 +455,17 @@ out="$($BIN config set CACHE_DIR "$RUN/newcache" 2>&1)"; rc=$?
     && grep -q "RESTIC_CACHE_REPO: $RUN/cache/repo -> $RUN/newcache/repo (removed" <<<"$out" \
     && ok "CACHE_DIR: RESTIC_CACHE_REPO pinned at the old derived default is removed, it follows" || bad "follows: $out $(grep -n CACHE_REPO "$CFG")"
 mk; mkdir -p "$RUN/cache/repo"; : > "$RUN/cache/repo/config"; cp "$CFG" "$RUN/before"; rm -rf "$RUN/newcache2"
-out="$($BIN config set CACHE_DIR "$RUN/newcache2" 2>&1)"; rc=$?
-[[ $rc == 69 ]] && grep -q 'holds pbo data (repo/config): moving a cache with data is not supported yet' <<<"$out" && cmp -s "$RUN/before" "$CFG" && [[ ! -e "$RUN/newcache2" ]] \
-    && ok "CACHE_DIR on a cache with data: exit 69, nothing changed (file, no new directory)" || bad "data cache: rc=$rc $out"
+out="$($BIN config set CACHE_DIR "$RUN/newcache2" 2>&1 </dev/null)"; rc=$?
+[[ $rc == 64 ]] && grep -q 'the cache holds data: move CACHE_DIR' <<<"$out" && grep -q 'add --yes' <<<"$out" && cmp -s "$RUN/before" "$CFG" && [[ ! -e "$RUN/newcache2" ]] \
+    && ok "CACHE_DIR on a cache with data: a move, which needs --yes (64 without it), nothing changed (file, no new directory)" || bad "data cache: rc=$rc $out"
 out="$($BIN --dry-run config set CACHE_DIR "$RUN/newcache2" 2>&1)"; rc=$?
-[[ $rc == 69 ]] && cmp -s "$RUN/before" "$CFG" && ok "CACHE_DIR on a cache with data, --dry-run: exit 69 as well" || bad "data dry: rc=$rc $out"
+[[ $rc == 0 ]] && grep -q 'cache move plan:' <<<"$out" && cmp -s "$RUN/before" "$CFG" && [[ ! -e "$RUN/newcache2" ]] \
+    && ok "CACHE_DIR on a cache with data, --dry-run: the move's plan, nothing changed" || bad "data dry: rc=$rc $out"
+# the vzdump probe is this suite's (PBO_TEST_CM_VZDUMP_PIDS, empty above): the
+# host's own backup jobs never decide the result
+out="$(PBO_TEST_CM_VZDUMP_PIDS=4242 $BIN --dry-run config set CACHE_DIR "$RUN/newcache2" 2>&1)"; rc=$?
+[[ $rc == 69 ]] && grep -q 'vzdump runs (pid 4242)' <<<"$out" && cmp -s "$RUN/before" "$CFG" \
+    && ok "CACHE_DIR move preflight: the vzdump processes come from the test hook (a running one refuses, 69)" || bad "vzdump hook: rc=$rc $(grep -i vzdump <<<"$out")"
 rm -f "$RUN/cache/repo/config"
 out="$($BIN --dry-run config set CACHE_DIR "$RUN/newcache2" 2>&1)"; rc=$?
 [[ $rc == 0 && ! -e "$RUN/newcache2" ]] && cmp -s "$RUN/before" "$CFG" && grep -q 'would be created' <<<"$out" \
@@ -461,9 +476,9 @@ out="$($BIN config set CACHE_DIR "$RUN/full" 2>&1)"; rc=$?
 out="$($BIN config set CACHE_DIR /var/cache 2>&1)"; rc=$?
 [[ $rc == 78 ]] && grep -q 'system directory' <<<"$out" && cmp -s "$RUN/before" "$CFG" && ok "CACHE_DIR to a system directory: refused (78)" || bad "system dir: rc=$rc $out"
 mk "PBO_INTEGRATION=both"; cp "$CFG" "$RUN/before"
-out="$($BIN config set CACHE_DIR "$RUN/newcache3" 2>&1)"; rc=$?
-[[ $rc == 69 ]] && grep -q "run 'pbo integrate disable' first" <<<"$out" && cmp -s "$RUN/before" "$CFG" && [[ ! -e "$RUN/newcache3" ]] \
-    && ok "CACHE_DIR with the integration on (the spool would follow): refused (69)" || bad "integrated: rc=$rc $out"
+out="$($BIN config set CACHE_DIR "$RUN/newcache3" 2>&1 </dev/null)"; rc=$?
+[[ $rc == 64 ]] && grep -q 'add --yes' <<<"$out" && cmp -s "$RUN/before" "$CFG" && [[ ! -e "$RUN/newcache3" ]] \
+    && ok "CACHE_DIR with the integration on (the spool follows, storage.cfg names it): a move even when empty, which needs --yes" || bad "integrated: rc=$rc $out"
 
 # the same directory with a trailing slash: nothing moves, so a cache with
 # data is no reason to refuse
@@ -479,8 +494,8 @@ out="$($BIN config set CACHE_DIR "$RUN/zfsnew" 2>&1)"; rc=$?
 [[ $rc == 0 && "$(rd "$CFG" CACHE_DIR)" == "$RUN/zfsnew" ]] \
     && ok "CACHE_DIR: .zfs/.snapshot at the root of the old cache and of the new one are ignored" || bad "snapdir: rc=$rc $out"
 mk; mkdir -p "$RUN/cache/.zfs2"; : > "$RUN/cache/.zfs2/f"; cp "$CFG" "$RUN/before"
-out="$($BIN config set CACHE_DIR "$RUN/zfsnew2" 2>&1)"; rc=$?
-[[ $rc == 69 ]] && cmp -s "$RUN/before" "$CFG" && ok "CACHE_DIR: only the snapshot directories themselves are exempt (a file elsewhere still counts)" || bad "snapdir other: rc=$rc $out"
+out="$($BIN config set CACHE_DIR "$RUN/zfsnew2" 2>&1 </dev/null)"; rc=$?
+[[ $rc == 64 ]] && grep -q 'the cache holds data' <<<"$out" && cmp -s "$RUN/before" "$CFG" && ok "CACHE_DIR: only the snapshot directories themselves are exempt (a file elsewhere still counts: a move)" || bad "snapdir other: rc=$rc $out"
 rm -rf "$RUN/cache/.zfs2" "$RUN/cache/.zfs"
 # CACHE_DIR changes while the shared file pins RESTIC_CACHE_REPO: the local line
 # at the old derived default moves to the new one instead of going

@@ -382,10 +382,12 @@ changes, each hook once:
   (storage.cfg names it for the whole cluster). Then the directory is created
   0755 and the permission table's CACHE_DIR rules are applied to it (the ACL
   entries for unprivileged CTs, then the mode; the parents are checked), and
-  the config is written. A cache with data is refused with 69, nothing
-  changed; `_cfg_hook_move_cache` is the one function the cache move (M7,
-  lib/cachemove.sh) replaces. The same directory written another way (a
-  trailing slash) is no move.
+  the config is written. `_cfg_hook_move_cache` is the one place that decides:
+  since M7 a cache with data, an empty cache whose spool follows while the
+  integration is on, and any change while a move is unfinished go to the
+  cache move (lib/cachemove.sh, "Cache move" below); M4 refused the first two
+  with 69. The same directory written another way (a trailing slash) is no
+  move.
 - `restart-mount` (`PVE_CATALOG_MOUNT`, `PVE_CATALOG_MOUNT_DIR`), after the
   write: pbo-mount.service is restarted only when it is active and no restore
   reads through it.
@@ -474,7 +476,8 @@ Nothing in the table is a path; a rule whose path does not exist is skipped
 (M6 creates nothing). Doctor runs `--check`; `pbo doctor --fix` runs `--fix`
 first, then the full report; every backup runs the CACHE_DIR rule
 (`_cache_dir_protect` is a thin wrapper); install.sh runs `pbo doctor --fix
---perms-only`; the wizard (M8) and the cache move (M7) will call it too.
+--perms-only`; the cache move (M7) applies it to the new paths; the wizard (M8)
+will call it too.
 
 | Rule (host) | Kind | Owner | Mode | Class | Why |
 |---|---|---|---|---|---|
@@ -596,3 +599,171 @@ that pass; with `--fix` the changes (`FIXED`, or `WOULD FIX` in a dry run) and
 `changes: [...]` in its JSON. `doctor --fix` marks its audit.jsonl command
 record `read_only: false` (`AUDIT_RW_OVERRIDE`); with `--dry-run` it stays
 true.
+
+### Cache move (M7)
+
+CACHE_DIR is where the cache repo, the dumps of a running backup, the PVE spool
+and the staging directory live; storage.cfg names the spool for the whole
+cluster, the catalogue names staging, a process that read the config before a
+change still has the old paths, and a restic process with the old path in
+hand would create a new, empty repo there and back up into it. 0.6 M4 changed
+CACHE_DIR only while the cache was empty.
+
+**Decision.** `pbo config set CACHE_DIR <new>` moves the data, as a journalled
+state machine in `lib/cachemove.sh`, entered from the writer's move-cache hook
+(`_cfg_hook_move_cache` → `_cm_hook`) under the config lock, after the new
+file has been checked and before it replaces the old one. The config write
+itself is the writer's rename, so CACHE_DIR and the keys that follow it change
+in one transaction, and the move adds nothing to how the file is written.
+
+**Preflight**, read-only, every failure at once, before anything is locked or
+written (`--dry-run` stops after it and prints it with the steps). 78 when the
+input is wrong: not absolute, not canonical (`//`, `.`, `..`), a symlink or a
+path through one (`readlink -m` differs), a system directory, a file, a
+non-empty directory (`lost+found`, `.zfs`, `.snapshot` excepted), nested with
+the old directory either way, the old CACHE_DIR a symlink, a key that follows
+whose data moves while its value cannot (set by the environment or another
+file) or would move elsewhere (set in the same command). 69 when the system
+refuses: a filesystem in a refusal list (tmpfs, ramfs, proc, ...) or FUSE; a
+network filesystem unless `--force` (then a warning); the lists hold the names
+`stat -f -c %T` prints (`nfs` for v3 and v4, `v9fs` for 9p); an existing
+directory above the target, or an existing empty target, not owned by root
+(or the user pbo runs as) or group- or world-writable; a filesystem mounted
+below the old directory (`/proc/self/mountinfo`: a child dataset for the repo,
+an fstab mount for the spool), since a rename would move only its mount stub,
+which mounts at the old path again on the next boot, and a copy would neither
+count it (`du -x`) nor remove it (`rm --one-file-system`); for a copy, less free space than `CACHEMOVE_SPACE_FACTOR`
+(default 1.1) times `du` of the cache; for each unprivileged CT's mapped root
+(`_ct_root_uid`), each existing directory above the target, tested as that uid
+with `setpriv` (root only; otherwise a warning says it was not checked), and a
+probe on the target filesystem: a file gets an ACL entry (`setfacl`; "not
+supported" names `zfs set acltype=posixacl`), a directory closed to others
+with the uid's entry must let it pass. A blocking directory gives the exact
+`setfacl -m u:<uid>:x <dir>` line, or with `--fix-parents` becomes a planned
+change. With the integration on, the pbo storage must exist with type pbo and
+`nodes` equal to this node alone: disabling it and changing its path would
+otherwise change it on every node; a spool or staging that stays must stay
+on the new cache's filesystem. Nothing may run: the global, schedule,
+integrate and vmid locks free, the cache lock free unless the mount holds
+it, no restore through the mount, no vzdump (its lock file, its processes),
+no archive in the spool, no deferred stop-mode record, no process with a file
+open below the old directory (in its own spelling or its resolved one: `/proc`
+names the resolved path when an ancestor is a symlink). The probes are the
+only writes, one file and one directory next to the target, removed at once,
+and only for a target that passed the path checks and in a directory only
+root can write (another user could swap a probe for a symlink before root's
+`setfacl`); otherwise a warning says the CTs' access was not checked yet.
+
+**Rename or copy.** A rename needs the same filesystem and the same mount:
+two bind mounts of one filesystem, or a btrfs subvolume mounted twice, share
+`st_dev` (and `stat %m`), yet `rename(2)` between them gives `EXDEV`. The mount
+comes from mountinfo (`findmnt -T`); any difference means a copy, with its
+space check and its verification. The rename itself never falls back to a
+copy (`mv --no-copy`, or perl's `rename` where coreutils lacks it): GNU `mv`
+would otherwise copy and delete unchecked. A rollback that finds both the old
+and the new directory holding entries removes neither and fails (`--abort`
+after the operator chose).
+
+**Keys that follow** (schema flag `follows=CACHE_DIR`: `RESTIC_CACHE_REPO`,
+`PVE_SPOOL_DIR`, `PVE_STAGING_DIR`). A value at the old derived default goes
+from the file (the writer's `_cfg_follows`), so it derives again; a value
+below the old directory under a name of its own is rewritten to the same
+place below the new one in the same transaction (`_cm_follow_ops`); a value
+elsewhere stays, and the plan names it (its data is not moved). The new
+effective values come from the writer's read-back (`CFGW_EA`).
+
+**Steps and journal.** `STATE_DIR/cache-move.json` (STATE_DIR does not move),
+written atomically (temp file, fsync, rename) after each step and before a
+step's change where an interruption would otherwise lose a fact
+(`disabled_by_move`, `created_new`, `created_parents`, `data_started`). It
+records the old and new directory, the method, every key's old and new value
+and how it follows, the storage (id, path, new path, disabled before), whether
+the mount ran, the flags, the steps done, the state and the last error.
+States: `running`, `config-written`, `rollback-failed` (not final); `done`,
+`rolled-back`, `aborted` (final). Steps:
+
+| # | Step | What | Undone by the rollback |
+|---|---|---|---|
+| 1 | lock | pbo.global, pbo.schedule, pbo.integrate, pbo.catalog (waits for a refresh), pbo.cache exclusive unless the mount holds it | released |
+| 2 | mount-stop | `systemctl stop pbo-mount.service` if it ran, then pbo.cache exclusive (waits up to 30 s for its restic) | started again |
+| 3 | storage-disable | `pvesm set <id> --disable 1` (integration on, storage enabled) | `pvesm set <id> --delete disable` |
+| 4 | staging-clear | staged archives removed (copies and links into the mount, made again on demand) | (nothing to undo) |
+| 5 | target-create | missing parents 0755, the target 0755 then the CACHE_DIR rule (ACL entries, then at most 0750); `--fix-parents`: the parents rule with fix | target and created parents removed |
+| 6 | data | same filesystem and mount: `rename(2)` of `<old>` onto `<new>` (an empty target is replaced); else `cp -a` of each entry, a tree comparison (type, mode, owner, group, size, link target; a directory's size is not compared), `restic check` of the copied cache repo (`--read-data` with `--verify-data`) | renamed back; a copy removed |
+| 7 | config | the writer's rename: CACHE_DIR and the follow ops | (only forward from here) |
+| 8 | storage-update | `pvesm set <id> --path <new spool>` when the storage named the old one; enabled again if the move disabled it | |
+| 9 | catalog-refresh | `pbo catalog refresh` (the new `staging_dir`); a failure is a warning, the timer retries | |
+| 10 | perms | the cache, cache repo, spool and staging rules fixed on the new paths, then checked with the parents | |
+| 11 | old-remove | a copy's old directory removed when every entry is one pbo makes (vmid dirs, `host-*`, restore and fetch scratch, `repo`, `spool`, `staging`, the filesystem's own); else kept and named; `--keep-old` keeps it | |
+
+Then the journal says `done`, the cache lock is released, and the mount starts
+again if it ran (its `catalog _mount` takes the cache lock shared, so not
+before). A failure in steps 1 to 6, or of the config write, rolls back at once,
+in reverse, from what the journal recorded; the old tree is then as it was,
+but for the staged archives step 4 removed, which are made again on demand
+(tests/cachemove.sh compares it byte for byte, with modes, owners, mtimes and
+ACLs, after a failure injected after each step, for a rename and a copy). The
+rollback, too, writes its final state before it lets another pbo in: the
+journal says `rolled-back` (or `aborted`) before the cache lock is released and
+the mount is started (systemctl returns at once, and the mount's `catalog
+_mount` stops at a journal that is not final); a mount that does not start is
+a warning. A rollback that fails leaves `rollback-failed` and starts no mount;
+`--abort` tries again. After the
+config write a failure leaves `config-written` with the error and exits 69;
+`--resume` runs the steps not done. A process killed between the rename and
+the journal entry is recognised by the loaded CACHE_DIR already being the
+journal's new one.
+
+**Resume and abort.** `config set CACHE_DIR <new> --resume` with the journal's
+`<new>`: after the config write it takes the locks again and runs the steps
+left (no config write); before it, it goes through the writer again: the
+hook checks that the keys would follow as planned, runs only the "nothing
+runs" checks and repeats the steps idempotently (a copy starts over in the
+target, a rename already done is recognised). `--abort` rolls back an
+unfinished move that has not written the config; after the write it is
+refused (64): the data is already where the config says. Without either flag
+a change of CACHE_DIR while a move is unfinished exits 75.
+
+**The cache lock** (`LOCK_DIR/pbo.cache`, `acquire_cache_lock` in
+lib/lock.sh): shared and never waited for, by backup, ingest, fetch, restore,
+test-restore, backup-host, the batch run, `catalog materialize` and `catalog
+_mount` (held for as long as restic mount runs, which inherits the fd); a move
+holds it exclusive, so they exit 75. Prune and verify are kept out by the
+global and schedule locks the move holds. After the lock, `_cm_block` exits 75
+while the journal is not final (with the command that finishes it); `restic
+init` and the vzdump hook's backup-start do the same, and doctor FAILs.
+
+**Old processes.** A process that queued for a lock (`backup --queue` on the
+global lock, run-schedule, prune and verify on the schedule lock) compares,
+once it has the lock and again when it takes the cache lock, its config files
+and the journal with the moment it read the config (`PBO_START_US`, taken
+without a fork in load_config, and the local file's device and inode, taken by
+the stat load_config runs anyway). The inode is what catches the writer: it
+renames a new file over the config, and that file was written before the move
+ran, so its mtime can be older than the process (and some filesystems keep
+whole seconds); an edit in place gives a newer mtime; a local file that
+appeared counts too, and so does a CACHE_DIR that a finished move left; this
+process's own writes move the marks. When they changed, it releases its locks
+and execs itself with the same arguments and pid (`_lock_reexec_if_changed`,
+at most three times in a row, then 75). Only the top-level process does: a
+subshell (test-restore `--scheduled` runs each guest in one) that exec'd would
+start a second run inside the first, so that guest fails (75) and the next
+run reads the new config. `_restic_ensure` never creates an empty repo
+(returns 4, `_restic_init_die` exits 75) while a move is unfinished, at or
+below a place a finished move recorded as its old directory (or the old cache
+repo, when it followed the cache; one pinned outside it stayed where it was and
+may be created again) unless that is below the latest move's new one, or at a
+local path the config on disk no longer names (read again for that check).
+`ensure_dirs` does not create a CACHE_DIR a finished move left. A later
+change of CACHE_DIR on an empty cache (M4's path) is recorded in the journal
+once the config is written, as the latest move (method `empty`): setting it
+back to a place an earlier move left makes that place usable again, and the
+place it leaves becomes one the cache left.
+
+**Consequences.** A move with data needs `--yes` (or a yes on a terminal);
+an empty cache keeps M4's behaviour and writes no journal. A copy needs the
+space of the cache twice until the old copy goes. A janitor's cache is moved
+only when it is empty (its user owns the directory; the move refuses with 78
+and says how). Retention after a move groups each guest's old and new paths
+(M5). The journal of the last move stays (doctor names it) and carries the
+earlier ones' old directories.

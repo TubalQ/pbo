@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.." || exit 1
 export PBO_TEST_CONFIG_LOG="$PWD/run-config-corpus/log"
 rm -rf run-config-corpus; mkdir -p run-config-corpus; : > "$PBO_TEST_CONFIG_LOG"
 
-par_suites=(run restic schedule ownership catalog ingest integrate install perl menu host appendonly verify policy retention notify metrics restoretest json jobs regressions perms config_write)
+par_suites=(run restic schedule ownership catalog ingest integrate install perl menu host appendonly verify policy retention notify metrics restoretest json jobs regressions perms config_write cachemove)
 serial_suites=(config config_parse)   # time-budget assertions: run without other load
 jobs="${PBO_TEST_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || jobs=2

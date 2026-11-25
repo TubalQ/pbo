@@ -122,6 +122,7 @@ ingest_archive() {
         return "$EX_OK"
     fi
     acquire_vmid_lock "$vmid"
+    acquire_cache_lock ingest
     # another ingest (the hook or --pending) may have taken it between the check and the lock
     [[ -f "$src" && ! -L "$src" ]] || die "$EX_DATAERR" "ingest: $base is no longer in the spool (ingested by another run?)"
     [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "ingest: missing password file $RESTIC_PASSWORD_FILE (the archive stays in the spool)"
@@ -194,7 +195,8 @@ ingest_archive() {
 _vzdump_running() {
     local f="${VZDUMP_LOCK:-/var/run/vzdump.lock}" fd
     [[ -e "$f" ]] || return 1
-    exec {fd}<"$f" 2>/dev/null || return 0
+    # (in braces: on a bare exec, 2>/dev/null would silence stderr for good)
+    { exec {fd}<"$f"; } 2>/dev/null || return 0
     if flock -n -s "$fd"; then exec {fd}<&-; return 1; fi
     exec {fd}<&-
     return 0
@@ -333,6 +335,8 @@ _hook_stop_reason() {
 # backup-start: refuse what pbo cannot use, before vzdump stops or snapshots the guest.
 _hook_backup_start() {
     local mode="$1" vmid="$2" t="${TARGET:-}"
+    # a cache move that did not finish: the spool may be half moved
+    _cm_block "pbo: vmid $vmid"
     _cache_dir_protect "$vmid"   # the spool under CACHE_DIR: closed to local users, this CT's tar let through
     case "$t" in
         *.tar|*.vma) ;;

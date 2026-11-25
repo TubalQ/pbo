@@ -230,14 +230,74 @@ Added
   data is moved; `PVE_CATALOG_MOUNT` and `PVE_CATALOG_MOUNT_DIR` restart
   pbo-mount.service if it runs; `CACHE_DIR` on an empty cache (no file in it)
   creates the new directory with the CACHE_DIR permissions and writes the
-  config, a cache with data is refused (69, nothing changed; the move itself
-  comes later in 0.6; `.zfs`/`.snapshot` directories do not count, the same
-  path with a trailing slash is no move). A key that follows `CACHE_DIR` is
+  config; a cache with data is moved (below; `.zfs`/`.snapshot` directories do
+  not count, the same path with a trailing slash is no move). A key that follows `CACHE_DIR` is
   not pinned at its derived default, and a line at the old default goes when
   `CACHE_DIR` changes, unless another config file or the environment sets the
   key (then the line is written). On a janitor `config set|unset` run as root
   stay root, and take the config lock on the config's own directory, not in
   the janitor user's LOCK_DIR.
+- Moving the cache directory with its data: `pbo config set CACHE_DIR <new>
+  [--yes] [--keep-old] [--fix-parents] [--verify-data] [--force]`, and
+  `--resume` / `--abort` for an interrupted move (`lib/cachemove.sh`, ADR 0009,
+  "Cache move"). First every check, all failures in one refusal and nothing
+  changed (78 for a wrong path, 69 when the system refuses): an absolute,
+  canonical path without symlinks, no system directory, empty or new, not
+  nested with the old one; every directory above it owned by root and not
+  group- or world-writable; not on tmpfs or FUSE, a network filesystem only
+  with `--force`; on another filesystem free space of `CACHEMOVE_SPACE_FACTOR`
+  (new advanced key, default 1.1) times the cache's size; the keys that follow
+  CACHE_DIR (a pinned `RESTIC_CACHE_REPO`, `PVE_SPOOL_DIR`, `PVE_STAGING_DIR` at
+  the old derived default is removed so it derives again, one pinned below the
+  cache under another name is rewritten, one pinned elsewhere stays and is
+  named); the mapped root of every unprivileged CT can pass every directory on
+  the way (tested with `setpriv` as that uid), and the target filesystem takes
+  POSIX ACLs (a probe file), else the exact `setfacl -m u:<uid>:x <dir>` lines
+  (or `--fix-parents` adds them); with the Proxmox integration on, the pbo
+  storage must belong to this node alone (storage.cfg is cluster-wide); nothing
+  may run (backup, prune, verify, ingest, restore, `pbo integrate`, vzdump, an
+  archive in the spool, a deferred stop-mode ingest, a file open in the cache,
+  a restore through the mount); no filesystem mounted below the old cache (a
+  child dataset or an fstab mount: a rename would move only its mount stub);
+  an existing target owned by root and not writable by others, and the ACL
+  probes run only in a directory only root can write. `--dry-run` prints the
+  checks and every step.
+  Then, recorded in `STATE_DIR/cache-move.json` (atomic writes): every pbo lock,
+  pbo-mount.service stopped, the pbo storage disabled (`pvesm set <id> --disable
+  1`), staging cleared, the target created closed to others with an ACL entry
+  per CT root, the data renamed (same filesystem and the same mount; two bind
+  mounts of one filesystem get a copy, and the rename never falls back to an
+  unchecked copy) or copied (`cp -a`, the trees
+  compared by size, count, mode and owner, `restic check` of the copied cache
+  repo, with `--verify-data` `--read-data`), the config written in one
+  transaction (CACHE_DIR and the keys that follow), the storage pointed at the
+  new spool and enabled, the catalogue refreshed, the permission rules applied
+  to the new paths and checked, the old copy removed when it holds nothing but
+  pbo's own directories (`--keep-old` keeps it), the mount started again. A
+  failure before the config write is rolled back at once (the old tree, but
+  for staged archives, which are made again on demand, the storage and the
+  mount as they were; the journal is final before the mount starts again);
+  after it the move only goes forward (`--resume`). An empty cache needs no
+  `--yes` and no journal: the directory is created, as before; after an earlier
+  move the journal records the change, so a place a move left can be used
+  again. A move with data needs `--yes` (or a yes on a terminal).
+- A cache lock, `LOCK_DIR/pbo.cache`: taken shared by backup, ingest, fetch,
+  restore, test-restore, backup-host, `catalog materialize` and
+  pbo-mount.service; a cache move takes it exclusive, the others exit 75 while
+  it does. While a move's journal is not final, backups, ingest, restores, the
+  mount, the vzdump hook's backup-start and `restic init` stop with 75 and say
+  how to finish it, and doctor FAILs.
+- A pbo process that waited for a lock (`backup --queue`, run-schedule, prune,
+  verify) and finds that its config changed meanwhile (a cache move, `config
+  set`; seen by the config file's inode as well as its mtime, and by a
+  CACHE_DIR a finished move left) starts itself again with the new config (same
+  arguments and pid), at most three times in a row; a subshell (each guest of
+  `test-restore --scheduled`) never does: that guest fails and the next run
+  reads the new config. `_restic_ensure` creates no empty repo while a
+  move is unfinished, at a place a finished move left (a cache repo pinned
+  outside the cache stays usable), or at a path the config
+  on disk no longer names; a process that read the config before a move does
+  not create the old CACHE_DIR again either.
 
 Changed
 - The config writers of `pbo setup`, the menu (`_cfg_set`) and `pbo integrate`
@@ -300,6 +360,15 @@ Changed
   A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
   every run; the host label is only a name, the ssh command says where to
   connect).
+- `pbo config set CACHE_DIR` on a cache with data moves it (Added); 0.6 M4
+  refused it (69). With the Proxmox integration on, an empty cache whose spool
+  follows is moved the same way (the storage path changes) instead of the M4
+  refusal.
+
+Fixed
+- The check for a running vzdump (`_vzdump_running`, `ingest --pending`)
+  silenced the rest of the command's error output when the vzdump lock file
+  existed (a bare `exec ... 2>/dev/null`).
 
 ## 0.5.0 (unreleased)
 

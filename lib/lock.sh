@@ -16,6 +16,13 @@
 #     backup fails (for example catch-up timers after a long power-off). Prune takes
 #     this lock first, then the global lock (so a manual backup can't collide either).
 #
+#   Cache lock (LOCK_DIR/pbo.cache, 0.6 M7)
+#     Taken SHARED by everything that reads or writes below CACHE_DIR: backup,
+#     ingest, fetch, restore, test-restore, backup-host, catalog materialize and
+#     the mount service (pbo-mount.service holds it while restic mount runs).
+#     A cache move (lib/cachemove.sh) takes it EXCLUSIVE; while it does, the
+#     others exit 75 at once. Never waited for.
+#
 #   Modes:
 #     queue , scheduled run: waits for the global lock up to
 #              GLOBAL_LOCK_TIMEOUT, then exits with an error (a queue you SEE).
@@ -33,7 +40,7 @@ _close_lock_fds() {
     local v fd
     # PBO_JSON_FD too: a child holding a copy of pbo's stdout keeps a caller's
     # $(...) waiting until the child exits
-    for v in GLOBAL_LOCK_FD VMID_LOCK_FD SCHED_LOCK_FD TR_TARGET_LOCK_FD JOB_ADMIT_FD CFG_LOCK_FD PBO_JSON_FD; do
+    for v in GLOBAL_LOCK_FD VMID_LOCK_FD SCHED_LOCK_FD TR_TARGET_LOCK_FD JOB_ADMIT_FD CFG_LOCK_FD CACHE_LOCK_FD INTEG_LOCK_FD CATALOG_LOCK_FD PBO_JSON_FD; do
         fd="${!v:-}"; [[ "$fd" =~ ^[0-9]+$ ]] && eval "exec $fd>&-"
     done
     return 0
@@ -83,6 +90,8 @@ acquire_global_lock() {
     GLOBAL_LOCK_HELD=1
     _write_global_holder "$op" "$vmid"
     log_info "global lock acquired (op=$op vmid=${vmid:-none})."
+    # a queued run may have waited out a cache move or another config change
+    [[ "$mode" != queue ]] || _lock_reexec_if_changed "$op"
 }
 
 # acquire_vmid_lock <vmid> , non-blocking; double-queuing is always an error.
@@ -120,6 +129,96 @@ acquire_schedule_lock() {
     fi
     SCHED_LOCK_HELD=1
     printf '%s|%s|%s\n' "$op" "$$" "$(date +%s)" > "$SCHED_HOLDER_FILE" 2>/dev/null || true
+    [[ "$mode" != queue ]] || _lock_reexec_if_changed "$op"
+}
+
+CACHE_LOCK_FD=""
+CACHE_LOCK_MODE=""
+# acquire_cache_lock <op>: the cache lock, shared and without waiting (75 while
+# a cache move holds it). Then: no unfinished move (its journal), and, when
+# this call took the lock, the config this process read is still the one on
+# disk (else it starts again). A process that already holds the lock does not
+# check again: it has kept every move out since it took it.
+acquire_cache_lock() {
+    local op="$1" f="${LOCK_DIR%/}/pbo.cache"
+    if [[ -z "$CACHE_LOCK_FD" && "${DRY_RUN:-0}" != 1 ]]; then
+        [[ -d "$LOCK_DIR" ]] || { mkdir -p -- "$LOCK_DIR" && chmod 0700 -- "$LOCK_DIR"; } 2>/dev/null || true
+        [[ ! -L "$f" ]] || die "$EX_CANTCREAT" "the cache lock $f is a symlink: remove it"
+        { exec {CACHE_LOCK_FD}>>"$f"; } 2>/dev/null || { CACHE_LOCK_FD=""; die "$EX_CANTCREAT" "cannot open the cache lock $f"; }
+        if ! flock -n -s "$CACHE_LOCK_FD"; then
+            exec {CACHE_LOCK_FD}>&-; CACHE_LOCK_FD=""
+            die "$EX_TEMPFAIL" "$op: CACHE_DIR is being moved right now (the cache lock $f is held by 'pbo config set CACHE_DIR'); try again when the move is done"
+        fi
+        CACHE_LOCK_MODE=s
+        declare -F _cm_block >/dev/null && _cm_block "$op"
+        _lock_reexec_if_changed "$op"
+        return 0
+    fi
+    declare -F _cm_block >/dev/null && _cm_block "$op"
+    return 0
+}
+
+# _lock_config_changed: the local config this process read was replaced or
+# edited after it started, appeared or went, a cache move wrote its journal
+# since, or a finished move took the cache away from the CACHE_DIR this process
+# loaded. PBO_START_US and PBO_START_ID (the local file's device and inode) are
+# set by load_config. The inode is what catches the writer: it renames a new
+# file over the config, and that file was written before the move hook ran,
+# so its mtime is older than a process that read the old file during the move
+# (and a filesystem with one-second timestamps hides the rest). The mtime
+# catches an edit in place; only one between the start and now counts: a
+# future one (a restored file, a clock that went back) must not make every run
+# start again. Only local files: the cluster-shared file carries another
+# node's clock and holds no key a cache move changes.
+_lock_config_changed() {
+    local t0="${PBO_START_US:-}" now m id f="${PBO_CONFIG_LOCAL:-}" j seen=0 files=() first=0
+    [[ "$t0" =~ ^[0-9]+$ ]] || return 1
+    now="${EPOCHREALTIME//[!0-9]/}"
+    j="${STATE_DIR%/}/cache-move.json"
+    # where a finished move left (no fork while there is no journal); a move
+    # that still runs is _cm_block's. Not once this process started again: it
+    # read the config as it is now, and a CACHE_DIR set back there by hand
+    # would make it start again until it gives up
+    [[ -e "$j" && "${PBO_REEXEC_N:-0}" == 0 ]] && declare -F _cm_old_location >/dev/null && _cm_old_location "${CACHE_DIR:-}" && return 0
+    if [[ -n "$f" ]]; then
+        [[ " ${PBO_CONFIG_FILES[*]-} " == *" $f "* ]] && seen=1
+        if [[ -e "$f" ]]; then (( seen )) || return 0; files+=("$f"); first=1
+        else (( ! seen )) || return 0; fi
+    fi
+    [[ -e "$j" ]] && files+=("$j")
+    (( ${#files[@]} )) || return 1
+    while IFS=' ' read -r m id; do
+        if (( first )); then
+            first=0
+            [[ -n "${PBO_START_ID:-}" && -n "$id" && "$id" != "$PBO_START_ID" ]] && return 0
+        fi
+        m="${m//[!0-9]/}"
+        [[ -n "$m" ]] && (( 10#$m > 10#$t0 && 10#$m <= 10#$now )) && return 0
+    done < <(stat -c '%.6Y %d:%i' -- "${files[@]}" 2>/dev/null)
+    return 1
+}
+
+# _lock_reexec_if_changed <op>: a process that waited for a lock with the old
+# config (a backup queued behind a cache move: its CACHE_DIR is gone) starts
+# itself again with the new one, same arguments, same pid. Its locks are
+# released first (the new image takes them again). At most 3 times in a row.
+# Only the top-level process: a subshell (test-restore --scheduled runs each
+# guest in one) that exec'd would start a whole second run inside the first
+# and release the parent's locks.
+_lock_reexec_if_changed() {
+    _lock_config_changed || return 0
+    # fail just this unit; the next run reads the new config
+    [[ "$BASHPID" == "$$" ]] || die "$EX_TEMPFAIL" "$1: the config changed during this run; skipped, the next run uses the new config"
+    local n="${PBO_REEXEC_N:-0}"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    (( n < 3 )) || die "$EX_TEMPFAIL" "$1: the config keeps changing while pbo waits for its locks; try again later"
+    log_info "$1: the config changed while pbo waited (a cache move or config set): starting again with the new config"
+    cleanup_locks
+    _close_lock_fds
+    declare -F json_close >/dev/null && json_close
+    trap - EXIT
+    export PBO_REEXEC_N=$(( n + 1 ))
+    exec "${SELF_DIR}/pbo" "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}"
 }
 
 # Clean up locks + holder file. Set as the EXIT trap by the main script.

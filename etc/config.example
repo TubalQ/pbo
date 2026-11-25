@@ -17,6 +17,7 @@ CACHE_DIR=/var/cache/pbo                     # vzdump dumps, the local restic re
 LOG_DIR=/var/log/pbo                         # pbo.log, audit.log and audit.jsonl
 STATE_DIR=/var/lib/pbo                       # jobs, lock holders, restore-test evidence, metrics
 #LOCK_DIR=/run/pbo                           # default /run/pbo as root (STATE_DIR/lock otherwise); never a world-writable dir
+#CACHEMOVE_SPACE_FACTOR=1.1                  # moving CACHE_DIR to another filesystem needs this many times the cache size free there
 
 # --- vzdump ---
 # Fuse containers (features fuse=1) are forced to --mode stop automatically.

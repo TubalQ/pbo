@@ -38,6 +38,7 @@ out="$(S '
         case "${CS_TYPE[$k]}" in
             bool|duration|path|dir|string|list|vmids|vmids-csv|url|command) ;;
             int:*) [[ "${CS_TYPE[$k]}" =~ ^int:[0-9]*:[0-9]*$ ]] || echo "bad int type $k" ;;
+            decimal:*) [[ "${CS_TYPE[$k]}" =~ ^decimal:[0-9]*:[0-9]*$ ]] || echo "bad decimal type $k" ;;
             enum:*) [[ "${CS_TYPE[$k]}" =~ ^enum:[A-Za-z0-9_,-]+$ ]] || echo "bad enum $k" ;;
             *) echo "unknown type $k: ${CS_TYPE[$k]}" ;;
         esac
@@ -158,7 +159,9 @@ allow=' AUDIT_FILE AUDIT_RO_OVERRIDE AUDIT_RW_OVERRIDE AUDIT_T0 BASH C_0 C_G C_R
     PBO_SETUP_INTEGRATION RESTIC_LOCK_MSG RESTORE_ISOLATE RESTORE_KEEP_NET
     RESTORE_RESTRICTED RESTORE_START RX_TAR SCHED_LOCK_HELD SELF_DIR STAGE_LOCK_FD STOREID SUDO_USER TARGET
     TR_ALLOW_LINKDOWN_NET TR_RESPOND_HOW TR_RESTRICTED TR_TRIGGER VERSION VMID_LOCK_HELD
-    CFGW_CREATED CFGW_TMP CFG_LOCK_FD CFG_LOCK_HELD PBO_MOUNT_UNIT '
+    CFGW_CREATED CFGW_TMP CFG_LOCK_FD CFG_LOCK_HELD PBO_MOUNT_UNIT
+    BASHPID CACHE_LOCK_FD CACHE_LOCK_MODE CATALOG_LOCK_FD INTEG_LOCK_FD CFGW_ERR PBO_START_US PBO_START_ID
+    CM_ERR CM_FIX_PARENTS CM_INIT_MSG CM_METHOD_WHY CM_ST_NODES CM_USAGE '
 out="$(S '
     allow="$1"
     for k in $(grep -ohE "\\\$\\{[A-Z][A-Z0-9_]*:[-=]" pbo lib/*.sh lib/vzdump-hook | sed -E "s/^\\\$\\{//; s/:.\$//" | sort -u); do

@@ -14,6 +14,8 @@
 # TYPE:
 #   bool               true | false
 #   int:MIN:MAX        a whole number; MIN or MAX may be empty (unbounded)
+#   decimal:MIN:MAX    a number with an optional fraction (1.1); whole-number
+#                      bounds, MIN or MAX may be empty
 #   enum:a,b,c         one of the values; a leading empty entry (enum:,a,b) allows empty
 #   duration           a restic/Go duration: 90s, 10m, 1h30m
 #   path, dir          a file or directory path
@@ -62,6 +64,7 @@ CACHE_DIR|dir|/var/cache/pbo|paths|host,janitor|on_change=move-cache|vzdump dump
 LOG_DIR|dir|/var/log/pbo|paths|host,janitor||pbo.log, audit.log and audit.jsonl
 STATE_DIR|dir|/var/lib/pbo|paths|host,janitor||jobs, lock holders, restore-test evidence, metrics
 LOCK_DIR|dir|@fn|paths|host,janitor|advanced|default /run/pbo as root (STATE_DIR/lock otherwise); never a world-writable dir
+CACHEMOVE_SPACE_FACTOR|decimal:1:|1.1|paths|host|advanced|moving CACHE_DIR to another filesystem needs this many times the cache size free there
 VZDUMP_MODE|enum:snapshot,suspend,stop|snapshot|vzdump|host||vzdump --mode for every guest not forced to stop
 VZDUMP_STOP_VMIDS|vmids-csv||vzdump|host||these vmids are also backed up with --mode stop (comma-separated)
 BACKUP_ORDER|vmids|auto|schedule|host||auto | a comma-separated vmid list (critical first)
@@ -159,7 +162,7 @@ PBO_PVE_TEMPLATE_DIR|dir|/etc/pve/notification-templates/default|internal|host,j
 # pbo 0.5 sourced the config, so one set there was honoured; pbo 0.6 reads only
 # schema keys from it and ignores these (the reader and doctor name them as
 # switches, not as typos). tests/config.sh uses this list for its own allowlists.
-CS_ENV_SWITCHES='PBO_REPO PBO_NO_NOTIFY PBO_ASCII_LOG TMPDIR PBO_JANITOR_ALLOW_ROOT PBO_INTEGRATE_ALLOW_NONROOT PBO_INGEST_NO_REFRESH PBO_SELF_BIN PBO_HOOK_BIN PBO_PERL_BIN PBO_RUNUSER_BIN PBO_TEST_CONFIG_LOG'
+CS_ENV_SWITCHES='PBO_REPO PBO_NO_NOTIFY PBO_ASCII_LOG TMPDIR PBO_JANITOR_ALLOW_ROOT PBO_INTEGRATE_ALLOW_NONROOT PBO_INGEST_NO_REFRESH PBO_SELF_BIN PBO_HOOK_BIN PBO_PERL_BIN PBO_RUNUSER_BIN PBO_TEST_CONFIG_LOG PBO_REEXEC_N PBO_CM_LOCK_WAIT PBO_TEST_CM_FAIL PBO_TEST_CM_KILL PBO_TEST_CM_COPY PBO_TEST_CM_FREE PBO_TEST_CM_FSTYPE PBO_TEST_CM_NEW_MOUNT PBO_TEST_CM_MOUNTINFO PBO_TEST_CM_VZDUMP_PIDS'
 
 # _cs_env_switch NAME: NAME is one of those switches.
 _cs_env_switch() { [[ " $CS_ENV_SWITCHES " == *" $1 "* ]]; }
@@ -482,6 +485,14 @@ _cs_validate() {
             # 10# : a leading zero is decimal, not octal
             if [[ -n "$min" ]] && (( 10#$v < min )); then printf "%s=%s is below the minimum %s" "$k" "$v_shown" "$min"; return 1; fi
             if [[ -n "$max" ]] && (( 10#$v > max )); then printf "%s=%s is above the maximum %s" "$k" "$v_shown" "$max"; return 1; fi ;;
+        decimal:*)
+            local dl="${t#decimal:}" dmin dmax
+            dmin="${dl%%:*}"; dmax="${dl#*:}"; [[ "$dl" == *:* ]] || dmax=''
+            [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { printf "%s='%s' is not a number (e.g. 1.1)" "$k" "$v_shown"; return 1; }
+            # compared on the whole part, and on the fraction at the bound itself
+            local dint="${v%%.*}" dfr=0; [[ "$v" == *.* ]] && dfr="${v#*.}"
+            if [[ -n "$dmin" ]] && (( 10#$dint < dmin )); then printf "%s=%s is below the minimum %s" "$k" "$v_shown" "$dmin"; return 1; fi
+            if [[ -n "$dmax" ]] && { (( 10#$dint > dmax )) || (( 10#$dint == dmax && 10#$dfr > 0 )); }; then printf "%s=%s is above the maximum %s" "$k" "$v_shown" "$dmax"; return 1; fi ;;
         enum:*)
             [[ ",${t#enum:}," == *",$v,"* ]] || { printf "%s='%s' is not %s" "$k" "$v_shown" "$(_cs_enum_values "$k")"; return 1; } ;;
         duration)

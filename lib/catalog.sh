@@ -339,6 +339,8 @@ catalog_materialize() {
     else die "$EX_UNAVAILABLE" "catalog: $base has no snapshot in an enabled tier"; fi
     [[ "$snap" =~ ^[0-9a-f]{8,64}$ ]] || die "$EX_DATAERR" "catalog: bad snapshot id for $base in the index"
 
+    # the staging directory and the mount live in the cache: not while it moves
+    acquire_cache_lock "catalog materialize"
     local dir="$PVE_STAGING_DIR" dest
     if [[ ! -d "$dir" ]]; then
         ( umask 077; mkdir -p -- "$dir" ) 2>/dev/null || die "$EX_CANTCREAT" "catalog: cannot create $dir"
@@ -522,6 +524,9 @@ catalog_mount_run() {
     if [[ "${pm%% *}" != 0 || ! "${pm#* }" =~ ^[0-7]?[0-7]00$ ]]; then
         die "$EX_CONFIG" "catalog: $parent (parent of the mount point) must be owned by root with no group/other access (it is uid ${pm%% *}, mode ${pm#* }): the mount uses allow_other"
     fi
+    # shared, for as long as restic mount runs (it inherits the lock's fd): a
+    # cache move stops the unit before it takes the lock exclusive
+    acquire_cache_lock "catalog mount"
     log_info "catalog: restic mount $(_mask_url "$RESTIC_CACHE_REPO") at $m (allow-other)"
     _restic "$RESTIC_CACHE_REPO" mount --allow-other "$m"
 }

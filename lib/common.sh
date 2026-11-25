@@ -74,11 +74,12 @@ set_defaults() {
 # /etc/pve files belong to root via pmxcfs).
 _config_file_check() {
     local cfg="$1" st perms owner grp oth
-    _CFC_MSG=''
+    _CFC_MSG='' _CFC_ID=''
     [[ -f "$cfg" ]] || return 1
-    # one stat for both: this runs on every pbo start
-    st="$(stat -c '%a %u' -- "$cfg" 2>/dev/null)" || { _CFC_MSG="cannot stat the config: $cfg"; return 2; }
-    perms="${st% *}"; owner="${st#* }"
+    # one stat for all three: this runs on every pbo start (the file's device
+    # and inode, _CFC_ID, tell a process later whether the writer replaced it)
+    st="$(stat -c '%a %u %d:%i' -- "$cfg" 2>/dev/null)" || { _CFC_MSG="cannot stat the config: $cfg"; return 2; }
+    perms="${st%% *}"; owner="${st#* }"; _CFC_ID="${owner#* }"; owner="${owner%% *}"
     grp="${perms: -2:1}" oth="${perms: -1:1}"
     if (( (grp & 2) || (oth & 2) )); then
         _CFC_MSG="REFUSING to read a group-/world-writable config ($perms): $cfg"; return 2
@@ -174,6 +175,11 @@ _cfg_test_log() {
 # them.
 load_config() {
     PBO_CONFIG_EXPLICIT="${PBO_CONFIG:-}"
+    # when this process read its config (microseconds, no fork): a process
+    # that waits for a lock compares the files with it (lib/lock.sh
+    # _lock_reexec_if_changed); before the files are read, so a change while
+    # they are read counts too
+    PBO_START_US="${EPOCHREALTIME//[!0-9]/}"
     # An explicit PBO_CONFIG that isn't there is a mistake, not "use defaults":
     # defaults point at a different repo (a leaked PBO_CONFIG could make a
     # janitor prune the empty default cache repo).
@@ -187,7 +193,7 @@ load_config() {
     _cfg_env_snapshot
     _cfg_reset
     _cfg_config_files
-    PBO_CONFIG_LOCAL='' PBO_CONFIG_LOADED='' PBO_CONFIG_SHARED_LOADED=''
+    PBO_CONFIG_LOCAL='' PBO_CONFIG_LOADED='' PBO_CONFIG_SHARED_LOADED='' PBO_START_ID=''
     local _lc_i _lc_f _lc_o _lc_rc
     for _lc_i in "${!_CFG_FPATH[@]}"; do
         _lc_f="${_CFG_FPATH[_lc_i]}" _lc_o="${_CFG_FORIGIN[_lc_i]}"
@@ -195,6 +201,8 @@ load_config() {
         _lc_rc=0; _config_file_check "$_lc_f" || _lc_rc=$?
         (( _lc_rc != 1 )) || continue
         if (( _lc_rc == 2 )); then printf 'pbo: %s\n' "$_CFC_MSG" >&2; exit "$EX_CONFIG"; fi
+        # the local file's identity, taken by the same stat (lib/lock.sh)
+        [[ "$_lc_o" == shared ]] || PBO_START_ID="$_CFC_ID"
         # pmxcfs gives the cluster-shared file root:www-data 0640: a non-root
         # caller outside that group runs on the rest, as with a local file it
         # cannot reach (0.5's source failed the same way and went on). Root reads
@@ -308,7 +316,15 @@ _config_check() {
 # if it cannot be created (e.g. isolated dev without a root install).
 # Every pbo start runs this: an existing directory costs no mkdir fork.
 ensure_dirs() {
-    [[ -d "$STATE_DIR" && -d "$JOBS_DIR" && -d "$CACHE_DIR" ]] || mkdir -p "$STATE_DIR" "$JOBS_DIR" "$CACHE_DIR" 2>/dev/null || true
+    if ! [[ -d "$STATE_DIR" && -d "$JOBS_DIR" && -d "$CACHE_DIR" ]]; then
+        mkdir -p "$STATE_DIR" "$JOBS_DIR" 2>/dev/null || true
+        # not a CACHE_DIR a finished cache move left (a process that read the
+        # config before the move would make it again); a missing journal costs
+        # no fork
+        if [[ ! -d "$CACHE_DIR" ]] && { [[ ! -e "${STATE_DIR%/}/cache-move.json" ]] || ! declare -F _cm_old_location >/dev/null || ! _cm_old_location "$CACHE_DIR"; }; then
+            mkdir -p "$CACHE_DIR" 2>/dev/null || true
+        fi
+    fi
     [[ -d "$LOCK_DIR" ]] || { mkdir -p "$LOCK_DIR" 2>/dev/null && chmod 0700 "$LOCK_DIR"; } || true
     # logs hold repo paths, guest names, errors: root (or the janitor user) only
     # (created here with umask 077; no global umask: vzdump of an unprivileged CT

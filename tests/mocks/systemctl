@@ -9,6 +9,9 @@
 #   enable/disable [--now] <unit...>: create/remove <unit>.enabled (and .active with --now)
 #   cat <unit>:                 succeeds when <unit> is in $MOCK_SYSTEMCTL_UNITS (space-separated)
 #   MOCK_SYSTEMCTL_FAIL="<verb> [<verb>...]": those verbs exit 1
+#   MOCK_SYSTEMCTL_START_HOOK=<script>: start runs `bash <script> <unit>` first
+#                               (what the unit would see at that moment); its
+#                               exit status is ignored
 # Without MOCK_SYSTEMCTL_DIR every unit is inactive; anything else succeeds silently.
 [ -n "${MOCK_LOG:-}" ] && echo "systemctl $*" >> "$MOCK_LOG"
 d="${MOCK_SYSTEMCTL_DIR:-}"
@@ -27,7 +30,8 @@ case "$cmd" in
             echo enabled; exit 0
         fi
         echo disabled; exit 1 ;;
-    start) [[ -n "$d" && -n "$unit" ]] && : > "$d/$unit.active"; exit 0 ;;
+    start) [[ -z "${MOCK_SYSTEMCTL_START_HOOK:-}" ]] || bash "$MOCK_SYSTEMCTL_START_HOOK" "$unit" || true
+           [[ -n "$d" && -n "$unit" ]] && : > "$d/$unit.active"; exit 0 ;;
     stop)  [[ -n "$d" && -n "$unit" ]] && rm -f "$d/$unit.active"; exit 0 ;;
     enable|disable)
         [[ -n "$d" ]] || exit 0

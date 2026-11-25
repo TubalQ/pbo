@@ -179,6 +179,43 @@ Only with `PBO_INTEGRATION=both` or `integrated` (README, "Proxmox GUI").
   Proxmox jobs from your recipe. The snapshots are all in the repos; the catalogue
   is rebuilt from them.
 
+## Moving the cache directory
+
+`pbo config set CACHE_DIR <new>` moves the cache with its data (README, "Moving the
+cache directory"; ADR 0009, "Cache move"). The procedure:
+
+1. **Pick a time when nothing runs**: no pbo timer and no Proxmox backup job in the
+   next hour (a copy to another filesystem takes as long as copying the cache).
+2. **Read the plan.** `pbo --dry-run config set CACHE_DIR <new>` prints every check
+   and every step and changes nothing. Fix what it refuses:
+   - a directory above `<new>` that an unprivileged CT's root cannot pass: run the
+     `setfacl -m u:<uid>:x <dir>` lines it prints, or add `--fix-parents`;
+   - a filesystem without POSIX ACLs (ZFS `acltype=off`): `zfs set acltype=posixacl
+     <dataset>`, or choose another one;
+   - a `pbo` storage that is not this node's alone: `pvesm set pbo --nodes <node>`;
+   - a filesystem mounted below the old cache (a dataset for its repo or spool):
+     unmount it, or move its data into the cache's own filesystem, first;
+   - a target, or a directory above it, that another user owns or can write:
+     choose another place, or give it to root;
+   - something running, an archive in the spool (`pbo ingest --pending`), not enough
+     space, a path pbo will not take: as named.
+3. **Move.** `pbo config set CACHE_DIR <new> --yes` (with `--verify-data` to read
+   every pack of a copied repo, `--keep-old` to keep the old copy). It ends with
+   `CACHE_DIR moved: <old> -> <new>`.
+4. **Check.** `pbo doctor` (a line names the last move and fails while one is
+   unfinished), `pvesm status` and the `pbo` storage in the GUI (enabled, its
+   backups listed), `pbo config get CACHE_DIR`, and one `pbo backup <vmid>` of a small
+   unprivileged CT: that proves the CT root can reach the new place through its ACL.
+5. **If it stopped.** Before the config write pbo has already rolled back: the old
+   cache, the storage and the mount are as they were, and the message says why. After
+   it (the message says so, and `pbo doctor` fails), fix the cause and run
+   `pbo config set CACHE_DIR <new> --resume`. After a crash or a killed pbo:
+   `--resume` finishes the move from where it was; `--abort` undoes it as long as the
+   config was not written yet (pbo refuses `--abort` after that). The journal is
+   `STATE_DIR/cache-move.json`; never edit it, and never move the directory by hand
+   while it says a move is unfinished.
+6. **Moving back** is another move: `pbo config set CACHE_DIR <old> --yes`.
+
 ## Gotchas and troubleshooting
 
 - **A fuse container freezes during backup.** It should not, because the tool
@@ -228,11 +265,11 @@ Only with `PBO_INTEGRATION=both` or `integrated` (README, "Proxmox GUI").
 | Program | `/usr/local/lib/pbo/` + `/usr/local/sbin/pbo` (install.sh), or `/usr/lib/pbo/` + `/usr/sbin/pbo` (.deb) |
 | Config | `/etc/pbo/config` |
 | DR key | `/etc/pbo/restic-pass`, mode 0600, the restic repo password |
-| Cache | `CACHE_DIR` from the config, used when `LOCAL_REPO=true` |
+| Cache | `CACHE_DIR` from the config, used when `LOCAL_REPO=true`; moved with `pbo config set CACHE_DIR`, journal `/var/lib/pbo/cache-move.json` |
 | Logs | `/var/log/pbo/` (`pbo.log`, `audit.log`, `audit.jsonl`, all 0600) |
 | Jobs | `/var/lib/pbo/runs/<id>/` (meta, log, result); per-run command logs in `/var/lib/pbo/jobs/` |
 | Restore-test evidence | `/var/lib/pbo/restore-tests.jsonl`, `restore-report.{json,txt}` |
-| Locks | `/run/pbo/` (root only) |
+| Locks | `/run/pbo/` (root only; `pbo.cache` is held while the cache moves) |
 | systemd | `pbo.timer`, `pbo-prune.timer`, `pbo-verify.timer`, `pbo-test-restore.timer` (+ `.service`); with the integration `pbo-catalog.timer`, `pbo-mount.service`; on a janitor `pbo-janitor.timer` |
 | Proxmox integration | plugin `/usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm`, hook `.../pbo/vzdump-hook`, catalogue `/var/lib/pbo/catalog/index.json`, spool `PVE_SPOOL_DIR`, staging `PVE_STAGING_DIR`, offsite copies pending `/var/lib/pbo/ingest-copy/` |
 | Source | `github.com/TubalQ/PBO` |

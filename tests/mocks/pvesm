@@ -6,10 +6,13 @@
 #   pvesm set <id> [--key value]... [--delete k1,k2]   change the stanza
 #   pvesm remove <id>                        drop the stanza
 # and `pvesm status` lists its pbo storages as active too.
-# MOCK_PVESM_FAIL="<verb> [<verb>...]": those verbs exit 1. Logs to $MOCK_LOG.
+# MOCK_PVESM_FAIL="<verb> [<verb>...]": those verbs exit 1;
+# MOCK_PVESM_FAIL_ARGS="<text>": a call whose arguments contain <text> exits 1
+# (e.g. '--delete disable': only the re-enable fails). Logs to $MOCK_LOG.
 [ -n "${MOCK_LOG:-}" ] && echo "pvesm $*" >> "$MOCK_LOG"
 verb="${1:-}"
 [[ " ${MOCK_PVESM_FAIL:-} " == *" $verb "* ]] && { echo "mock pvesm: $verb failed" >&2; exit 1; }
+[[ -n "${MOCK_PVESM_FAIL_ARGS:-}" && "$*" == *"$MOCK_PVESM_FAIL_ARGS"* ]] && { echo "mock pvesm: $* failed" >&2; exit 1; }
 cfg="${MOCK_STORAGE_CFG:-}"
 
 # _stanza_has <id>: the cfg has a section for <id>

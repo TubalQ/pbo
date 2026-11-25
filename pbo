@@ -70,6 +70,8 @@ source "${SELF_DIR}/lib/metrics.sh"
 source "${SELF_DIR}/lib/menu.sh"
 # shellcheck source=lib/perms.sh
 source "${SELF_DIR}/lib/perms.sh"
+# shellcheck source=lib/cachemove.sh
+source "${SELF_DIR}/lib/cachemove.sh"
 
 readonly VERSION="0.6.0-dev"
 
@@ -131,8 +133,19 @@ Commands:
                               --shared writes the cluster-shared /etc/pve/pbo/config (no secret,
                               exec or per-node key); --yes confirms a new repo (no data is moved);
                               --force writes a key the schema does not know. Keys managed by another
-                              command (PBO_INTEGRATION: pbo integrate) are refused. CACHE_DIR: an
-                              empty cache only (the new directory is created with its permissions)
+                              command (PBO_INTEGRATION: pbo integrate) are refused
+  config set CACHE_DIR <dir> [--yes] [--keep-old] [--fix-parents] [--verify-data] [--force]
+                              move the cache with its data: all checks first (--dry-run prints them
+                              and the plan), then a journalled move: backups, ingest, restores and
+                              the mount stop (exit 75), the PVE storage is disabled, the data is
+                              renamed (same filesystem) or copied and checked (restic check;
+                              --verify-data also reads every pack), the config and the storage path
+                              follow, the old copy goes (--keep-old keeps it). An empty cache: the
+                              directory is only created. --fix-parents lets unprivileged CTs pass the
+                              directories above it; --force accepts a network filesystem
+  config set CACHE_DIR <dir> --resume | --abort
+                              finish an interrupted move, or undo one that has not written the
+                              config yet (a failure before that is undone at once)
   config unset <KEY>... [--shared] [--yes]
                               remove keys from the file: the default (or the shared file) applies
   config template [--role host|janitor]
@@ -230,6 +243,7 @@ cmd_backup() {
     local vmid="$1"
     acquire_vmid_lock "$vmid"
     acquire_global_lock "$mode" "backup" "$vmid"
+    acquire_cache_lock backup
 
     # Preflight. FAIL → abort before any dump.
     local rc=0
@@ -274,6 +288,7 @@ cmd_fetch() {
     require_vmid "${1:-}"
     [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch requires <vmid> <timestamp>"
     acquire_vmid_lock "$1"
+    acquire_cache_lock fetch
     do_fetch "$1" "$2"
 }
 
@@ -303,6 +318,7 @@ cmd_restore() {
     # isolated unless the operator asks for the original's config (disaster recovery)
     (( RESTORE_KEEP_NET == 1 )) || RESTORE_ISOLATE=1
     acquire_vmid_lock "$newid"
+    acquire_cache_lock restore
     do_restore "$src" "$ts" "$newid" "$storage" "$yes"
 }
 
@@ -386,6 +402,7 @@ cmd_test_restore() {
 # takes the global lock like a guest backup (it writes to the same repo).
 cmd_backup_host() {
     acquire_global_lock "now" "backup-host" "$(_local_node)"
+    acquire_cache_lock backup-host
     rdo_backup_host
 }
 

@@ -1074,6 +1074,10 @@ _cfg_write_locked() {
     CFGW_TMP=''
     sync -- "$dir" 2>/dev/null || true
     CFGW_WRITTEN=1
+    # this process's own change is no reason for it to start again when it
+    # takes a lock later (lib/lock.sh _lock_config_changed)
+    PBO_START_US="${EPOCHREALTIME//[!0-9]/}"
+    [[ "$target" != "${PBO_CONFIG_LOCAL:-}" ]] || PBO_START_ID="$(stat -c '%d:%i' -- "$target" 2>/dev/null)" || PBO_START_ID=''
     return 0
 }
 
@@ -1148,20 +1152,23 @@ _cfg_confirm_repo() {
 }
 
 # _cfg_hook_move_cache OLD NEW: CACHE_DIR changes from OLD to NEW (effective
-# values), under the config lock, before the file is replaced. 0.6 M4 handles a
-# cache with nothing in it: the old directory does not exist or holds only
-# directories (no repo, nothing in the spool or staging, no dump), and the new
-# one does not exist or is empty. Then NEW is created and the permission table
-# applied to it (lib/perms.sh: closed to others, an ACL entry per unprivileged
-# CT) and the config is written. A cache with data is refused (69): moving it
-# (stop, copy or rename, journal, resume) is lib/cachemove.sh's, a later
-# milestone, which replaces this function.
+# values), under the config lock, before the file is replaced. The one place
+# that decides how: a cache with data, one whose spool the PVE storage names
+# (the integration is on) and any change while a move is unfinished go to the
+# cache move (lib/cachemove.sh _cm_hook: preflight, journal, the data moved
+# before the file is replaced, the rest after it). An empty cache (the old
+# directory does not exist or holds only directories: no repo, nothing in the
+# spool or staging, no dump) needs no move: NEW, which does not exist or is
+# empty, is created and the permission table applied to it (lib/perms.sh:
+# closed to others, an ACL entry per unprivileged CT; with --fix-parents also
+# the directories above it), and the config is written.
 _cfg_hook_move_cache() {
     local old="$1" new="$2" hit e
     # /x and /x/ are the same directory: nothing moves
     while [[ "$old" == */ && "$old" != / ]]; do old="${old%/}"; done
     while [[ "$new" == */ && "$new" != / ]]; do new="${new%/}"; done
     if [[ "$old" == "$new" ]]; then _cfgh move-cache skipped "CACHE_DIR stays $new: nothing to move"; return 0; fi
+    if _cm_needed "$old"; then _cm_hook "$old" "$new"; return $?; fi
     _perm_ensure
     [[ "$new" == /* ]] || { CFGW_ERR="CACHE_DIR must be an absolute path, not '$new'"; return "$EX_CONFIG"; }
     if [[ "$PERM_SYSTEM_DIRS" == *" $new "* ]]; then
@@ -1169,22 +1176,6 @@ _cfg_hook_move_cache() {
     fi
     [[ ! -L "$new" ]] || { CFGW_ERR="CACHE_DIR=$new is a symlink: give the real path"; return "$EX_CONFIG"; }
     [[ ! -e "$new" || -d "$new" ]] || { CFGW_ERR="CACHE_DIR=$new exists and is not a directory"; return "$EX_CONFIG"; }
-    if [[ -e "$old" ]]; then
-        # the snapshot directories of a ZFS dataset (snapdir=visible) or an
-        # NFS export at the cache root hold old copies, not this cache's data
-        if ! hit="$(find "$old" -mindepth 1 \( -path "$old/.zfs" -o -path "$old/.snapshot" \) -prune -o ! -type d -print -quit 2>/dev/null)" \
-           || [[ ! -r "$old" ]]; then hit="$old (cannot be read)"; fi
-        if [[ -n "$hit" ]]; then
-            CFGW_ERR="CACHE_DIR $old holds pbo data (${hit#"$old"/}): moving a cache with data is not supported yet (a later pbo release moves it); nothing was changed"
-            return "$EX_UNAVAILABLE"
-        fi
-    fi
-    # the pbo storage in PVE names the spool path, in storage.cfg for the whole cluster
-    if [[ -n "${CFGW_EA[PVE_SPOOL_DIR]+x}" && "${CFGW_EB[PVE_SPOOL_DIR]}" != "${CFGW_EA[PVE_SPOOL_DIR]}" ]] \
-       && [[ "${PBO_INTEGRATION:-standalone}" == both || "${PBO_INTEGRATION:-standalone}" == integrated ]]; then
-        CFGW_ERR="the Proxmox integration is on ($PBO_INTEGRATION) and its storage points at PVE_SPOOL_DIR ${CFGW_EB[PVE_SPOOL_DIR]}, which would follow CACHE_DIR: run 'pbo integrate disable' first; nothing was changed"
-        return "$EX_UNAVAILABLE"
-    fi
     if [[ -d "$new" ]]; then
         hit="$(find "$new" -mindepth 1 -maxdepth 1 ! -name lost+found ! -name .zfs ! -name .snapshot -print -quit 2>/dev/null)" || hit="$new (cannot be read)"
         if [[ -n "$hit" ]]; then
@@ -1202,13 +1193,17 @@ _cfg_hook_move_cache() {
     if [[ ! -d "$new" ]]; then
         ( umask 022; mkdir -p -- "$new" ) || { CFGW_ERR="cannot create $new"; return "$EX_CANTCREAT"; }
     fi
-    local CACHE_DIR="$new" PERM_EXTRA_VMIDS=()
-    _perm_apply --fix --only CACHE_DIR || true
+    local CACHE_DIR="$new" PERM_EXTRA_VMIDS=() fp=()
+    (( ${CM_FIX_PARENTS:-0} )) && fp=(--fix-parents --only CACHE_DIR:parents)
+    _perm_apply --fix "${fp[@]}" --only CACHE_DIR || true
     for e in "${PERM_FIX_ERRORS[@]+"${PERM_FIX_ERRORS[@]}"}"; do log_warn "config: $e"; done
     for e in "${PERM_FINDINGS[@]+"${PERM_FINDINGS[@]}"}"; do
         [[ "${e%%$'\t'*}" == ok ]] || log_warn "config: ${e##*$'\t'}"
     done
     _cfgh move-cache ok "the cache was empty: $new created, mode $(stat -c %a -- "$new" 2>/dev/null)"
+    # the journal of an earlier move learns of it once the file is written
+    # (_config_change_cmd): it must not keep NEW banned as a place a move left
+    CM_EMPTY_CHANGE="$old"$'\t'"$new"
     return 0
 }
 
@@ -1375,6 +1370,9 @@ _config_change_cmd() {
     local sub="$1"; shift
     local shared=0 force=0 literal=0 want=key i k n kp
     _CC_YES=0; declare -ga _CC_KEYS=() _CC_OPS=() _CC_VALS=() CFGH=(); declare -gA _CC_NOTES=() _CC_IMPLICIT=()
+    # the cache move's flags (lib/cachemove.sh): only with CACHE_DIR
+    local cmflags=''
+    CM_RESUME=0 CM_ABORT=0 CM_KEEP_OLD=0 CM_FIX_PARENTS=0 CM_VERIFY_DATA=0
     # the audit record's copy of the arguments, a secret's (or an unknown key's)
     # value masked: kept up to date token by token, so a usage error stops
     # with it masked too
@@ -1392,7 +1390,7 @@ _config_change_cmd() {
             if [[ "$kp" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && ! _config_is_secret "$kp"; then AUDIT_ARGS+=("$(_mask_url "$1")")
             else AUDIT_ARGS+=("$kp=<secret>"); fi
             if (( ! literal )) && [[ "$kp" == -* ]]; then
-                die "$EX_USAGE" "config $sub: unknown flag '$kp=...' (use --shared, --yes, --force, --dry-run; -- before a key that starts with -)"
+                die "$EX_USAGE" "config $sub: unknown flag '$kp=...' (use --shared, --yes, --force, --dry-run, and for CACHE_DIR --resume, --abort, --keep-old, --fix-parents, --verify-data; -- before a key that starts with -)"
             fi
             if [[ "$sub" == set ]]; then die "$EX_USAGE" "config set: '$kp=...' is one argument: write config set $kp VALUE (two arguments)"; fi
             die "$EX_USAGE" "config unset: '$kp=...' is not a key name: write config unset $kp"
@@ -1405,8 +1403,13 @@ _config_change_cmd() {
                 --yes|-y) _CC_YES=1; shift; continue ;;
                 --force) force=1; shift; continue ;;
                 --dry-run) DRY_RUN=1; shift; continue ;;
+                --resume) CM_RESUME=1; cmflags+=" $1"; shift; continue ;;
+                --abort) CM_ABORT=1; cmflags+=" $1"; shift; continue ;;
+                --keep-old) CM_KEEP_OLD=1; cmflags+=" $1"; shift; continue ;;
+                --fix-parents) CM_FIX_PARENTS=1; cmflags+=" $1"; shift; continue ;;
+                --verify-data) CM_VERIFY_DATA=1; cmflags+=" $1"; shift; continue ;;
                 --) literal=1; shift; continue ;;
-                -*) die "$EX_USAGE" "config $sub: unknown flag '$1' (use --shared, --yes, --force, --dry-run; -- before a key that starts with -)" ;;
+                -*) die "$EX_USAGE" "config $sub: unknown flag '$1' (use --shared, --yes, --force, --dry-run, and for CACHE_DIR --resume, --abort, --keep-old, --fix-parents, --verify-data; -- before a key that starts with -)" ;;
             esac
         fi
         if [[ "$sub" == unset ]]; then _CC_KEYS+=("$1"); _CC_OPS+=(unset); _CC_VALS+=('')
@@ -1428,6 +1431,22 @@ _config_change_cmd() {
         _cs_flag "$k" internal >/dev/null && log_warn "config: $k is a test hook (internal): it does not belong in a production config"
         if [[ "$sub" == set && ",${CS_FLAGS[$k]-}" == *,deprecated=* ]]; then log_warn "config: $k is replaced by $(_cs_flag "$k" deprecated)"; fi
     done
+    # CACHE_DIR: a move with data (lib/cachemove.sh). An unfinished one is
+    # finished (--resume) or undone (--abort) here when that needs no config
+    # write; everything else goes through the writer and its move-cache hook.
+    local cmi=-1
+    for i in "${!_CC_KEYS[@]}"; do [[ "${_CC_KEYS[i]}" == CACHE_DIR ]] && cmi=$i; done
+    if (( cmi < 0 )) && [[ -n "$cmflags" ]]; then die "$EX_USAGE" "config $sub:$cmflags: only with CACHE_DIR (the cache move)"; fi
+    (( CM_RESUME + CM_ABORT < 2 )) || die "$EX_USAGE" "config $sub CACHE_DIR: --resume or --abort, not both"
+    CM_YES="$_CC_YES" CM_FORCE="$force"
+    if (( cmi >= 0 )); then
+        local cmnew="${_CC_VALS[cmi]}"
+        if [[ "${_CC_OPS[cmi]}" == unset || -z "$cmnew" ]]; then _cs_default_r CACHE_DIR; cmnew="$_CS_R"; fi
+        if ! _cm_before_write "$sub" "$cmnew"; then
+            _config_cm_report "$sub" "$CM_RC"
+            return "$CM_RC"
+        fi
+    fi
     # the file the change goes to, as _cfg_write picks it
     local target=''
     _cfg_config_files
@@ -1439,6 +1458,7 @@ _config_change_cmd() {
     # before anything is asked or written (_cfg_write checks it again)
     if (( shared )); then _cfg_shared_check "$target" || die "$_CFG_SHRC" "config $sub --shared: $_CFG_SHERR"; fi
     _cfg_follows "$target"
+    (( cmi < 0 )) || _cm_follow_ops "$target"
     _cfg_confirm_repo
     local -a ops=() wflags=(--hooks)
     for i in "${!_CC_KEYS[@]}"; do
@@ -1446,9 +1466,25 @@ _config_change_cmd() {
     done
     local rc=0
     (( shared == 0 )) || wflags+=(--shared)
+    CM_PENDING=0 CM_EMPTY_CHANGE=''
     _cfg_write "${wflags[@]}" "${ops[@]}" || rc=$?
-    (( rc == 0 )) || die "$rc" "config $sub: $CFGW_ERR"
     local hookrc=0
+    if (( CM_PENDING )); then
+        # the move's data is in place: the config write finishes the pre-write
+        # half; a failed write undoes the move
+        if (( rc == 0 && CFGW_WRITTEN )); then
+            _cm_after_write || hookrc=1
+        else
+            _cm_rollback "the config could not be written: ${CFGW_ERR:-exit $rc}" || CFGW_ERR+="; $CM_ERR"
+            (( rc != 0 )) || rc="$EX_SOFTWARE"
+        fi
+        CM_PENDING=0
+    fi
+    if [[ -n "$CM_EMPTY_CHANGE" ]] && (( rc == 0 && CFGW_WRITTEN )); then
+        _cm_journal_empty_change "${CM_EMPTY_CHANGE%%$'\t'*}" "${CM_EMPTY_CHANGE#*$'\t'}"
+    fi
+    CM_EMPTY_CHANGE=''
+    (( rc == 0 )) || die "$rc" "config $sub: $CFGW_ERR"
     if (( CFGW_CHANGED )); then
         if (( CFGW_WRITTEN )); then
             local what=''
@@ -1469,6 +1505,24 @@ _config_change_cmd() {
         return "$EX_UNAVAILABLE"
     fi
     return "$EX_OK"
+}
+
+# _config_cm_report SUB RC: what config set|unset CACHE_DIR --resume|--abort did
+# when it needed no config write (the cache move's hooks only).
+_config_cm_report() {
+    local sub="$1" rc="$2" line hk='' f1 f2 f3
+    for line in "${CFGH[@]+"${CFGH[@]}"}"; do hk+="$line"$'\x1e'; done
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_emit "$(jq -cn --arg h "$hk" --arg sub "$sub" --argjson rc "$rc" --arg f "${PBO_CONFIG_LOCAL:-}" '
+            def recs: split("\u001e") | map(select(length > 0) | split("\u001f"));
+            { status: (if $rc == 0 then "ok" else "hook_failed" end), ok: ($rc == 0), action: $sub, file: $f,
+              changed: false, written: false, changes: [], effective: [],
+              hooks: [ $h | recs[] | { hook: .[0], status: .[1], message: .[2] } ] }')"
+        return 0
+    fi
+    while IFS=$'\x1f' read -r -d $'\x1e' f1 f2 f3; do printf '%s: %s\n' "$f1" "$f3"; done < <(printf '%s' "$hk")
+    if (( rc )); then PBO_ERROR_LOGGED=1; log_error "config $sub CACHE_DIR: the cache move did not finish (see above)"; fi
+    return 0
 }
 
 # _config_change_report SUB SHARED HOOKRC: what config set|unset did, as text or JSON.
@@ -1533,7 +1587,7 @@ _config_change_report() {
     return 0
 }
 
-readonly CONFIG_SUBCOMMANDS="show, list [--all], get KEY, set KEY VALUE... [--shared] [--yes] [--force], unset KEY... [--shared], template [--role host|janitor], check [--file F] [--role host|janitor] [--compare-bash]"
+readonly CONFIG_SUBCOMMANDS="show, list [--all], get KEY, set KEY VALUE... [--shared] [--yes] [--force] (CACHE_DIR also [--resume|--abort] [--keep-old] [--fix-parents] [--verify-data]), unset KEY... [--shared], template [--role host|janitor], check [--file F] [--role host|janitor] [--compare-bash]"
 
 rdo_config() {
     local sub="${1:-show}"; [[ $# -gt 0 ]] && shift

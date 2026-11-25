@@ -539,13 +539,67 @@ back before it replaces the old one (`--dry-run` shows the diff). `--shared` wri
 the cluster-shared `/etc/pve/pbo/config` instead (no secrets, no per-node keys, no
 `CACHE_DIR`; only while pmxcfs is mounted);
 keys another command manages (`PBO_INTEGRATION`: `pbo integrate`) are refused. A new
-repo URL needs `--yes` (no data is moved); `CACHE_DIR` can be changed this way while
-the cache is still empty. The DR key
+repo URL needs `--yes` (no data is moved); `CACHE_DIR` moves the cache with its data
+(next section). The DR key
 (`RESTIC_PASSWORD_FILE`) is the one secret that must never leave the host
 unencrypted, but the config is not harmless either: it can hold an ntfy token and
 topic (on a public ntfy server the topic is the password) and the SFTP command. Keep
 it 0600 and out of version control; `pbo config` never prints those values (only
 `<set>` or `<unset>`) and masks credentials in URLs.
+
+## Moving the cache directory
+
+`CACHE_DIR` holds the local cache repo, the vzdump archives of a running backup and,
+with the Proxmox integration, the spool PVE jobs write to and the staging directory
+for GUI restores. Move it with one command:
+
+```bash
+pbo --dry-run config set CACHE_DIR /srv/pbo-cache   # every check and every step, nothing changed
+pbo config set CACHE_DIR /srv/pbo-cache --yes
+```
+
+An empty cache (a new install) is simply created where you say, with its permissions.
+A cache with data is moved:
+
+1. **Checks first, all at once, nothing changed when one fails** (exit 78 for a path
+   pbo will not take, 69 when the system refuses): an absolute path without symlinks,
+   empty or new, not a system directory, not inside the old cache or around it; every
+   directory above it owned by root and writable by root only; not tmpfs or FUSE (a
+   network filesystem only with `--force`); on another filesystem enough free space
+   (`CACHEMOVE_SPACE_FACTOR`, default 1.1, times the cache's size); the mapped root of
+   every unprivileged CT can reach the new directory (tested with `setpriv` as that uid)
+   and the filesystem takes POSIX ACLs (on ZFS: `zfs set acltype=posixacl`). A directory
+   that blocks a CT is named with the exact `setfacl -m u:<uid>:x <dir>` line;
+   `--fix-parents` adds those traverse-only entries for you. With the integration on,
+   the `pbo` storage must belong to this node alone (`pvesm set pbo --nodes <node>`):
+   its path is in `storage.cfg`, which every node shares. No filesystem may be mounted
+   below the old cache (a separate dataset for its repo, say): unmount it or merge it
+   first. And nothing may run: no backup, prune, verify, ingest or restore, no vzdump,
+   nothing waiting in the spool.
+2. **The move**, step by step in a journal (`STATE_DIR/cache-move.json`): every pbo
+   lock is taken (backups, ingest, restores and the mount get exit 75 meanwhile),
+   pbo-mount.service stops, the `pbo` storage is disabled, staging is cleared, the new
+   directory is created closed to other users with an ACL entry per CT root, and the
+   data is renamed (same filesystem and mount; across bind mounts of one filesystem it
+   is copied) or copied (`cp -a`, then the two trees are
+   compared and `restic check` runs on the copied repo; `--verify-data` reads every
+   pack too). Then the config is written in one step (`CACHE_DIR`, and the keys that
+   follow it: a `RESTIC_CACHE_REPO`, `PVE_SPOOL_DIR` or `PVE_STAGING_DIR` pinned at the
+   old default is removed so it derives again; one pinned elsewhere stays), the storage
+   points at the new spool and is enabled, the catalogue is refreshed, the permission
+   rules are applied to the new paths, the old copy is removed (only when it holds
+   nothing but pbo's own directories; `--keep-old` keeps it) and the mount starts again.
+3. **When something fails.** Before the config write, everything is rolled back at
+   once: the old cache, the storage and the mount are as they were. After it, the move
+   only goes forward: fix what the message names and run
+   `pbo config set CACHE_DIR /srv/pbo-cache --resume`. A move that was interrupted
+   (power loss, a killed pbo) is finished with `--resume`, or, if it had not written
+   the config yet, undone with `--abort`. Until then backups and `pbo init` refuse to
+   run (exit 75) and `pbo doctor` fails, so nothing writes a new, empty repo at either
+   place. A backup that was queued behind the move starts again with the new config.
+
+Retention keeps working across the move: a guest's snapshots under the old and the new
+path are retained as one guest (see "Per-guest policy" and ADR 0009).
 
 ## Contributing
 

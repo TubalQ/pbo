@@ -125,6 +125,9 @@ _restic_write_repo() {
 _restic_ensure() {             # _restic_ensure <repo> [init-args...]
     local repo="$1"; shift
     _restic "$repo" --no-lock cat config >/dev/null 2>&1 && return 0
+    # never an empty repo where a cache move left the cache, while one is
+    # unfinished, or at a path the config no longer names (returns 4)
+    if declare -F _cm_init_guard >/dev/null; then _cm_init_guard "$repo" || return $?; fi
     log_info "restic: init repo $repo"
     local errf rc=0; errf="$(mktemp)"
     _restic_w "$repo" init "$@" 2>"$errf" >&2 || rc=$?
@@ -140,6 +143,9 @@ _restic_ensure() {             # _restic_ensure <repo> [init-args...]
 
 # _restic_init_die <tier> <rc>: tell "locked" apart from a real init failure.
 _restic_init_die() {
+    if [[ "$2" == 4 ]]; then
+        die "$EX_TEMPFAIL" "restic: no $1 repo was created: ${CM_INIT_MSG:-refused}"
+    fi
     if [[ "$2" == 3 ]]; then
         die "$EX_TEMPFAIL" "restic: $1 repo is locked by another process (${RESTIC_LOCK_MSG:-unknown}), not an init error. Is a prune or check running?"
     fi
@@ -148,6 +154,7 @@ _restic_init_die() {
 
 # restic_init, init cache and/or offsite repo (onboarding, idempotent).
 restic_init() {
+    declare -F _cm_block >/dev/null && _cm_block "restic init"
     [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "$EX_CONFIG" "restic: missing password file $RESTIC_PASSWORD_FILE (0600)"
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         _restic_ensure "$RESTIC_CACHE_REPO" || _restic_init_die cache $?
@@ -580,6 +587,7 @@ rdo_test_restore() {
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "vmid" "$vmid" "throwaway" "$target"
         return "$EX_OK"
     fi
+    acquire_cache_lock test-restore
     mkdir -p "$CACHE_DIR"
     local rdir; rdir="$(mktemp -d "${CACHE_DIR}/testrestore-XXXXXX")" || die "$EX_CANTCREAT" "test-restore: no temp dir in $CACHE_DIR"
     local jobfile; jobfile="${JOBS_DIR}/testrestore-${vmid}-$(date +%Y%m%d-%H%M%S).log"
@@ -1056,6 +1064,13 @@ rdo_doctor() {
     _doctor_perms "$ok" "$bad" "$warn"
     lines+=("${DP_DR[@]+"${DP_DR[@]}"}"); problems=$((problems+DP_PROBLEMS)); warns=$((warns+DP_WARNS))
 
+    # A cache move (lib/cachemove.sh) that did not finish blocks every backup.
+    _cm_doctor
+    case "$CMD_LEVEL" in
+        fail) lines+=("$bad  $CMD_LINE"); problems=$((problems+1)) ;;
+        ok)   lines+=("$ok  $CMD_LINE") ;;
+    esac
+
     # Repo reachable.
     local repo; repo="$(_restic_read_repo)"
     if _restic "$repo" --no-lock cat config >/dev/null 2>&1; then lines+=("$ok  repo $(_mask_url "$repo") reachable")
@@ -1283,6 +1298,7 @@ rdo_run_batch() {
         return 2
     fi
     acquire_global_lock "queue" "batch" "all"
+    acquire_cache_lock batch
     local start; start="$(date +%s)"
 
     # --- PHASE 1: dump all → cache ---
