@@ -1098,3 +1098,152 @@ outside the suite's run directory, before any command runs and before any
 config or drop-in write (`tests/fixtures/run_dir_guard.sh`), and every suite
 points `PBO_SYSTEMD_DIR` into the checkout, so no test can read or change a
 host's units.
+
+### Wizard (M8)
+
+0.5's `pbo setup` was written for one target and one run: it asked for an SFTP
+host every time (a Storage Box host name as the example), wrote
+`sftp:<label>:<path>` with an ssh command whether or not one was needed,
+rewrote the pinned host keys, ran `mkdir -p` on the cache path it was given and
+pinned `RESTIC_CACHE_REPO`, wrote `NTFY_URL=` on a no, and took any number. Run
+again to change one thing, it overwrote the rest.
+
+**Decision.** The wizard (lib/menu.sh, `run_setup_wizard`) is a front end of
+the writer and the cache move. It holds no config logic of its own.
+
+- **Defaults are the effective config.** Each question offers the value pbo
+  uses now and Enter keeps it: CACHE_DIR, LOCAL_REPO, the retention keys,
+  BACKUP_MODE, BACKUP_ORDER, the SCHEDULE_* keys, ntfy (a secret is not shown:
+  "Enter keeps the current one"). For an sftp repo the host, port, user, key and
+  known_hosts file come from the repo and `RESTIC_SFTP_COMMAND`
+  (`_setup_sftp_parse`: the command wins, since restic connects with it; ssh
+  options before and after the destination, `-p -i -l -o Port= User=
+  IdentityFile= UserKnownHostsFile=`; a 0.5 repo's host is then a label; an
+  IPv6 host in brackets in the repo, bare or in brackets in the command), and
+  the command the wizard writes parses back to the parts it was built from
+  (tests/menu.sh). The command's other options (`-F`, `-J`, `-o ProxyJump=`,
+  keep-alives, flags) are kept as words and go into the rebuilt command, and
+  into the connection test, as long as the host stays the same: Enter on every
+  part must not drop a jump host. A value that equals the effective one is not written
+  (`_setup_set`, `_setup_change`), so a run that keeps every answer leaves the
+  config byte for byte as it was, and a re-run never pins a default. The
+  values a cache move changed are read back from `pbo --json config list`; a
+  value there that is only the masked form of the one the wizard holds (a
+  login in a repo string) is not taken over.
+- **The offsite repo is kept unless the operator changes it.** A configured repo
+  is shown in one line (its login masked; for a `rest:` repo whether it is
+  append-only, for another backend the names of the variables in
+  `RESTIC_ENV_FILE`) with "keep" as the default; keeping skips every offsite
+  step, the connection test included. Replacing it asks first: pbo moves no
+  snapshot, and a typo would start an empty repo next to the old one.
+- **The type of target.** SFTP, rest-server, a local or mounted directory,
+  another restic backend, or (with a local cache repo) none:
+  - SFTP: any host (a name, IPv4 or IPv6), port, user and key. The repo is
+    `sftp:<user>@<host>:<path>` (`sftp:<user>@[<v6>]:<path>` for IPv6), so it
+    says where it is without a command.
+    `RESTIC_SFTP_COMMAND` is written only when restic's default (`ssh
+    <user>@<host> -s sftp`) is not enough: another port, a key ssh does not try
+    by itself (`~/.ssh/id_{rsa,ecdsa,ecdsa_sk,ed25519,ed25519_sk}`), the
+    pinned host key (`UserKnownHostsFile=` with `StrictHostKeyChecking=yes`;
+    pinning stays the recommended default, so most setups get a command), ssh
+    options of the configured command that are kept, or, with nothing pinned,
+    a host whose key `~/.ssh/known_hosts` does not hold yet: restic's default
+    runs ssh with `StrictHostKeyChecking=ask`, which fails without a terminal
+    (the timers), so trust on first use gets the command with `accept-new`.
+    Otherwise a command left from before is removed. A host key already in
+    `PBO_KNOWN_HOSTS` is not scanned again (`ssh-keygen -F`); a new one is
+    added to the file. A Storage Box is recognised by its domain only, and only
+    then do its defaults (port 23, the account as the user, a relative path),
+    its key installation hints and the question about its snapshots
+    (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`) appear.
+  - rest-server: the URL (a login in it is refused: the user goes into
+    `RESTIC_REST_USERNAME`, the password into a 0600 file next to the DR key by
+    default, so it is in no repo string pbo logs; a configured URL that has
+    one is offered without it, its user as the default user and its password
+    moved to the file on a yes, never shown), an optional pinned
+    certificate, and whether the server is append-only (`OFFSITE_APPEND_ONLY`;
+    the note says the janitor prunes then).
+  - a directory: the path is the repo; a warning when it shares the
+    filesystem of CACHE_DIR (one disk failure takes both copies).
+  - another backend: the repository string as restic takes it (`sftp:`,
+    `rest:` and `local:` are sent to their own types), then the credentials:
+    the variables that backend reads are named with what each one is (s3, b2,
+    azure, gs, swift, rclone; none for one pbo does not know), each value is
+    read without echo, a variable the file has is kept on Enter, more can be
+    added by name (one `RESTIC_ENV_FILE` refuses is refused at once). The file
+    is written whole, its other lines and comments kept, 0600, and only after
+    pbo's own reader of it (`_restic_env_read`) takes the candidate back with
+    every value as given. No value reaches the output or the log.
+  When the type changes, the keys of the old one are removed (an ssh command,
+  or the rest-server login, certificate and append-only flag), so nothing stale
+  stays in the config. The writer removes lines from the local file only: a
+  key the cluster-shared file or the environment sets is written to its
+  default in the local file instead, which wins over both (a shared
+  `OFFSITE_APPEND_ONLY=true` left in effect would stop this host from ever
+  pruning its new repo; a shared ntfy server would keep sending after "turn
+  ntfy off"). A key that still is not at its default afterwards is named.
+- **The cache step.** The local filesystems are listed with type and free
+  space (`findmnt -rn -b -t <types>`, `df -P -T -l -t <type>...` without it;
+  the tool filters by type before it sizes anything, since a statfs of a hard
+  NFS mount whose server is gone never returns): disk filesystems only,
+  read-write, no container volume (`subvol-*-disk-*`, `basevol-*`), one row
+  per filesystem (the datasets of a ZFS pool share its free space; a bind
+  mount is its source again). The one with the most free space is suggested
+  (`<mount>/pbo-cache`; the schema default when it lies on that filesystem; the
+  current directory when it is on that filesystem already). It is the default
+  only on a first setup (no offsite repo, no DR key and no local cache repo
+  yet) when the config names no CACHE_DIR and the current one holds no data;
+  otherwise it is a hint and the effective CACHE_DIR the default (an
+  offsite-only host has an empty cache between backups). A warning when the
+  root filesystem is smaller than 1.5 times the largest dump of the node's
+  guests (every disk of a VM, a container's rootfs and backed-up mount points:
+  PVE's `maxdisk` is only a VM's boot disk). The directory is set
+  with `pbo config set CACHE_DIR <path> --yes`, in a pbo of its own (the move
+  takes its locks and keeps its journal; the wizard's shell then reads the
+  values back with `pbo --json config list`): the same path writes nothing
+  (a re-run never pins the default, nor a CACHE_DIR the cluster-shared file
+  sets); another one first runs the same command with
+  `--dry-run` and shows the plan (the empty-cache creation, or the move's
+  checks and steps), and changes nothing without a yes. When the plan names a
+  directory above the target that an unprivileged CT cannot pass,
+  `--fix-parents` is offered and the dry run shown again with it; a refusal
+  offers another path. `RESTIC_CACHE_REPO` is never written: it follows
+  CACHE_DIR.
+- **Values are checked where they are typed.** Every answer that becomes a key
+  goes through the schema (`_cs_validate`: whole numbers and their bounds,
+  enums, URLs, calendar expressions) and is asked again until it is valid; the
+  other answers (paths, ports, host and user names, repository strings,
+  variable names) have checks of their own. The prompts report the end of the
+  input, so a question that cannot get a valid answer stops the wizard instead
+  of asking for ever (scripted answers, a closed terminal); what the steps
+  before it wrote stays.
+- **Writes.** The config only through the writer: `_cfg_set`/`_cfg_unset`
+  (one `_cfg_write` transaction on the local file, its after-write hooks:
+  apply-schedule writes the timer drop-ins of a changed schedule; audit-logged
+  as `config set`) and `pbo config set CACHE_DIR` (`_cfg_set` refuses a
+  CACHE_DIR that changes). confirm-repo is the wizard's own question. The files
+  that are not the config (the DR key, a rest-server password,
+  `RESTIC_ENV_FILE`, known_hosts) go through one writer, `_setup_write_file`: a
+  temp file in the target's directory with the mode set before anything is in
+  it that matters (`mktemp` makes it 0600), an optional check, then a rename; a
+  symlink or anything but a regular file at the path is refused. An existing DR
+  key is never replaced.
+- **Timers.** A timer that is not enabled is offered with yes as the default
+  on a first setup and no on a re-run: Enter never starts a timer (the restore
+  test boots a guest) that an earlier run left off.
+- **Last,** `pbo doctor --fix` (with `--fix-parents` when the cache move the
+  operator ran with it went through, or when the operator agrees to it after a
+  permission warning named it) and its report.
+
+**Tests.** `tests/menu.sh`: the parsers and checks as units, the cache step
+against a fake pbo that records its arguments, and `pbo setup` end to end with
+scripted answers through a copy of pbo that sources
+`tests/fixtures/run_dir_guard.sh` with `TEST_GUARD_KEYS=PBO_KNOWN_HOSTS
+RESTIC_REST_PASSWORD_FILE`; the guard also wraps the move-cache hook (the new
+CACHE_DIR) and the wizard's file writer and key generator, so neither a test
+nor the code under it can create anything outside the run directory. Two more
+hooks of the guard: `TEST_GUARD_SHARED` (a file in the run directory read as the
+cluster-shared config) and `TEST_GUARD_CACHE_DEFAULT` (the schema default of
+CACHE_DIR in the run directory, for a config without a CACHE_DIR line). findmnt
+(it refuses a sized listing without `-t`), ssh-keyscan, sftp, curl, systemctl,
+pvesh and qm are mocks, restic a fake, HOME the run directory.

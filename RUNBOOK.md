@@ -13,8 +13,41 @@ throwaway copy to prove an actual restore works.
 ```bash
 git clone https://github.com/TubalQ/PBO && cd PBO
 ./install.sh          # installs the tool and units, does not enable the timer
-pbo setup             # cache, sftp, DR key (an existing one is kept), mode, timers, then init
+pbo setup             # cache, offsite target, DR key (an existing one is kept), mode, retention, ntfy, init, guests, timers
 ```
+
+### Running pbo setup again
+
+`pbo setup` is safe to run again, to change one thing or to check the rest. Every
+question offers the current setting and Enter keeps it; an answer that keeps a
+setting writes nothing, so a run that keeps everything leaves `/etc/pbo/config` as
+it was.
+
+- **Cache.** The local filesystems are listed with their free space, the one with
+  the most is suggested (`<mount>/pbo-cache`; the default only on a first setup,
+  after that a hint: Enter keeps the current CACHE_DIR and writes nothing), and a
+  warning says when the root filesystem is smaller than 1.5 times the largest guest
+  (all its disks). Another directory than the
+  current one goes through `pbo config set CACHE_DIR` (below, "Moving the cache
+  directory"): the wizard shows the dry run first, offers `--fix-parents` when a CT
+  could not pass a directory above it, and moves only on a yes.
+- **Offsite.** A configured repo is shown (its login masked) and kept unless you
+  choose "change the target"; an append-only `rest:` repo is recognised as such.
+  "Change" asks for the type: an SFTP server (any host, port, user and key; the repo
+  is `sftp:<user>@<host>:<path>`, and `RESTIC_SFTP_COMMAND` is written only when the
+  port, the key or the pinned host key needs it), a rest-server (URL, user, a 0600
+  password file, append-only or not), a local or mounted directory, or another
+  restic backend (the repository string, and its credentials into `RESTIC_ENV_FILE`,
+  0600; values are read without echo and never shown). A Storage Box host gets its
+  defaults (port 23, the account as the user) and the question whether the box
+  takes snapshots (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`). Replacing a repo asks first:
+  pbo moves no snapshot, the old ones stay where they are. ssh options of your own
+  in `RESTIC_SFTP_COMMAND` (a `ProxyJump`, `-F`) stay when you keep the host.
+- **Timers.** A timer that is off is offered with yes on a first setup and with no
+  on a re-run, so Enter never turns on one you left off.
+- **Numbers and schedules** are checked against the schema and asked again until
+  they are valid; a schedule is written with its timer drop-in.
+- **Last**, `pbo doctor --fix` applies the permission table and shows the report.
 
 `install.sh` also leaves a `lxc-offsite` symlink, because that was the old name
 of the tool.
@@ -23,11 +56,14 @@ of the tool.
 
 Everything operational lives in `/etc/pbo/config` as `KEY=VALUE` lines:
 
-- `RESTIC_OFFSITE_REPO` is the repo, for example `sftp:storagebox:pbo`. The
-  path is relative, because a Storage Box account is chrooted. Never rename it in
-  place, or you orphan every snapshot already in it.
-- `RESTIC_SFTP_COMMAND` is the full ssh command, with host, port, and key, so
-  restic reaches the box correctly.
+- `RESTIC_OFFSITE_REPO` is the repo: `sftp:<user>@<host>:<path>` (a Storage Box
+  account is chrooted, so its path is relative), `rest:https://<host>:<port>/<path>`,
+  a directory, or another restic backend (`s3:`, `b2:`, `azure:`, `gs:`, `swift:`,
+  `rclone:`, with its credentials in `RESTIC_ENV_FILE`). Never rename it in place, or
+  you orphan every snapshot already in it.
+- `RESTIC_SFTP_COMMAND` is the full ssh command restic runs for an sftp repo, with
+  host, port, key and the pinned host key. Without it restic runs `ssh <user>@<host>
+  -s sftp` (port 22, the default keys).
 - `RESTIC_SFTP_CONNECTIONS` sets the number of parallel SFTP streams. Keep the
   total under the provider limit, which is around 10 on Hetzner.
 - `LOCAL_REPO` chooses a cache tier (`true`) or offsite only (`false`).
@@ -153,8 +189,8 @@ restic reads the SSH command only as the `sftp.command` option, not from an
 environment variable, and the repo string is exactly `RESTIC_OFFSITE_REPO`.
 
 ```bash
-REPO='sftp:storagebox:pbo'      # RESTIC_OFFSITE_REPO
-SFTP='ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -s sftp'   # RESTIC_SFTP_COMMAND
+REPO='sftp:pbo@backup.example:pbo'                              # RESTIC_OFFSITE_REPO
+SFTP='ssh pbo@backup.example -p 2222 -i /root/.ssh/id_ed25519 -s sftp'   # RESTIC_SFTP_COMMAND (if the config has one)
 R() { restic -o sftp.command="$SFTP" -r "$REPO" --password-file /etc/pbo/restic-pass "$@"; }
 
 R snapshots --tag vmid=<vmid>                     # what is offsite for that guest
@@ -164,8 +200,10 @@ pct restore <new-vmid> /var/tmp/dr/.../vzdump-lxc-<vmid>-<ts>.tar --storage <poo
 qmrestore /var/tmp/dr/.../vzdump-qemu-<vmid>-<ts>.vma <new-vmid> --storage <pool>
 ```
 
-The `unprivileged` value and any bind mounts are in the extracted `.conf`. (This
-exact form has been tested against a Storage Box.)
+The `unprivileged` value and any bind mounts are in the extracted `.conf`. Without
+a `RESTIC_SFTP_COMMAND` in the config, drop the `-o sftp.command=...`; for another
+backend, export the variables of `RESTIC_ENV_FILE` first. (This form has been
+tested against a Storage Box.)
 
 The key is a single point of failure. restic encrypts everything, so without the
 password you cannot even list the snapshots. Keep it in a password manager and
@@ -280,6 +318,9 @@ cache directory"; ADR 0009, "Cache move"). The procedure:
    `STATE_DIR/cache-move.json`; never edit it, and never move the directory by hand
    while it says a move is unfinished.
 6. **Moving back** is another move: `pbo config set CACHE_DIR <old> --yes`.
+
+`pbo setup` runs the same move from its cache step: it shows the plan of step 2,
+offers `--fix-parents` when the plan needs it, and moves on a yes.
 
 ## Gotchas and troubleshooting
 

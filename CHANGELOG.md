@@ -10,7 +10,8 @@ a strict KEY=VALUE reader instead of sourcing the config, moving CACHE_DIR with
 `pbo config set CACHE_DIR`, retention grouped per guest, `pbo doctor --fix`, and
 nothing that differs between installations hard-coded (landed: `RESTIC_ENV_FILE`,
 `RESTIC_MIN`, threshold keys, `pbo doctor --report`, the hard-coding lint, the
-timer schedules as config keys and per-node storage ids in a cluster).
+timer schedules as config keys and per-node storage ids in a cluster), and a
+setup wizard that is safe to run again and asks for the type of offsite target.
 
 Changes behaviour: **the config is no longer run as code.** pbo 0.5 sourced
 `/etc/pbo/config` (and `/etc/pve/pbo/config`) as shell code. pbo 0.6 reads them
@@ -455,6 +456,20 @@ Added
   outside the suite's run directory (`tests/fixtures/run_dir_guard.sh`); every
   suite points `PBO_SYSTEMD_DIR` and pmxcfs (`PBO_PVE_CFS_DIR`,
   `PVE_STORAGE_CFG`) into the checkout.
+- `tests/menu.sh` covers the setup wizard: the sftp repo and command parsed
+  back (round trips, a 0.5 label, the URL form, `-l`/`-o` options), when the
+  command is needed, the filesystem list and the suggestion (mocked findmnt),
+  values asked again until the schema takes them, the cache step's calls
+  against a fake pbo (same path, dry run then set, a no, `--fix-parents`), and
+  `pbo setup` end to end with scripted answers: a first setup (sftp with a port
+  and a key, the host key pinned, the DR key, retention and a schedule with its
+  drop-in, timers, doctor), re-runs that keep an sftp repo with its port and
+  key and an append-only `rest:` repo with the config unchanged, each type of
+  target (rest-server, directory, `s3:` with `RESTIC_ENV_FILE` 0600 and no
+  value in the output), and a cache with data moved on a yes and left on a no.
+  The guard (`tests/fixtures/run_dir_guard.sh`) also checks the keys a suite
+  names in `TEST_GUARD_KEYS` and stops before a new CACHE_DIR, a file the wizard
+  writes or a key pair it generates outside the run directory.
 
 Changed
 - The config writers of `pbo setup`, the menu (`_cfg_set`) and `pbo integrate`
@@ -512,11 +527,68 @@ Changed
   (before: when no upper-case word in pbo's code matched it). In a cluster the
   unknown keys of `/etc/pve/pbo/config` are named too. A space-separated
   `VZDUMP_STOP_VMIDS` is a warning: pbo splits it on commas only.
-- `pbo setup` offers the configured sftp repo (its path and host label) as the
-  default on a re-run, so accepting the default never starts a new, empty repo.
-  A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
-  every run; the host label is only a name, the ssh command says where to
-  connect).
+- `pbo setup` is safe to run again (ADR 0009, "Wizard"; interactive only):
+  every question offers the effective config and Enter keeps it (CACHE_DIR,
+  LOCAL_REPO, the offsite repo and, for an sftp one, the host, port, user, key
+  and pinned host key read back from `RESTIC_SFTP_COMMAND`, retention, ntfy,
+  `BACKUP_ORDER`, the schedules), and an answer that keeps a setting writes
+  nothing, so a run that keeps everything leaves the config as it was. A
+  configured offsite repo (an append-only `rest:` one included) is shown, its
+  login masked, and kept unless the operator chooses to change the target;
+  replacing it asks first (pbo moves no snapshot). 0.5 asked for an SFTP host
+  on every run and rewrote the repo, the ssh command and the pinned host keys,
+  and a no to ntfy emptied `NTFY_URL`.
+- `pbo setup` asks for the type of offsite target instead of assuming a Storage
+  Box: an SFTP server (any host, port, user and key; the repo is
+  `sftp:<user>@<host>:<path>`, IPv6 as `sftp:<user>@[<v6>]:<path>`, with
+  `RESTIC_SFTP_COMMAND` only when the port, the key, the pinned host key, ssh
+  options of the configured command (kept while the host stays) or a host key
+  ssh has not recorded yet (`accept-new`) needs it; 0.5 wrote
+  `sftp:<label>:<path>` and a command every time), a rest-server (URL, user, a
+  0600 password file, append-only or not; a login in a configured URL is moved
+  out of it, never shown), a local or mounted directory, or another restic backend
+  (the repository string; the variables that backend reads, such as
+  `AWS_ACCESS_KEY_ID` for `s3:`, are named, read without echo, never printed,
+  and written to `RESTIC_ENV_FILE`, 0600, only when pbo's own reader of that
+  file takes them back as given). The Storage Box hints, its defaults (port 23,
+  the account as the user) and the snapshot question
+  (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`) come only for a host below its domain.
+  When the type changes, the keys of the old one go (`RESTIC_SFTP_COMMAND`; the
+  rest-server login, `RESTIC_CACERT`, `OFFSITE_APPEND_ONLY`); one the
+  cluster-shared file or the environment sets is written to its default in the
+  local file, as is the ntfy server on "turn ntfy off". With a local cache
+  repo, "none" turns offsite off.
+- `pbo setup`'s cache step lists the local disk filesystems (findmnt -t; df -l
+  -t without it, so a dead network mount is never sized and cannot hang it)
+  with their type and free space, suggests `<mount>/pbo-cache` on the one with
+  the most (the default only on a first setup when the config names no
+  CACHE_DIR and the cache holds no data; otherwise a hint, and Enter keeps the
+  effective CACHE_DIR without writing it), warns when the root filesystem is
+  smaller than 1.5 times the largest dump of the node's guests (every disk of a
+  VM), and sets the directory with `pbo config set
+  CACHE_DIR`: another path shows the dry run first and runs the change (an
+  empty cache: created with the permission table's rules; one with data: the
+  cache move) on a yes, and offers `--fix-parents` when the plan says an
+  unprivileged CT cannot pass a directory above it. 0.5 ran `mkdir -p` and
+  wrote the path (and pinned `RESTIC_CACHE_REPO`).
+- `pbo setup` checks numbers, choices and schedules against the schema and asks
+  again until they are valid (the end of the input stops the question instead
+  of asking for ever). A schedule step sets `SCHEDULE_BACKUP`,
+  `SCHEDULE_PRUNE`, `SCHEDULE_VERIFY` and `SCHEDULE_TEST_RESTORE` (the writer's
+  hook writes their drop-ins); the timer questions name the configured
+  schedule (they named the default times), skip a timer that is enabled, and
+  default to no on a re-run (Enter enabled every timer that was off).
+  The last step runs `pbo doctor --fix` and shows its report.
+- The wizard's and the menu's config writes (`_cfg_set`) run the writer's
+  after-write hooks (apply-schedule, restart-mount) and are audit-logged as
+  `pbo config set` is. A CACHE_DIR that changes is not written there: it goes
+  through `pbo config set CACHE_DIR` (the cache move runs in a pbo of its own).
+  The files the wizard writes itself (the DR key, a rest-server password,
+  `RESTIC_ENV_FILE`, known_hosts) are written atomically: a temp file in their
+  directory, then a rename; a symlink at the path is refused.
+- The generated example's restic section shows an sftp repo as
+  `sftp:<user>@<host>:<path>` and when `RESTIC_SFTP_COMMAND` is needed (it
+  showed the Storage Box alias).
 - `pbo config set CACHE_DIR` on a cache with data moves it (Added); 0.6 M4
   refused it (69). With the Proxmox integration on, an empty cache whose spool
   follows is moved the same way (the storage path changes) instead of the M4

@@ -60,7 +60,7 @@ host name, URL, path or secret), for a bug report.
 | restic | CI pins one release (see `.github/workflows/ci.yml`); the suites use real local repositories. | Versions between `RESTIC_MIN` (0.14.0) and the pinned one: the minimum comes from the features pbo uses (ADR 0009, "Portability"), not from a test run. |
 | Install layouts | Both: install.sh (`/usr/local/lib/pbo`) and the .deb (`/usr/lib/pbo`); every systemd unit is checked in each layout. | Other prefixes. |
 | CACHE_DIR filesystem | ext4-like filesystems with POSIX ACLs, a filesystem without ACL support (mocked), the ACL mask, an unprivileged CT's mapped root passing the parents (as root). | ZFS with `acltype=posixacl`, btrfs and xfs on real hardware; NFS and CIFS (not refused yet, but ACLs and renames there are untested). |
-| Backends | Local directory repositories (real restic). `tests/integration/pve.sh` runs backup, restore and prune on a PVE host and, with a janitor, the append-only path against a real rest-server. `RESTIC_ENV_FILE` is checked to reach restic and nothing else. | SFTP servers (the wizard's ssh command is tested, a transfer is not), S3, B2, Azure, GCS, rclone and the other restic backends against real services. |
+| Backends | Local directory repositories (real restic). `tests/integration/pve.sh` runs backup, restore and prune on a PVE host and, with a janitor, the append-only path against a real rest-server. `RESTIC_ENV_FILE` is checked to reach restic and nothing else. | SFTP servers (the wizard's ssh command, its parsing back and the host key pinning are tested against mocks, a transfer is not), S3, B2, Azure, GCS, rclone and the other restic backends against real services. |
 | Clusters | Which node backs up which guest, from mocked cluster views; the cluster-shared config (`/etc/pve/pbo/config`); per-node storage ids, `pbo integrate` and job ownership with a mocked member list of one and three nodes. | A real multi-node cluster. |
 | Time zones | Archive names, the catalogue's times and the timers' next run under UTC, +05:30 and -03:00; retention, which restic plans by the local day each snapshot recorded, with snapshots taken in each of those zones. | Daylight-saving transitions. |
 | Users | The suites run as a plain user in CI; run as root they also cover owners, `setpriv` and `chown`. | |
@@ -93,15 +93,42 @@ on purge (the DR key lives there). Releases are signed tags; see `CHANGELOG.md`.
 pbo setup     # everything, in one pass
 ```
 
-`setup` is a single guided pass that gets you from a clean clone to running backups.
-It generates an SSH key if you don't have one and shows you how to install it on the
-target, pins the target's host key, tests the SFTP connection before it commits
-anything, writes `/etc/pbo/config`, creates the repo, sets retention, confirms which
-guests to back up, and offers to enable the four timers (nightly backup, weekly prune,
-weekly verify slice, weekly restore test). It never overwrites an existing DR key.
+`setup` is a single guided pass that gets you from a clean clone to running backups:
 
-The one thing it can't do for you is get the public key onto the target — it prints the
-key and the exact command, you run that once, and the connection test confirms it took.
+- **Cache.** It lists the local filesystems with their free space, suggests the one
+  with the most (`<mount>/pbo-cache`; the default on a first setup, a hint after
+  that), and warns when the root filesystem is smaller than 1.5 times your largest
+  guest (all its disks). The directory is set with `pbo config set CACHE_DIR`, so a
+  cache that already holds data is moved, after you have seen the plan.
+- **Offsite target**, by type:
+  - an **SFTP server**, any host (IPv6 too), port, user and key: the repo is
+    `sftp:<user>@<host>:<path>`. It generates an SSH key if you don't have one, shows
+    how to install it on the server, pins the server's host key and tests the
+    connection before it writes anything. The ssh command (`RESTIC_SFTP_COMMAND`) is
+    written only when the port, the key, the pinned host key, options of your own
+    (a `ProxyJump`, kept) or a host key ssh has not seen yet needs it. A Hetzner
+    Storage Box is recognised by its host name (port 23, the account as the user,
+    and whether the box takes snapshots);
+  - a **rest-server** (URL, user, a password file, append-only or not);
+  - a **local or mounted directory**;
+  - **another restic backend** (`s3:`, `b2:`, `azure:`, `gs:`, `swift:`, `rclone:`):
+    you give the repository string, it names the variables that backend reads and
+    writes them to `RESTIC_ENV_FILE` (0600; read without echo, never shown).
+- the **DR key** (it never overwrites an existing one), the backup mode, retention,
+  ntfy, the repo itself (`pbo init`), the guests to back up, the Proxmox integration,
+  the **schedule** (`SCHEDULE_*`, with their timer drop-ins) and the four timers
+  (nightly backup, weekly prune, weekly verify slice, weekly restore test);
+- last, `pbo doctor --fix` (the permission table) and the doctor report.
+
+Run it again whenever you want to change something: every question offers the current
+setting and Enter keeps it, a configured offsite repo is shown and kept unless you
+choose to change it, and an answer that keeps a setting writes nothing. Numbers,
+choices and schedules are checked against the config schema and asked again until
+they are valid. All changes go through `pbo config set`.
+
+The one thing it can't do for you is get the public key onto an SFTP server — it prints
+the key and the exact command, you run that once, and the connection test confirms it
+took.
 
 Afterwards, export the DR key somewhere safe (`pbo menu` → Export DR key). Don't skip
 that: it's the only thing that can decrypt the offsite data.
@@ -109,10 +136,10 @@ that: it's the only thing that can decrypt the offsite data.
 If you'd rather enable the schedule by hand instead of from the wizard:
 
 ```bash
-systemctl enable --now pbo.timer               # backups, 05:00 daily
-systemctl enable --now pbo-prune.timer         # prune, Sunday 06:30
-systemctl enable --now pbo-verify.timer        # verify slice, Wednesday 10:00
-systemctl enable --now pbo-test-restore.timer  # restore test, Saturday 10:00
+systemctl enable --now pbo.timer               # backups, 05:00 daily (SCHEDULE_BACKUP)
+systemctl enable --now pbo-prune.timer         # prune, Sunday 06:30 (SCHEDULE_PRUNE)
+systemctl enable --now pbo-verify.timer        # verify slice, Wednesday 10:00 (SCHEDULE_VERIFY)
+systemctl enable --now pbo-test-restore.timer  # restore test, Saturday 10:00 (SCHEDULE_TEST_RESTORE)
 ```
 
 Then `pbo doctor` any time to check the repo is reachable, the timer is on, the
@@ -296,7 +323,7 @@ Global flags:
   --dry-run           show what would happen, do nothing
 
 Commands:
-  setup                       setup wizard
+  setup                       setup wizard (safe to re-run: Enter keeps each setting)
   menu                        interactive prompt
   init                        create or verify the repo
   backup [--queue] <vmid>     back up one guest (--queue: wait for the lock instead of failing)
@@ -504,7 +531,8 @@ backups. Three things close that gap, in order of effort:
 - **Pin the host key.** Setup offers to pin it for you: it runs `ssh-keyscan` against
   the target, writes the key to `/etc/pbo/known_hosts`, and points the ssh command at it
   with `-o UserKnownHostsFile=... -o StrictHostKeyChecking=yes` instead of trust-on-first-
-  use. Decline it and the connection falls back to `accept-new`.
+  use. Decline it and the connection falls back to trust on first use: the command
+  gets `accept-new`, unless ssh's own `~/.ssh/known_hosts` already has the key.
 - **Append-only repo.** The strong version: the host can add snapshots but can't
   delete any. Put a restic rest-server in `--append-only` mode in front of the storage,
   on a machine the host has no shell on, and let that machine do retention. See
@@ -638,6 +666,9 @@ for GUI restores. Move it with one command:
 pbo --dry-run config set CACHE_DIR /srv/pbo-cache   # every check and every step, nothing changed
 pbo config set CACHE_DIR /srv/pbo-cache --yes
 ```
+
+`pbo setup` does the same from its cache step: it shows the dry run, offers
+`--fix-parents` when the plan needs it, and runs the change on a yes.
 
 An empty cache (a new install) is simply created where you say, with its permissions.
 A cache with data is moved:

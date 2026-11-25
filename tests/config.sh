@@ -192,6 +192,8 @@ out="$(S '
         case "$k" in ALLOW|CFG|E|ENVF|FILES|IR|LI|M|PF_BACKUP_VOLUMES|RR|SP|TZ|ZONES|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|XPROBE_TOKEN|REFV|SCHEMA_DEFS) continue ;; esac
         # tests/schedule_config.sh and tests/integrate.sh: shell variables and test hooks (TEST_ALLOW of the run directory guard, PBO_TOOLS_MISSING)
         case "$k" in IU|J|NODE|UNITS|TEST_ALLOW|PBO_TOOLS_MISSING) continue ;; esac
+        # tests/menu.sh: the wizard harness'"'"'s shell variables and the run directory guard'"'"'s hooks
+        case "$k" in CFGW_CACHE|KH0|WQM|WSFTP_RC|WSHARED|W_ENV|TEST_GUARD_SHARED|TEST_GUARD_CACHE_DEFAULT) continue ;; esac
         [[ "$k" == MOCK_* || "$k" == PBO_INSTALL_* || "$k" == PBO_AUDIT_* ]] && continue
         case "$k" in PBO_CONFIG|PBO_CONFIG_LOADED|PBO_CONFIG_SHARED_LOADED) continue ;; esac   # set by load_config, not keys
         _cs_env_switch "$k" && continue

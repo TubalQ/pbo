@@ -12,13 +12,41 @@
 #   TEST_RUN    the run directory (an absolute path, below a run* directory)
 #   TEST_ALLOW  extra prefixes a test may name on purpose (space-separated),
 #               e.g. a path that does not exist, for a doctor check
+#   TEST_GUARD_KEYS  more config keys whose path must lie in TEST_RUN (the
+#               setup wizard's: PBO_KNOWN_HOSTS, RESTIC_REST_PASSWORD_FILE)
+#   TEST_GUARD_SHARED  a file below TEST_RUN that pbo reads as the
+#               cluster-shared config, before PBO_CONFIG (which still has to
+#               be set: it is the local file)
+#   TEST_GUARD_CACHE_DEFAULT  a directory below TEST_RUN that is the schema
+#               default of CACHE_DIR, so a test config can leave CACHE_DIR out
+#               without pbo resolving the host's own cache directory
 # The wrappers replace functions pbo sourced at start; none of them is loaded
 # lazily again later (each loader checks that its function exists first).
 [[ "${TEST_RUN:-}" == /*/run* ]] || { echo "run_dir_guard: TEST_RUN must be set to the suite's run directory" >&2; exit 99; }
+if [[ -n "${TEST_GUARD_SHARED:-}" ]]; then
+    [[ "$TEST_GUARD_SHARED" == "$TEST_RUN"/* && -n "${PBO_CONFIG:-}" ]] \
+        || { echo "run_dir_guard: TEST_GUARD_SHARED must lie below $TEST_RUN, and PBO_CONFIG must be set" >&2; exit 99; }
+    # the reader first: load_config sources it only when it is not loaded
+    # yet, and that would replace the override
+    # shellcheck source=lib/config_parse.sh
+    source "${SELF_DIR}/lib/config_parse.sh"
+    _cfg_config_files() { _CFG_FPATH=("$TEST_GUARD_SHARED" "$PBO_CONFIG"); _CFG_FORIGIN=(shared local); }
+fi
+if [[ -n "${TEST_GUARD_CACHE_DEFAULT:-}" ]]; then
+    [[ "$TEST_GUARD_CACHE_DEFAULT" == "$TEST_RUN"/* && "$TEST_GUARD_CACHE_DEFAULT" != *[\|\'[:space:]]* ]] \
+        || { echo "run_dir_guard: TEST_GUARD_CACHE_DEFAULT must lie below $TEST_RUN (no blank, | or ')" >&2; exit 99; }
+    eval "_guard_real_cs_table() $(declare -f _cs_table | tail -n +2)"
+    _cs_table() {
+        _guard_real_cs_table
+        local row=$'\n''CACHE_DIR|dir|/var/cache/pbo|'
+        [[ "$_CS_TABLE" == *"$row"* ]] || { echo "run_dir_guard: the schema row of CACHE_DIR changed: update TEST_GUARD_CACHE_DEFAULT" >&2; exit 99; }
+        _CS_TABLE="${_CS_TABLE/"$row"/$'\n'"CACHE_DIR|dir|$TEST_GUARD_CACHE_DEFAULT|"}"
+    }
+fi
 GUARD_KEYS='LOCK_DIR STATE_DIR LOG_DIR CACHE_DIR RESTIC_CACHE_DIR RESTIC_PASSWORD_FILE RESTIC_ENV_FILE NTFY_CREDS_FILE
     PBO_SYSTEMD_DIR PBO_PVE_CFS_DIR PVE_STORAGE_CFG PBO_PVE_STORAGE_CFG VZDUMP_CONF VZDUMP_LOCK PBO_PVE_LXC_DIR
     PBO_PVE_QEMU_DIR PBO_CATALOG PVE_SPOOL_DIR PVE_STAGING_DIR PVE_CATALOG_MOUNT_DIR PBO_PERMS_CONFIG_DIR
-    PVE_TEMPLATE_DIR'
+    PVE_TEMPLATE_DIR'" ${TEST_GUARD_KEYS:-}"
 
 # _guard_ok PATH: empty, below TEST_RUN, or below a TEST_ALLOW prefix
 _guard_ok() {
@@ -46,3 +74,12 @@ eval "_guard_real_sched_remove() $(declare -f _sched_remove | tail -n +2)"
 _sched_remove() { _guard_ok "$1" || _guard_stop "the drop-in $1"; _guard_real_sched_remove "$@"; }
 eval "_guard_real_integ_write_file() $(declare -f _integ_write_file | tail -n +2)"
 _integ_write_file() { _guard_ok "$1" || _guard_stop "the file $1"; _guard_real_integ_write_file "$@"; }
+# the directory a CACHE_DIR change creates (or moves the cache to), and the
+# files of its own the setup wizard writes (the DR key, a rest-server
+# password, RESTIC_ENV_FILE, known_hosts) and the key pair it generates
+eval "_guard_real_cfg_hook_move_cache() $(declare -f _cfg_hook_move_cache | tail -n +2)"
+_cfg_hook_move_cache() { _guard_ok "$2" || _guard_stop "the new CACHE_DIR $2"; _guard_real_cfg_hook_move_cache "$@"; }
+eval "_guard_real_setup_write_file() $(declare -f _setup_write_file | tail -n +2)"
+_setup_write_file() { _guard_ok "$1" || _guard_stop "the file $1"; _guard_real_setup_write_file "$@"; }
+eval "_guard_real_setup_keygen() $(declare -f _setup_keygen | tail -n +2)"
+_setup_keygen() { _guard_ok "$1" || _guard_stop "the key $1"; _guard_real_setup_keygen "$@"; }

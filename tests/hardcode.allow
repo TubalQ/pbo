@@ -38,9 +38,8 @@
 :config(\.janitor)?\.example$                             the example config files (etc/), not host names
 ^systemd/[^:]+:github.com$                                the project's documentation URL (Documentation=)
 ^lib/config_parse.sh:/root/..$                            an example in a refusal message (write the full path, not ~/)
-^lib/menu.sh:(/var/cache/pbo|/root/.ssh/id_ed25519|/root/pbo-dr-key.txt|/var/tmp/pbo-restore-)$   suggestions the setup wizard offers (the operator can change each); the wizard is reworked with the config writer
-^lib/menu.sh:(ntfy.example.com|uXXXXX-subN.your-storagebox.de)$                                   placeholders in the wizard's prompts
+^lib/menu.sh:(/root/pbo-dr-key.txt|/var/tmp/pbo-restore-)$       suggestions of the menu (the operator can change each): where Export DR key saves a copy, where a host snapshot is extracted
+^lib/menu.sh:your-storagebox.de$                                   the Storage Box domain: a host below it gets the setup wizard's Storage Box defaults and checks (port 23, the snapshot question); any other SFTP host is asked for everything
 
 # --- the timer schedules (SCHEDULE_* keys, drop-ins written by lib/timers.sh) ---------
 ^systemd/pbo[a-z-]*\.timer:[0-9:]+$                       OnCalendar= of the units: the schema defaults (tests/schedule_config.sh checks they agree); a custom schedule is a drop-in
-^lib/menu.sh:(05:00|06:30|10:00)$                         the setup wizard's timer questions name the default times (the wizard is reworked in M8)

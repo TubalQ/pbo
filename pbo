@@ -101,7 +101,9 @@ Global flags:
   -V, --version       version number
 
 Commands:
-  setup                       interactive setup wizard (cache/sftp/password/mode/ntfy → init)
+  setup                       interactive setup wizard: cache, offsite target (sftp, rest-server,
+                              directory, other restic backend), DR key, retention, ntfy, schedule,
+                              then init and doctor --fix; safe to re-run (Enter keeps each setting)
   menu                        interactive prompt-CLI, guests/backup/restore/status
   init                        create/verify the repo(s)
   backup <vmid>               dump → restic backup → copy offsite (global lock)

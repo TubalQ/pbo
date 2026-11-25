@@ -123,7 +123,7 @@ RESTIC_BIN|command|restic|restic|host,janitor|exec,advanced|the restic binary (t
 LOCAL_REPO|bool|true|restic|host,janitor|advanced,template_janitor=false|true = cached (local repo + copy), false = offsite only
 OFFSITE_ENABLED|bool|true|restic|host,janitor|advanced,template_janitor=true|false = local repo only (no offsite copy)
 RESTIC_CACHE_REPO|dir|${CACHE_DIR}/repo|restic|host|advanced,follows=CACHE_DIR,on_change=confirm-repo|local restic repo (cache tier)
-RESTIC_OFFSITE_REPO|string||restic|host,janitor|advanced,on_change=confirm-repo,template_janitor=/srv/restic/<host>/pbo|sftp:<host>:<path> (native sftp), rest:https://..., or a local directory
+RESTIC_OFFSITE_REPO|string||restic|host,janitor|advanced,on_change=confirm-repo,template_janitor=/srv/restic/<host>/pbo|sftp:<user>@<host>:<path>, rest:https://..., a local directory, or another restic backend (s3:, b2:, ...)
 RESTIC_SFTP_COMMAND|command||restic|host|secret,exec,local-only,advanced|full ssh command for native sftp (port, key, pinned host key); empty = the restic default
 RESTIC_SFTP_CONNECTIONS|int:1:|8|restic|host|advanced|parallel sftp connections (faster restore; Storage Box ~10 max)
 RESTIC_RETRY_LOCK|duration|10m|restic|host,janitor|advanced|backup/copy/prune wait this long on a locked repo (restic >= 0.16)
@@ -415,13 +415,15 @@ EOF
         restic) cat <<'EOF'
 Onboarding: run `pbo setup` (or set the keys below by hand + create the
 password file 0600 + run `pbo init` once before the first backup).
-Native sftp uses a RELATIVE path on a Storage Box (it is chrooted), e.g.
-  RESTIC_OFFSITE_REPO=sftp:storagebox:pbo
-The Storage Box needs port/key in the ssh command (the repo URL's host label is
-just a name). `pbo setup` pins the host key into /etc/pbo/known_hosts and uses
-StrictHostKeyChecking=yes; accept-new is the trust-on-first-use fallback:
-  RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
-Other restic backends (s3:, b2:, azure:, gs:, rclone:) read their credentials
+An SFTP repo is sftp:<user>@<host>:<path> (a relative path starts in the
+login's home; a Storage Box is chrooted, so its path is relative), e.g.
+  RESTIC_OFFSITE_REPO=sftp:pbo@backup.example:pbo
+restic runs `ssh <user>@<host> -s sftp`. Another port, a key ssh does not try
+by itself or a pinned host key need the whole ssh command; `pbo setup` writes
+it then, pins the host key into /etc/pbo/known_hosts and uses
+StrictHostKeyChecking=yes (accept-new is the trust-on-first-use fallback):
+  RESTIC_SFTP_COMMAND="ssh pbo@backup.example -p 2222 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+Other restic backends (s3:, b2:, azure:, gs:, swift:, rclone:) read their credentials
 from the environment: put them in RESTIC_ENV_FILE (KEY=VALUE, chmod 600), e.g.
   AWS_ACCESS_KEY_ID=...
   AWS_SECRET_ACCESS_KEY=...
