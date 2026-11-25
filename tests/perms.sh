@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.." || exit 1
 # PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
 # machine's own files: point them into the checkout, at paths nothing creates
 # (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
     PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
@@ -64,7 +64,7 @@ STATE_DIR=$H/state
 LOCK_DIR=$H/lock
 RESTIC_PASSWORD_FILE=$H/etc/restic-pass
 RESTIC_REST_PASSWORD_FILE=$H/etc/rest-pass
-NTFY_CREDS_FILE=$H/etc/ntfy.creds
+NTFY_CREDS_FILE=$H/etc/ntfy.env
 PVE_CATALOG_MOUNT_DIR=$H/mnt/m
 PBO_CATALOG=$H/state/catalog/index.json
 PBO_PVE_LXC_DIR=$RUN/lxc
@@ -74,10 +74,10 @@ PBO_PERMS_CONFIG_DIR=$H/etc
 BACKUP_ORDER=8001
 OFFSITE_ENABLED=false
 EOF
-    printf 'pw\n' > "$H/etc/restic-pass"; printf 'pw\n' > "$H/etc/rest-pass"; printf 'NTFY_URL=x\n' > "$H/etc/ntfy.creds"
+    printf 'pw\n' > "$H/etc/restic-pass"; printf 'pw\n' > "$H/etc/rest-pass"; printf 'NTFY_URL=x\n' > "$H/etc/ntfy.env"
     : > "$H/log/audit.jsonl"; printf '{}' > "$H/state/catalog/index.json"; printf 'x' > "$H/cache/staging/a.vma"
     printf 'outside\n' > "$RUN/outside"; chmod 0644 "$RUN/outside"; ln -s "$RUN/outside" "$H/cache/staging/b.vma"
-    chmod 0644 "$H/etc/config" "$H/etc/restic-pass" "$H/etc/ntfy.creds" "$H/log/audit.jsonl" "$H/cache/staging/a.vma"
+    chmod 0644 "$H/etc/config" "$H/etc/restic-pass" "$H/etc/ntfy.env" "$H/log/audit.jsonl" "$H/cache/staging/a.vma"
     chmod 0640 "$H/etc/rest-pass"; chmod 0600 "$H/state/catalog/index.json"
     chmod 0755 "$H/etc" "$H/cache" "$H/cache/repo" "$H/cache/staging" "$H/lock" "$H/state/runs" "$H/state/restic-cache" "$H/mnt"
     chmod 0700 "$H/cache/spool" "$H/cache/spool/dump" "$H/log" "$H/state" "$H/state/catalog"
@@ -89,7 +89,7 @@ want=(
     "$H/cache/staging 700" "$H/cache/staging/a.vma 600" "$H/lock 700" "$H/log 755"
     "$H/log/audit.jsonl 600" "$H/state 755" "$H/state/runs 750" "$H/state/catalog 755"
     "$H/state/catalog/index.json 644" "$H/state/restic-cache 700" "$H/etc 700" "$H/etc/config 600"
-    "$H/etc/restic-pass 600" "$H/etc/rest-pass 600" "$H/etc/ntfy.creds 640"
+    "$H/etc/restic-pass 600" "$H/etc/rest-pass 600" "$H/etc/ntfy.env 640"
 )
 snap() { find "$1" -exec stat -c '%n %a %u %g %h' {} + | sort; getfacl -RPpn "$1" 2>/dev/null; }
 P() { PBO_CONFIG="$H/etc/config" "$BIN" "$@"; }
@@ -347,7 +347,7 @@ if (( is_root )) && [[ -n "$jusr" ]]; then
         rm -rf "$jdir"; mkdir -p "$jdir"/{etc,cache,log,state/restic-cache,lock}
         printf '%s\n' "PBO_ROLE=janitor" "JANITOR_USER=${1:-$jusr}" "LOCAL_REPO=false" "OFFSITE_ENABLED=true" \
             "RESTIC_OFFSITE_REPO=$jdir/repo" "CACHE_DIR=$jdir/cache" "LOG_DIR=$jdir/log" "STATE_DIR=$jdir/state" \
-            "LOCK_DIR=$jdir/lock" "RESTIC_PASSWORD_FILE=$jdir/etc/restic-pass" "NTFY_CREDS_FILE=$jdir/etc/ntfy.creds" \
+            "LOCK_DIR=$jdir/lock" "RESTIC_PASSWORD_FILE=$jdir/etc/restic-pass" "NTFY_CREDS_FILE=$jdir/etc/ntfy.env" \
             "RESTIC_ENV_FILE=$jdir/etc/restic.env" "PBO_PERMS_CONFIG_DIR=$jdir/etc" > "$jdir/etc/config"
         printf 'pw\n' > "$jdir/etc/restic-pass"; chmod 0644 "$jdir/etc/restic-pass"; chmod 0600 "$jdir/etc/config"
         : > "$jdir/log/audit.jsonl"   # a janitor run as root (the test) would make it at exit, after the check

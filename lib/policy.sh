@@ -18,7 +18,7 @@
 
 # _guest_tags <vmid> → the guest's Proxmox tags, one per line (lower case).
 # Guest metadata cache: one `pvesh get /cluster/resources` per process instead of
-# a pct/qm config call (a perl start, ~0.7 s) per question per guest. Falls back
+# a pct/qm config call (a perl start) per question per guest. Falls back
 # to the config when pvesh has no answer (no cluster view, tests). Cleared by
 # anything that changes tags (policy set).
 # _GM_POOL is the guest's resource pool (PVE backup jobs can select by pool,

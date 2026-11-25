@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.." || exit 1
 # PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
 # machine's own files: point them into the checkout, at paths nothing creates
 # (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
     PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
@@ -28,7 +28,7 @@ command -v restic >/dev/null 2>&1 || { echo "restic not installed, skipping inte
 printf 'pbo: integrate tests\n'
 RUN="$ROOT/run/integrate"; rm -rf "$RUN"
 mkdir -p "$RUN"/{cache,state,log,lock,conf,bin,sysd,plugin,pve,units,none,tree,qemu,mnt}
-export RESTIC_ENV_FILE="$RUN/none/restic.env" NTFY_CREDS_FILE="$RUN/none/ntfy.creds" PBO_PVE_TEMPLATE_DIR="$RUN/none/templates"
+export RESTIC_ENV_FILE="$RUN/none/restic.env" NTFY_CREDS_FILE="$RUN/none/ntfy.env" PBO_PVE_TEMPLATE_DIR="$RUN/none/templates"
 NODE=pve1   # this node, as pmxcfs' member list names it
 members() { # members <node count>|none: pmxcfs' member list of a cluster of
     # <count> nodes pve1..pveN (this node first; 1: a single node, which PVE
@@ -74,7 +74,7 @@ RESTIC_CACHE_REPO=$RUN/cache/repo
 RESTIC_PASSWORD_FILE=$RUN/pass
 RESTIC_CACHE_DIR=$RUN/rcache
 NTFY_URL=
-NTFY_CREDS_FILE=$RUN/none/ntfy.creds
+NTFY_CREDS_FILE=$RUN/none/ntfy.env
 NOTIFY_PVE=false
 PBO_CATALOG=$RUN/catalog/index.json
 PVE_STORAGE_CFG=$RUN/storage.cfg

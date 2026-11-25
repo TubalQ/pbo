@@ -73,6 +73,16 @@ These are the migration notes pbo, `install.sh` and the `.deb` point to.
   `config check` an error. Set it in `/etc/pbo/config` on each node.
 - The file rules are unchanged: a group- or world-writable config, or one owned
   by anyone but root (or the janitor user), is refused (78).
+- ntfy settings in a credentials file: the default file is now
+  `/etc/pbo/ntfy.creds`, with `NTFY_URL`, `NTFY_TOKEN` and `NTFY_TOPIC`. An
+  install that kept its ntfy settings in another file sets `NTFY_CREDS_FILE` to
+  it (`NTFY_CREDS_FILE=/etc/ntfy/shared.env`), and `NTFY_CREDS_TOPIC_KEY` when
+  the topic is under another key there; `pbo doctor` and `pbo notify-test` show
+  whether alerts go out. A file that sources other files or runs commands is
+  refused: write the values out. In the lines of `NTFY_URL`, `NTFY_TOKEN` and
+  the topic key a value with spaces must be quoted (`KEY="a b"`), as in the
+  config, or the whole file is left unused; a refused line of another key is
+  only skipped (doctor names it).
 
 **What behaves differently.**
 
@@ -324,6 +334,9 @@ Added
   tests/docs.sh, tests/integrate.sh, tests/menu.sh and tests/schedule_config.sh
   run pbo through a copy that stops it (99) when it resolves a path outside
   their run directory (tests/fixtures/run_dir_guard.sh).
+- `NTFY_CREDS_TOPIC_KEY` (default `NTFY_TOPIC`): which key of `NTFY_CREDS_FILE`
+  holds the topic, for a credentials file shared with other tools; the file is
+  read with the strict reader.
 
 Changed
 - `load_config` reads the config files with the strict reader and never sources

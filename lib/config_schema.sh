@@ -26,6 +26,7 @@
 #                      a space between two vmids is not: the code strips spaces and
 #                      splits on commas only (VZDUMP_STOP_VMIDS)
 #   url                scheme://...
+#   name               a shell variable name: a letter or _, then letters, digits or _
 #   version            dotted numbers: 0.14.0 (compared part by part, as sort -V does)
 #   command            a program, or a shell command line
 #   calendar           a systemd calendar expression (OnCalendar=, systemd.time(7)):
@@ -102,7 +103,8 @@ RETENTION_GROUP_BY|enum:guest,paths|guest|retention|host,janitor|advanced|guest 
 NTFY_URL|url||notifications|host,janitor|secret|ntfy server (base URL); empty = no ntfy
 NTFY_TOPIC|string||notifications|host,janitor|secret|on a public ntfy server the topic is the password: keep this file 0600
 NTFY_TOKEN|string||notifications|host,janitor|secret,advanced|access token (sent to curl on stdin, never on its command line)
-NTFY_CREDS_FILE|path|/etc/ntfy.creds|notifications|host,janitor|advanced|alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC_WARN in that file
+NTFY_CREDS_FILE|path|/etc/pbo/ntfy.creds|notifications|host,janitor|advanced|alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC in that file (KEY=VALUE, nothing run); the config wins
+NTFY_CREDS_TOPIC_KEY|name|NTFY_TOPIC|notifications|host,janitor|advanced|the key in NTFY_CREDS_FILE that holds the topic (for a file shared with other tools)
 NTFY_ON_SUCCESS|bool|false|notifications|host,janitor|deprecated=NOTIFY_LEVEL|true still means NOTIFY_LEVEL=all when NOTIFY_LEVEL is empty
 NOTIFY_LEVEL|enum:,fail,warn,all||notifications|host,janitor|template=fail|fail: failures only | warn: + warnings | all: + every successful run
 NOTIFY_PVE|enum:auto,true,false|auto|notifications|host,janitor||Proxmox notifications: auto | true | false
@@ -642,6 +644,8 @@ _cs_validate() {
                 || { printf "%s='%s' is not a comma-separated list of vmids" "$k" "$v_shown"; return 1; } ;;
         url)
             [[ "$v" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+$ ]] || { printf "%s is not a URL (scheme://host...)" "$k"; return 1; } ;;
+        name)
+            [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { printf "%s='%s' is not a variable name (letters, digits and _, not starting with a digit)" "$k" "$v_shown"; return 1; } ;;
         version)
             [[ "$v" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] || { printf "%s='%s' is not a version (e.g. 0.14.0)" "$k" "$v_shown"; return 1; } ;;
         calendar)

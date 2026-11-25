@@ -20,6 +20,9 @@
 #   TEST_GUARD_CACHE_DEFAULT  a directory below TEST_RUN that is the schema
 #               default of CACHE_DIR, so a test config can leave CACHE_DIR out
 #               without pbo resolving the host's own cache directory
+#   TEST_GUARD_DEFAULTS  the same for other keys: "KEY=PATH ..." (space-
+#               separated, each PATH below TEST_RUN), e.g. NTFY_CREDS_FILE for
+#               a test of what pbo does when nothing sets it
 # The wrappers replace functions pbo sourced at start; none of them is loaded
 # lazily again later (each loader checks that its function exists first).
 [[ "${TEST_RUN:-}" == /*/run* ]] || { echo "run_dir_guard: TEST_RUN must be set to the suite's run directory" >&2; exit 99; }
@@ -41,6 +44,24 @@ if [[ -n "${TEST_GUARD_CACHE_DEFAULT:-}" ]]; then
         local row=$'\n''CACHE_DIR|dir|/var/cache/pbo|'
         [[ "$_CS_TABLE" == *"$row"* ]] || { echo "run_dir_guard: the schema row of CACHE_DIR changed: update TEST_GUARD_CACHE_DEFAULT" >&2; exit 99; }
         _CS_TABLE="${_CS_TABLE/"$row"/$'\n'"CACHE_DIR|dir|$TEST_GUARD_CACHE_DEFAULT|"}"
+    }
+fi
+if [[ -n "${TEST_GUARD_DEFAULTS:-}" ]]; then
+    for _guard_d in $TEST_GUARD_DEFAULTS; do
+        [[ "$_guard_d" =~ ^[A-Z][A-Z0-9_]*=/ && "${_guard_d#*=}" == "$TEST_RUN"/* && "$_guard_d" != *[\|\']* ]] \
+            || { echo "run_dir_guard: TEST_GUARD_DEFAULTS: $_guard_d is not KEY=<a path below $TEST_RUN> (no | or ')" >&2; exit 99; }
+    done
+    unset _guard_d
+    # wraps whatever _cs_table is now (the CACHE_DIR override above included)
+    eval "_guard_real_cs_table_defaults() $(declare -f _cs_table | tail -n +2)"
+    _cs_table() {
+        _guard_real_cs_table_defaults
+        local d k re
+        for d in $TEST_GUARD_DEFAULTS; do
+            k="${d%%=*}"; re=$'\n'"$k"'[|]([^|]*)[|][^|]*[|]'
+            [[ "$_CS_TABLE" =~ $re ]] || { echo "run_dir_guard: TEST_GUARD_DEFAULTS: no schema row for $k" >&2; exit 99; }
+            _CS_TABLE="${_CS_TABLE/"${BASH_REMATCH[0]}"/$'\n'"$k|${BASH_REMATCH[1]}|${d#*=}|"}"
+        done
     }
 fi
 GUARD_KEYS='LOCK_DIR STATE_DIR LOG_DIR CACHE_DIR RESTIC_CACHE_DIR RESTIC_PASSWORD_FILE RESTIC_ENV_FILE NTFY_CREDS_FILE

@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.." || exit 1
 # PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
 # machine's own files: point them into the checkout, at paths nothing creates
 # (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
     PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 
 pass=0; fail=0
@@ -348,7 +348,7 @@ cfgw() {   # cfgw [--no-kh] <extra lines...>: the wizard's config, every path in
     { [[ "${CFGW_CACHE:-}" == none ]] || printf 'CACHE_DIR=%s\n' "${CFGW_CACHE:-$wr/cache}"
       printf '%s\n' "LOG_DIR=$wr/log" "STATE_DIR=$wr/state" "LOCK_DIR=$wr/lock" \
         "RESTIC_PASSWORD_FILE=$wr/pass" "RESTIC_CACHE_DIR=$wr/rcache" "RESTIC_BIN=$wr/bin/restic-fake" \
-        "RESTIC_ENV_FILE=$wr/restic.env" "NTFY_CREDS_FILE=$wr/none/ntfy.creds" "NOTIFY_PVE=false" \
+        "RESTIC_ENV_FILE=$wr/restic.env" "NTFY_CREDS_FILE=$wr/none/ntfy.env" "NOTIFY_PVE=false" \
         "PBO_PVE_LXC_DIR=$wr/lxc" "PBO_PVE_QEMU_DIR=$wr/qemu" "PBO_PVE_CFS_DIR=$wr/pve" \
         "PVE_STORAGE_CFG=$wr/storage.cfg" "PBO_PVE_STORAGE_CFG=$wr/storage.cfg" "VZDUMP_CONF=$wr/vzdump.conf" \
         "VZDUMP_LOCK=$wr/vzdump.lock" "PBO_CATALOG=$wr/state/catalog/index.json" "PVE_CATALOG_MOUNT_DIR=$wr/mnt/restic" \

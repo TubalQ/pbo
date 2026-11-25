@@ -1337,15 +1337,10 @@ rdo_doctor() {
     # unprivileged CT, the directories above it, LOCK_DIR, logs, state, config.
     lines+=("${DP_LINES[@]+"${DP_LINES[@]}"}")
 
-    # Alerting: someone has to hear about a failed backup.
-    if [[ "${PBO_NO_NOTIFY:-0}" != 1 ]]; then
-        local nb=(); _ntfy_configured && nb+=(ntfy); _notify_use_pve && nb+=(proxmox)
-        if (( ${#nb[@]} == 0 )); then lines+=("$warn  no alerting: no ntfy configured and Proxmox notifications unavailable (NOTIFY_PVE=${NOTIFY_PVE:-auto})"); warns=$((warns+1))
-        elif [[ " ${nb[*]} " == *" proxmox "* ]] && ! _pve_templates_installed; then lines+=("$warn  Proxmox notifications on but pbo templates missing in $PVE_TEMPLATE_DIR (run install.sh)"); warns=$((warns+1))
-        else lines+=("$ok  alerts via ${nb[*]}"); fi
-    fi
-
-    # Config: unknown keys (typos) and a config newer than this pbo.
+    # Config: unknown keys (typos) and a config newer than this pbo. Before
+    # the ntfy blocks below: _ntfy_configured fills NTFY_URL, NTFY_TOKEN and
+    # NTFY_TOPIC from NTFY_CREDS_FILE, and _config_check checks the values in
+    # the shell, so it would report the file's values as the config's.
     _config_check "${PBO_CONFIG_LOADED:-}" "${PBO_CONFIG_SHARED_LOADED:-}"
     local cl; for cl in "${CC_LINES[@]+"${CC_LINES[@]}"}"; do lines+=("$warn  $cl"); done
     warns=$((warns+CC_WARNS))
@@ -1354,6 +1349,20 @@ rdo_doctor() {
     _config_doctor_lines
     for cl in "${CDL_FAIL[@]+"${CDL_FAIL[@]}"}"; do lines+=("$bad  $cl"); problems=$((problems+1)); done
     for cl in "${CDL_WARN[@]+"${CDL_WARN[@]}"}"; do lines+=("$warn  $cl"); warns=$((warns+1)); done
+
+    # ntfy's credentials file (lib/notify.sh): one pbo does not use, or one
+    # that lacks a key. Not under PBO_NO_NOTIFY: this is the config, nothing
+    # is sent.
+    _ntfy_doctor "$ok" "$bad" "$warn"
+    lines+=("${NTD_LINES[@]+"${NTD_LINES[@]}"}"); warns=$((warns+NTD_WARNS))
+
+    # Alerting: someone has to hear about a failed backup.
+    if [[ "${PBO_NO_NOTIFY:-0}" != 1 ]]; then
+        local nb=(); _ntfy_configured && nb+=(ntfy); _notify_use_pve && nb+=(proxmox)
+        if (( ${#nb[@]} == 0 )); then lines+=("$warn  no alerting: no ntfy configured and Proxmox notifications unavailable (NOTIFY_PVE=${NOTIFY_PVE:-auto})"); warns=$((warns+1))
+        elif [[ " ${nb[*]} " == *" proxmox "* ]] && ! _pve_templates_installed; then lines+=("$warn  Proxmox notifications on but pbo templates missing in $PVE_TEMPLATE_DIR (run install.sh)"); warns=$((warns+1))
+        else lines+=("$ok  alerts via ${nb[*]}"); fi
+    fi
 
     # Integrity: when did verify last run, and did it pass.
     _doctor_verify "$ok" "$bad" "$warn"

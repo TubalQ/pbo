@@ -4,8 +4,8 @@
 # NTFY_ON_SUCCESS=true still means all).
 #
 # Two backends:
-#  - ntfy: NTFY_URL/NTFY_TOKEN/topic from config, falling back to NTFY_CREDS_FILE
-#    (/etc/ntfy.creds: NTFY_URL, NTFY_TOKEN, NTFY_TOPIC_WARN). Token never echoed.
+#  - ntfy: NTFY_URL/NTFY_TOKEN/NTFY_TOPIC from config, falling back to
+#    NTFY_CREDS_FILE (see _ntfy_creds_read). Token never echoed.
 #  - Proxmox's notification system (PVE::Notify, PVE >= 8.1): events land in the
 #    same targets and matchers as the cluster's other alerts, with the fields
 #    type=pbo and hostname=<node> to match on. Templates: templates/pbo-*.hbs,
@@ -16,18 +16,166 @@
 
 PVE_TEMPLATE_DIR="${PBO_PVE_TEMPLATE_DIR:-/etc/pve/notification-templates/default}"
 
+# --- NTFY_CREDS_FILE: the ntfy server, token and topic outside the config -------
+# KEY=VALUE lines: NTFY_URL, NTFY_TOKEN and the topic, under NTFY_TOPIC or the
+# key NTFY_CREDS_TOPIC_KEY names, so that a file other tools already use for
+# the same server (with a topic key of their own) can be shared as it is. Each
+# of the three is taken from the file only when the config leaves it empty;
+# other keys in the file are ignored. The file is read with the strict config
+# reader (lib/config_parse.sh, origin envfile: any variable name, nothing is
+# run), never sourced, and no message repeats a value from it. A line the
+# reader refuses makes pbo leave the whole file unused when it could change
+# what pbo reads: a line of one of the three keys, a line that is no
+# assignment (source, a command), or a quote or backslash that runs on into
+# the next lines. A refused line of another key is skipped with a warning:
+# a file in systemd EnvironmentFile or docker env-file form may hold another
+# tool's value with an unquoted space. Its mode is a rule of the permission
+# table (lib/perms.sh).
+
+# _ntfy_creds_read: read NTFY_CREDS_FILE → _NTFY_CV[url|token|topic] (what the
+# file sets; for _ntfy_load only, never printed), NTFY_CREDS_PRESENT (1: the
+# file exists), NTFY_CREDS_ERRORS ("file:line: message", never a value: pbo
+# does not use the file), NTFY_CREDS_WARNINGS (the same form: pbo uses the file
+# anyway), NTFY_CREDS_MISSING (the needed keys it does not set: NTFY_URL and
+# the topic key). A missing file is no error: most installs keep ntfy in the
+# config or use Proxmox notifications. Returns 1 on errors.
+# The config's own NTFY_URL is _NTFY_CFG_URL once _ntfy_load has filled
+# NTFY_URL from the file, NTFY_URL before that.
+_ntfy_creds_read() {
+    local f="${NTFY_CREDS_FILE:-}" tk="${NTFY_CREDS_TOPIC_KEY:-NTFY_TOPIC}" e m n
+    local cu="${_NTFY_CFG_URL-${NTFY_URL:-}}" re_key='^[[:blank:]]*(export[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)='
+    local re_multi=' \((lines [0-9]+-[0-9]+|from line [0-9]+ to the end of the file)\)$'
+    local -a raw=()
+    declare -gA _NTFY_CV=()
+    declare -ga NTFY_CREDS_ERRORS=() NTFY_CREDS_WARNINGS=() NTFY_CREDS_MISSING=()
+    NTFY_CREDS_PRESENT=0
+    [[ -n "$f" && -e "$f" ]] || return 0
+    NTFY_CREDS_PRESENT=1
+    # the type check of config check and doctor, repeated: a bad name here
+    # would otherwise read as "the file has no topic"
+    [[ "$tk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || { NTFY_CREDS_ERRORS+=("$f:0: NTFY_CREDS_TOPIC_KEY is not a variable name, so no key of the file can hold the topic"); return 1; }
+    [[ -f "$f" ]] || { NTFY_CREDS_ERRORS+=("$f:0: not a regular file"); return 1; }
+    [[ -r "$f" ]] || { NTFY_CREDS_ERRORS+=("$f:0: cannot read the file as uid $EUID"); return 1; }
+    declare -F _cfg_parse_file >/dev/null || _cfg_parse_ensure
+    # the reader's own results, scoped to this function (dynamic scope): the
+    # config's CFG_* stay as load_config left them. No CFG_ENV: a reference may
+    # only name a variable an earlier line of this file set.
+    local -A CFG_VAL=() CFG_RAW=() CFG_SRC=() CFG_LINE=() CFG_EXPORT=() CFG_ENV=()
+    local -a CFG_UNKNOWN=() CFG_ERRORS=() CFG_WARNINGS=() CFG_IGNORED=()
+    local _CFG_CS=0
+    _cfg_parse_file "$f" envfile || true
+    # Sort the refusals (see the top of this section). A refused line of a key
+    # pbo does not read changes nothing pbo takes from the file: the reader
+    # records no value for it, and a later line that refers to that key is
+    # refused on its own line. A refusal that spans lines (an open quote, a
+    # trailing backslash, a function body) can hide the lines after it, and a
+    # line that is no assignment may be a source or a command that sets the
+    # keys elsewhere: both keep the file unused. The messages name the file,
+    # line and key, never a value (an envfile is read without the schema, so
+    # the reader never quotes one), which keeps the warning safe to print.
+    (( ${#CFG_ERRORS[@]} == 0 )) || { mapfile -t raw < "$f"; } 2>/dev/null || raw=()
+    for e in "${CFG_ERRORS[@]+"${CFG_ERRORS[@]}"}"; do
+        m="${e#"$f:"}"; n="${m%%:*}"; m=''
+        if [[ "$n" =~ ^[1-9][0-9]*$ ]] && ! [[ "$e" =~ $re_multi ]]; then
+            m="${raw[n-1]-}"; (( n > 1 )) || m="${m#$'\xef\xbb\xbf'}"
+            if [[ "$m" =~ $re_key ]]; then m="${BASH_REMATCH[2]}"; else m=''; fi
+        fi
+        if [[ -n "$m" && "$m" != NTFY_URL && "$m" != NTFY_TOKEN && "$m" != "$tk" ]]; then
+            NTFY_CREDS_WARNINGS+=("$e (pbo does not read $m: the line is skipped)")
+        else
+            NTFY_CREDS_ERRORS+=("$e")
+        fi
+    done
+    (( ${#NTFY_CREDS_ERRORS[@]} == 0 )) || return 1
+    # a URL without a scheme://: a warning, as the same value in the config is
+    # (lib/common.sh _config_check), and the file stays in use: curl assumes
+    # http:// for it, which is how 0.5 sent with such a file. Only when the
+    # file's URL is the one pbo uses: a URL the config sets wins, and a
+    # shared file's own URL is then none of pbo's business. The message names
+    # the key only (the URL can carry a password or the topic).
+    if [[ -n "${CFG_VAL[NTFY_URL]:-}" && -z "$cu" ]] && ! m="$(_cs_validate NTFY_URL "${CFG_VAL[NTFY_URL]}")"; then
+        NTFY_CREDS_WARNINGS+=("$f:${CFG_LINE[NTFY_URL]}: $m")
+    fi
+    [[ -n "${CFG_VAL[NTFY_URL]:-}" ]] || NTFY_CREDS_MISSING+=(NTFY_URL)
+    [[ -n "${CFG_VAL[$tk]:-}" ]] || NTFY_CREDS_MISSING+=("$tk")
+    _NTFY_CV[url]="${CFG_VAL[NTFY_URL]:-}" _NTFY_CV[token]="${CFG_VAL[NTFY_TOKEN]:-}" _NTFY_CV[topic]="${CFG_VAL[$tk]:-}"
+    return 0
+}
+
+# _ntfy_load: fill what the config left empty from NTFY_CREDS_FILE, once per
+# file and topic key (every alert asks _ntfy_configured).
 _ntfy_load() {
-    local f="${NTFY_CREDS_FILE:-/etc/ntfy.creds}"
-    [[ -f "$f" ]] || return 0
-    [[ -z "${NTFY_URL:-}"   ]] && NTFY_URL="$(awk -F= '/^NTFY_URL=/{print $2; exit}'   "$f" 2>/dev/null | tr -d '"'\' )"
-    [[ -z "${NTFY_TOKEN:-}" ]] && NTFY_TOKEN="$(awk -F= '/^NTFY_TOKEN=/{print $2; exit}' "$f" 2>/dev/null | tr -d '"'\' )"
-    [[ -z "${NTFY_TOPIC:-}" ]] && NTFY_TOPIC="$(awk -F= '/^NTFY_TOPIC_WARN=/{print $2; exit}' "$f" 2>/dev/null | tr -d '"'\' )"
+    local id="${NTFY_CREDS_FILE:-}|${NTFY_CREDS_TOPIC_KEY:-}"
+    [[ "${_NTFY_LOADED-}" == "$id" ]] && return 0
+    _NTFY_LOADED="$id"
+    # what the config set, before the file fills it in (_ntfy_creds_read
+    # warns about the file's URL only when that is the one in use)
+    _NTFY_CFG_URL="${NTFY_URL:-}"
+    _ntfy_creds_read || { _NTFY_CV=(); return 0; }
+    [[ -n "${NTFY_URL:-}"   ]] || NTFY_URL="${_NTFY_CV[url]-}"
+    [[ -n "${NTFY_TOKEN:-}" ]] || NTFY_TOKEN="${_NTFY_CV[token]-}"
+    [[ -n "${NTFY_TOPIC:-}" ]] || NTFY_TOPIC="${_NTFY_CV[topic]-}"
+    _NTFY_CV=()
+    return 0
 }
 _ntfy_configured() { _ntfy_load; [[ -n "${NTFY_URL:-}" && -n "${NTFY_TOPIC:-}" ]]; }
 
+# _ntfy_doctor <ok> <bad> <warn> → NTD_LINES, NTD_WARNS: NTFY_CREDS_FILE as
+# doctor sees it. Warnings only: a file pbo does not use (with the first
+# reason), what the file has that pbo uses with a warning (a URL without a
+# scheme, a refused line of a key pbo does not read), and a file that lacks a
+# key the config does not set either. A
+# missing file gives no line: ntfy may be set in the config, or not used.
+_ntfy_doctor() {
+    local warn="$3" more='' e
+    NTD_LINES=() NTD_WARNS=0
+    _ntfy_creds_read || true
+    _NTFY_CV=()
+    if (( ${#NTFY_CREDS_ERRORS[@]} )); then
+        (( ${#NTFY_CREDS_ERRORS[@]} == 1 )) || more=" (and $(( ${#NTFY_CREDS_ERRORS[@]} - 1 )) more)"
+        NTD_LINES+=("$warn  ntfy: NTFY_CREDS_FILE is not used: ${NTFY_CREDS_ERRORS[0]}$more (KEY=VALUE lines only, nothing is run)")
+        NTD_WARNS=$((NTD_WARNS+1))
+    elif (( NTFY_CREDS_PRESENT )); then
+        local k miss=() hint=''
+        for e in "${NTFY_CREDS_WARNINGS[@]+"${NTFY_CREDS_WARNINGS[@]}"}"; do
+            NTD_LINES+=("$warn  ntfy: $e"); NTD_WARNS=$((NTD_WARNS+1))
+        done
+        for k in "${NTFY_CREDS_MISSING[@]+"${NTFY_CREDS_MISSING[@]}"}"; do
+            # what the config sets itself needs no line in the file
+            if [[ "$k" == NTFY_URL ]]; then [[ -n "${NTFY_URL:-}" ]] || miss+=("$k")
+            else [[ -n "${NTFY_TOPIC:-}" ]] || miss+=("$k"); fi
+        done
+        if (( ${#miss[@]} )); then
+            [[ " ${miss[*]} " != *" ${NTFY_CREDS_TOPIC_KEY:-NTFY_TOPIC} "* ]] \
+                || hint="; a file whose topic key has another name needs NTFY_CREDS_TOPIC_KEY=<that key>"
+            NTD_LINES+=("$warn  ntfy: $NTFY_CREDS_FILE sets no ${miss[*]}, and neither does the config: no ntfy alerts$hint")
+            NTD_WARNS=$((NTD_WARNS+1))
+        fi
+    fi
+    return 0
+}
+
+# _ntfy_creds_warn: once per process, in the log of the run whose alert ntfy
+# drops, the reason NTFY_CREDS_FILE is not used (a file the strict reader
+# refused), since nothing else in that run's log would say why no alert went
+# out. Called when ntfy is not configured, and when it is but has no token
+# (one kept in a refused file): the server's refusal of that post is not
+# reported either. Silent when the file was not refused.
+_ntfy_creds_warn() {
+    [[ -z "${_NTFY_WARNED-}" ]] || return 0
+    _NTFY_WARNED=1
+    [[ -z "${NTFY_CREDS_ERRORS[0]+x}" ]] \
+        || _log WARN "notify: NTFY_CREDS_FILE is not used: ${NTFY_CREDS_ERRORS[0]} (pbo doctor)"
+    return 0
+}
+
 # _ntfy_publish <priority> <title> <message>
 _ntfy_publish() {
-    _ntfy_configured || return 0
+    _ntfy_configured || { _ntfy_creds_warn; return 0; }
+    # a token kept in a refused NTFY_CREDS_FILE is not used: say so in this
+    # run's log, since the server's refusal below is not reported
+    [[ -n "${NTFY_TOKEN:-}" ]] || _ntfy_creds_warn
     local url="${NTFY_URL%/}/${NTFY_TOPIC}"
     local hdr=(-H "Title: $2" -H "Priority: $1" -H "Tags: floppy_disk")
     # the token goes to curl on stdin (-K -), never on its command line (ps)
@@ -103,6 +251,7 @@ rdo_notify_test() {
     _ntfy_configured && used+=("ntfy")
     _notify_use_pve && used+=("proxmox")
     if (( ${#used[@]} == 0 )); then
+        _ntfy_creds_warn
         log_warn "notify-test: no backend active (no ntfy configured; Proxmox notifications ${NOTIFY_PVE:-auto}/$(_pve_notify_available && echo available || echo unavailable))"
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "failed" "false" "backends" "" "level" "$(_notify_level)"
         return "$EX_UNAVAILABLE"
