@@ -101,7 +101,12 @@ if [[ -n "${TEST_CM_DAMAGE:-}" ]]; then
         [[ -n "$f" ]] || { echo "cachemove_hook: no pack to damage" >&2; exit 99; }
         case "$TEST_CM_DAMAGE" in
             drop) rm -f -- "$f" ;;
-            flip) printf 'XXXXXXXX' | dd of="$f" bs=1 seek=600 conv=notrunc status=none ;;
+            flip)   # restic writes packs read-only: root writes anyway, another user
+                    # needs the write bit for a moment (the mode is put back)
+                    local m; m="$(stat -c %a -- "$f")"; chmod u+w -- "$f"
+                    printf 'XXXXXXXX' | dd of="$f" bs=1 seek=600 conv=notrunc status=none \
+                        || { echo "cachemove_hook: cannot damage $f" >&2; exit 99; }
+                    chmod "$m" -- "$f" ;;
         esac
     }
 fi
