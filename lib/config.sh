@@ -100,13 +100,19 @@ _config_rows() {
 }
 
 # _config_envelope <rows>: the `config` result object around the key rows.
+# restic_env: RESTIC_ENV_FILE as load_config found it (lib/restic.sh): the
+# names of its variables and the number of findings, never a value.
 _config_envelope() {
     # file_schema: what the file declares (PBO_CONFIG_VERSION has a default now)
     jq -c --arg f "${PBO_CONFIG_LOADED:-}" --arg sf "$(_config_shared_file)" --arg ver "${CFG_VAL[PBO_CONFIG_VERSION]:-}" \
         --arg lf "${PBO_CONFIG_LOCAL:-}" --argjson schema "${PBO_CONFIG_SCHEMA:-1}" --arg role "${PBO_ROLE:-host}" \
+        --arg ef "${RESTIC_ENV_FILE:-}" --arg ep "${RENV_PRESENT-0}" --arg ek "${RENV_KEYS[*]-}" --arg en "$( [[ -n "${RENV_ERRORS[0]+x}" ]] && echo "${#RENV_ERRORS[@]}" || echo 0 )" \
         '{status:"ok", ok:true, file:(if $f == "" then null else $f end), shared_file:(if $sf == "" then null else $sf end),
           local_file:(if $lf == "" then null else $lf end), config_schema:$schema,
-          file_schema:(if $ver == "" then null else ($ver | tonumber? // $ver) end), role:$role, keys:.}' <<<"$1"
+          file_schema:(if $ver == "" then null else ($ver | tonumber? // $ver) end), role:$role,
+          restic_env:{file:(if $ef == "" then null else $ef end), present:($ep == "1"),
+                      variables:($ek | split(" ") | map(select(length > 0))), errors:($en | tonumber)},
+          keys:.}' <<<"$1"
 }
 
 # config [show] | list [--all]
@@ -139,6 +145,8 @@ _config_view() {
             (if .secret then (if .set then "<set>" else "<unset>" end) elif .value == "" then "-" else (.value | mask | cut) end),
             .source, (if .known then (.type | pretty) else "unknown key" end) ] | @tsv' <<<"$out"
     } | { column -t -s $'\t' 2>/dev/null || cat; }
+    # the variables RESTIC_ENV_FILE gives restic: their names only
+    jq -r '.restic_env | select(.present) | "\nRESTIC_ENV_FILE \(.file): \(.variables | length) variable(s) for restic only\(if (.variables | length) > 0 then " (" + (.variables | join(" ")) + ")" else "" end)\(if .errors > 0 then "; pbo refuses the file (pbo config check)" else "" end)"' <<<"$out"
 }
 
 # config get KEY: the effective value (a secret: <set> or <unset>).
@@ -389,8 +397,17 @@ _config_check_cmd() {
         [[ "$role" == janitor ]] || role=host
     fi
     _cfg_check_values "$role"
+    # RESTIC_ENV_FILE (lib/restic.sh): load_config checked it; its findings are
+    # listed under its own name (key names and line numbers, never a value).
+    # A finding there stops every command but this one, doctor and version.
+    local -a show_files=("${PBO_CONFIG_FILES[@]+"${PBO_CONFIG_FILES[@]}"}")
+    if [[ -z "$file" && "${RENV_PRESENT-0}" == 1 ]]; then
+        show_files+=("$RESTIC_ENV_FILE")
+        CFG_ERRORS+=("${RENV_ERRORS[@]+"${RENV_ERRORS[@]}"}")
+        CFG_WARNINGS+=("${RENV_WARNINGS[@]+"${RENV_WARNINGS[@]}"}")
+    fi
     # errors every command stops on that are not the reader's (the role checks,
-    # the janitor user's access above)
+    # the janitor user's access above, RESTIC_ENV_FILE)
     nstop=$(( ${#CFG_ERRORS[@]} - nref ))
     # the lines pbo ignores are errors here: nothing in a config should be dropped
     CFG_ERRORS+=("${CFG_IGNORED[@]+"${CFG_IGNORED[@]}"}")
@@ -410,7 +427,7 @@ _config_check_cmd() {
 
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         local rec='' diffs='' fails='' k src
-        for f in "${PBO_CONFIG_FILES[@]}"; do
+        for f in "${show_files[@]+"${show_files[@]}"}"; do
             rec+="$f"$'\x1e'"$(_config_entries "$f")"$'\x1d'
         done
         if (( compare )); then
@@ -436,7 +453,7 @@ _config_check_cmd() {
     else
         local l kind msg
         (( ${#PBO_CONFIG_FILES[@]} )) || printf 'no config file: pbo uses the defaults\n'
-        for f in "${PBO_CONFIG_FILES[@]}"; do
+        for f in "${show_files[@]+"${show_files[@]}"}"; do
             while IFS=$'\x1f' read -r l kind msg; do
                 [[ -n "$kind" ]] && printf '%s:%s: %s: %s\n' "$f" "$l" "$kind" "$msg"
             done < <(_config_entries "$f")
@@ -445,7 +462,7 @@ _config_check_cmd() {
             for l in "${CCB_LINES[@]+"${CCB_LINES[@]}"}"; do printf '%s\n' "$l"; done
             [[ -z "$CCB_OK" ]] || printf '%s\n' "$CCB_OK"
         fi
-        printf 'pbo config check: %d error(s), %d warning(s) in %d file(s)\n' "$nerr" "$nwarn" "${#PBO_CONFIG_FILES[@]}"
+        printf 'pbo config check: %d error(s), %d warning(s) in %d file(s)\n' "$nerr" "$nwarn" "${#show_files[@]}"
         if (( nref )); then
             printf "pbo refuses this config: fix the lines above (pbo 0.6 reads KEY=VALUE lines and does not run the config as shell code)\n"
         elif (( nstop )); then
@@ -1085,8 +1102,8 @@ _cfg_write_locked() {
 # A key's on_change flag names what changing its effective value implies. Two
 # run before the file is replaced and can stop the change: confirm-repo (in
 # _config_change_cmd, before the lock: a question) and move-cache (in
-# _cfg_write, under the lock). One runs after a successful write:
-# restart-mount. (PBO_INTEGRATION has none: it is managed, written only by
+# _cfg_write, under the lock). Two run after a successful write:
+# restart-mount and apply-schedule (the timer drop-ins). (PBO_INTEGRATION has none: it is managed, written only by
 # `pbo integrate`, which converges PVE's side itself.) A key whose value
 # changes because one it follows changed (RESTIC_CACHE_REPO under CACHE_DIR)
 # counts, except for confirm-repo, which asks about the keys given. Results:
@@ -1120,9 +1137,51 @@ _cfg_hooks_post() {
         [[ -n "$_CFG_HOOK" && "$done" != *" $_CFG_HOOK "* ]] || continue
         case "$_CFG_HOOK" in
             restart-mount) done+="$_CFG_HOOK "; _cfg_hook_restart_mount || rc=1 ;;
+            apply-schedule) done+="$_CFG_HOOK "; _cfg_hook_apply_schedule || rc=1 ;;
         esac
     done
     return "$rc"
+}
+
+# _cfg_hook_apply_schedule: a timer schedule (SCHEDULE_*) changed: the drop-ins
+# of the timers whose keys changed, from the values just written (this shell
+# still holds the old ones), then daemon-reload and a restart of each such
+# timer that is enabled (lib/timers.sh _sched_apply). The value was checked
+# against its type before anything was written (_cfg_check_change: 78). With
+# --shared only this node's drop-ins change: the other nodes read the shared
+# file on their next start, and their doctor names the drift until `pbo
+# timers apply` or `pbo doctor --fix` runs there.
+_cfg_hook_apply_schedule() {
+    local k r u st f m units=() rc=0
+    _sched_ensure
+    _SCHED_OVR=()
+    for k in "${!CFGW_EA[@]}"; do
+        [[ "$(_cs_flag "$k" on_change 2>/dev/null)" == apply-schedule ]] || continue
+        _SCHED_OVR[$k]="${CFGW_EA[$k]}"
+        [[ "${CFGW_EB[$k]}" != "${CFGW_EA[$k]}" ]] && mapfile -t -O "${#units[@]}" units < <(_sched_units_of "$k")
+    done
+    (( ${#units[@]} )) || { _SCHED_OVR=(); return 0; }
+    # one entry per timer (a calendar and its delay changed together)
+    mapfile -t units < <(printf '%s\n' "${units[@]}" | awk '!seen[$0]++')
+    _sched_apply "${units[@]}" || rc=$?
+    _SCHED_OVR=()
+    _sched_audit
+    for r in "${SCHED_RES[@]+"${SCHED_RES[@]}"}"; do
+        IFS=$'\x1f' read -r u st f m <<<"$r"
+        case "$st" in
+            written|removed) _cfgh apply-schedule ok "$u: $m" ;;
+            would-write|would-remove) _cfgh apply-schedule would "$u: $m" ;;
+            ok) _cfgh apply-schedule skipped "$u: already $m" ;;
+            *) _cfgh apply-schedule failed "$u: $m" ;;
+        esac
+    done
+    case "$SCHED_RELOAD" in
+        ok) _cfgh apply-schedule ok "$SCHED_RELOAD_MSG" ;;
+        would) _cfgh apply-schedule would "$SCHED_RELOAD_MSG" ;;
+        skipped) _cfgh apply-schedule skipped "$SCHED_RELOAD_MSG" ;;
+        failed) _cfgh apply-schedule failed "$SCHED_RELOAD_MSG" ;;
+    esac
+    (( rc == 0 ))
 }
 
 # _cfg_confirm_repo: confirm-repo for the keys given (_CC_KEYS/_CC_OPS/_CC_VALS):

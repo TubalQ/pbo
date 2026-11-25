@@ -51,10 +51,11 @@ readonly INTEG_TESTED="pve-manager=9.2.32 libpve-storage-perl=9.1.18 qemu-server
 readonly INTEG_PACKAGES="pve-manager libpve-storage-perl qemu-server pve-container"
 readonly INTEG_HOOK_MARKER="# pbo: added by 'pbo integrate enable' (remove with 'pbo integrate disable')"
 readonly PBO_CATALOG_TIMER=pbo-catalog.timer
-readonly INTEG_SPOOL_MAX_AGE=86400    # doctor: spool archives older than this are stuck
-readonly INTEG_JOB_WINDOW_MIN=60      # doctor: a job within this many minutes of a pbo timer
-# times of day of pbo's own timers (systemd/*.timer), for that warning
-readonly INTEG_PBO_TIMES="pbo.timer=05:00 pbo-prune.timer=06:30 pbo-verify.timer=10:00"
+# doctor's spool age limit (PVE_SPOOL_MAX_AGE) and job window (PVE_JOB_WINDOW_MIN)
+# are config keys since 0.6. The pbo timers a PVE job is compared with for the
+# window warning: their schedules are config keys too (SCHEDULE_*, lib/timers.sh).
+readonly INTEG_NEAR_TIMERS="pbo.timer pbo-prune.timer pbo-verify.timer"
+declare -gA _INTEG_TM=()   # timer -> the minutes of the day it runs (once per process)
 
 INTEG_STEPS=()     # what enable/disable changed (with --dry-run: would change)
 INTEG_DIFFS=()     # unified diffs of file changes
@@ -298,15 +299,43 @@ _integ_minute_of_day() {
     printf '%s' $(( 10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[2]} ))
 }
 
-# _integ_near_timers <minute> → "pbo.timer (05:00)" etc. for every pbo timer
-# within INTEG_JOB_WINDOW_MIN minutes of <minute> (around midnight too).
+# _integ_near_timers <minute> → "pbo.timer (HH:MM)" etc. for every pbo timer
+# (INTEG_NEAR_TIMERS) that runs within PVE_JOB_WINDOW_MIN minutes of <minute>
+# (around midnight too), at the run closest to it. The times come from the
+# configured schedule (SCHEDULE_BACKUP, ...: lib/timers.sh _sched_minutes_r);
+# a schedule whose times cannot be worked out is left out. Minutes of the local
+# day, as a job's next run is compared (the weekday is not: a weekly prune
+# still meets a daily job on its day).
 _integ_near_timers() {
-    local m="$1" kv u hm tm d out=()
-    for kv in $INTEG_PBO_TIMES; do
-        u="${kv%%=*}"; hm="${kv#*=}"
-        tm=$(( 10#${hm%%:*} * 60 + 10#${hm#*:} ))
-        d=$(( m > tm ? m - tm : tm - m )); (( d > 720 )) && d=$(( 1440 - d ))
-        (( d < INTEG_JOB_WINDOW_MIN )) && out+=("$u ($hm)")
+    local m="$1" u row ck v tm d best bd out=() win e all rest
+    _cfg_int_r PVE_JOB_WINDOW_MIN; win="$_CI_R"
+    _sched_ensure
+    for u in $INTEG_NEAR_TIMERS; do
+        if [[ -z "${_INTEG_TM[$u]+x}" ]]; then
+            # what systemd runs, when it says (an override.conf, a pending
+            # reload can make it differ from the config), else the config
+            _sched_effective_r "$u"
+            if [[ -n "$_SE_R" ]]; then
+                all='' rest="$_SE_R"
+                while [[ -n "$rest" ]]; do
+                    e="${rest%%; *}"; [[ "$rest" == *"; "* ]] && rest="${rest#*; }" || rest=''
+                    _sched_minutes_r "$e"; all+="${all:+ }$_SM_R"
+                done
+                _INTEG_TM[$u]="$all"
+            else
+                row="$(_sched_row_of "$u")"; ck="${row#*|}"; ck="${ck%%|*}"
+                _sched_val_r "$ck"; v="$_CS_R"; _SM_R=''
+                # a value pbo refuses runs nowhere (the drop-in is not written): no guess
+                _cs_validate "$ck" "$v" >/dev/null && _sched_minutes_r "$v"
+                _INTEG_TM[$u]="$_SM_R"
+            fi
+        fi
+        best='' bd=''
+        for tm in ${_INTEG_TM[$u]}; do
+            d=$(( m > tm ? m - tm : tm - m )); (( d > 720 )) && d=$(( 1440 - d ))
+            (( d < win )) && [[ -z "$bd" || "$d" -lt "$bd" ]] && { best="$tm"; bd="$d"; }
+        done
+        [[ -n "$best" ]] && out+=("$u ($(_sched_hm "$best"))")
     done
     (( ${#out[@]} )) && printf '%s' "${out[*]}"
     return 0
@@ -333,8 +362,9 @@ _integ_stop_spool_need() {
 # Needs _pve_jobs_load (and _guest_meta_load) in the calling shell. Values a job
 # leaves out come from vzdump.conf, then vzdump's defaults.
 _integ_jobs_json() {
-    local raw dmode dcomp dnm own='{}' id j jout='' mode g stopg near min
+    local raw dmode dcomp dnm own='{}' id j jout='' mode g stopg near min win
     raw="$(_pve_jobs_json)"
+    _cfg_int_r PVE_JOB_WINDOW_MIN; win="$_CI_R"
     dmode="$(_integ_conf_get mode)"; dcomp="$(_integ_conf_get compress)"; dnm="$(_integ_conf_get notification-mode)"
     for id in "${!_PVE_OWNER[@]}"; do own="$(jq -c --arg k "$id" --arg v "${_PVE_OWNER[$id]}" '. + {($k): $v}' <<<"$own")"; done
     while IFS= read -r j; do
@@ -345,7 +375,7 @@ _integ_jobs_json() {
             for g in $(jq -r '.guests[]' <<<"$j"); do [[ "$(_effective_mode "$g")" == stop ]] && stopg+="${stopg:+ }$g"; done
         fi
         near=""; min="$(_integ_minute_of_day "$j")"; [[ -n "$min" ]] && near="$(_integ_near_timers "$min")"
-        jout+="$(jq -c --arg mode "$mode" --arg dc "$dcomp" --arg dn "$dnm" --arg stopg "$stopg" --arg near "$near" --argjson own "$own" '
+        jout+="$(jq -c --arg mode "$mode" --arg dc "$dcomp" --arg dn "$dnm" --arg stopg "$stopg" --arg near "$near" --arg win "$win" --argjson own "$own" '
             def truthy: . != null and . != false and ((tostring) as $e | $e != "" and $e != "0");
             ((.compress // (if $dc == "" then "0" else $dc end)) | tostring) as $comp
             # GET /cluster/backup returns prune-backups as an object (API2/Backup.pm:158-173);
@@ -365,7 +395,7 @@ _integ_jobs_json() {
                warnings:[
                  (if .enabled | not then "disabled" else empty end),
                  (if $nm == "none" then "notification-mode none: nobody hears about a failed job" else empty end),
-                 (if $near != "" then "runs within an hour of \($near): they share the vzdump and repo locks" else empty end)]}' <<<"$j")"$'\n'
+                 (if $near != "" then "runs within \($win) min of \($near) (PVE_JOB_WINDOW_MIN, SCHEDULE_*): they share the vzdump and repo locks" else empty end)]}' <<<"$j")"$'\n'
     done < <(jq -c '.[]' <<<"$raw")
     printf '%s' "$jout" | jq -cs .
 }
@@ -422,7 +452,7 @@ integrate_status() {
     AUDIT_RO_OVERRIDE=1
     _guest_meta_load
     local mode id vj pj sj hj spj cj jj oj rj acl
-    mode="$(_integration_mode)"; id="${PVE_STORAGE_ID:-pbo}"
+    mode="$(_integration_mode)"; id="$(_pve_storage_id)"
     vj="$(_integ_versions_json)"
     local present=false loaded=false pp; pp="$(_integ_plugin_path)"
     [[ -f "$pp" ]] && present=true
@@ -536,26 +566,107 @@ _integ_write_file() {
     log_info "integrate: $f changed"
 }
 
-# _integ_set_mode <mode>: PBO_INTEGRATION in the local config file (and in
-# memory), through the config writer (_cfg_write, lib/config.sh): the key is
-# managed by this command, so it is written here and `pbo config set` refuses
-# it. The local file (PBO_CONFIG_LOCAL): the mode is per node, and the
-# cluster-shared file is never written.
+# _integ_set_mode <mode> [<storage id>]: PBO_INTEGRATION in the local config
+# file (and in memory), through the config writer (_cfg_write, lib/config.sh):
+# the key is managed by this command, so it is written here and `pbo config
+# set` refuses it. The local file (PBO_CONFIG_LOCAL): the mode is per node, and
+# the cluster-shared file is never written. With a storage id,
+# PVE_STORAGE_ID=<id> goes into the same transaction (_integ_pin_id).
 _integ_set_mode() {
-    local m="$1" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" cur rc=0
+    local m="$1" pin="${2:-}" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" cur rc=0 ops=()
     _cfg_write_ensure
     # the value the local file sets, as the strict reader reads it
     cur="$(_cfg_file_value "$cfg" PBO_INTEGRATION)"
     # already so (a config without the key is standalone)
-    if [[ "$cur" == "$m" ]] || [[ -z "$cur" && "$m" == standalone && "$(_integration_mode)" == standalone ]]; then
-        PBO_INTEGRATION="$m"; return 0
+    if [[ "$cur" != "$m" ]] && ! [[ -z "$cur" && "$m" == standalone && "$(_integration_mode)" == standalone ]]; then
+        ops+=(set PBO_INTEGRATION "$m")
     fi
-    INTEG_STEPS+=("config: PBO_INTEGRATION=$m in $cfg")
-    if [[ "${DRY_RUN:-0}" == 1 ]]; then log_info "[dry-run] would set PBO_INTEGRATION=$m in $cfg"; return 0; fi
-    _cfg_write set PBO_INTEGRATION "$m" || rc=$?
-    (( rc == 0 )) || die "$rc" "integrate: cannot write PBO_INTEGRATION=$m to $cfg: $CFGW_ERR"
-    PBO_INTEGRATION="$m"
-    log_info "integrate: PBO_INTEGRATION=$m written to $cfg"
+    [[ -z "$pin" ]] || ops+=(set PVE_STORAGE_ID "$pin")
+    if (( ${#ops[@]} == 0 )); then PBO_INTEGRATION="$m"; return 0; fi
+    local what='' i
+    for (( i = 0; i < ${#ops[@]}; i += 3 )); do what+="${what:+, }${ops[i+1]}=${ops[i+2]}"; done
+    INTEG_STEPS+=("config: $what in $cfg")
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then log_info "[dry-run] would set $what in $cfg"; return 0; fi
+    _cfg_write "${ops[@]}" || rc=$?
+    (( rc == 0 )) || die "$rc" "integrate: cannot write $what to $cfg: $CFGW_ERR"
+    PBO_INTEGRATION="$m"; [[ -z "$pin" ]] || PVE_STORAGE_ID="$pin"
+    log_info "integrate: $what written to $cfg"
+}
+
+# _integ_pin_id <id> → <id> when enable should write it to the local config:
+# a per-node id (`pbo-<node>`) that set_defaults derived (lib/config_schema.sh
+# _cfgdef_PVE_STORAGE_ID) and no config file or the environment sets. Pinned,
+# the node keeps it whatever pmxcfs shows later (a node that leaves the
+# cluster, a start while /etc/pve is not mounted), and `pbo config list` shows
+# it as configured. `pbo` is never pinned: a single node's config stays as it
+# was.
+_integ_pin_id() {
+    [[ "$1" != pbo ]] || return 0
+    [[ "$(_cfg_key_source PVE_STORAGE_ID)" == default ]] || return 0
+    printf '%s' "$1"
+}
+
+# _integ_nodes_shared <nodes> <node>: a pbo entry whose `nodes` value (blanks
+# stripped) is <nodes> serves more nodes than <node> in this cluster: it has no
+# `nodes` (every node), or its list names another node. On a single node no
+# entry is shared. storage.cfg is one file for the cluster, so a change to such
+# an entry (its path, removing it) changes it for those other nodes too.
+_integ_nodes_shared() {
+    local nodes="$1" node="$2" n
+    (( $(_cluster_node_count) > 1 )) || return 1
+    [[ -n "$nodes" ]] || return 0
+    local IFS=,
+    for n in $nodes; do [[ -z "$n" || "$n" == "$node" ]] || return 0; done
+    return 1
+}
+
+# _integ_sid_hint <id> <node> → how this node gets a storage of its own instead
+# of <id>. Unsetting PVE_STORAGE_ID helps only when the derived default is this
+# node's own pbo-<node> and not <id>: while a shared entry serves the node, the
+# default keeps that entry's id (lib/config_schema.sh _cfgdef_PVE_STORAGE_ID),
+# and the unset would change nothing.
+_integ_sid_hint() {
+    local id="$1" node="$2"
+    _cs_default_r PVE_STORAGE_ID
+    if [[ "$_CS_R" == "pbo-$node" && "$id" != "pbo-$node" ]]; then
+        printf "unset PVE_STORAGE_ID (pbo config unset PVE_STORAGE_ID) for the per-node default pbo-%s, or set a free id" "$node"
+    elif [[ "$id" != "pbo-$node" ]]; then
+        printf "set PVE_STORAGE_ID=pbo-%s (pbo config set PVE_STORAGE_ID pbo-%s), or another free id" "$node" "$node"
+    else
+        printf "set PVE_STORAGE_ID to a free id (pbo config set PVE_STORAGE_ID <id>)"
+    fi
+}
+
+# _integ_storage_other_node <storage-json> <node> <spool> <catalog-only 0|1>
+# → why enable must not take over an existing pbo entry, empty when it may. The
+# entry's `nodes` leave this node out: it is another node's storage (PVE runs no
+# job of this node on it), and converging its path would repoint it. An entry
+# that serves other nodes too (no `nodes`, or a list with more than this node,
+# in a cluster) may be used as it is, but step 4 must not change its path: the
+# path is the same on every node it serves, so setting it to this node's spool
+# repoints the others, and --catalog-only deleting it takes their backup target
+# away.
+_integ_storage_other_node() {
+    local sj="$1" node="$2" spool="$3" co="$4" nodes path id
+    [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true ]] || return 0
+    id="$(jq -r .id <<<"$sj")"
+    nodes="$(jq -r '.nodes // ""' <<<"$sj")"; nodes="${nodes//[[:space:]]/}"
+    path="$(jq -r '.path // ""' <<<"$sj")"; path="${path%/}"
+    if [[ -n "$nodes" && ",$nodes," != *",$node,"* ]]; then
+        printf "storage '%s' belongs to node(s) %s (storage.cfg: nodes %s), not to %s: enabling it here would point it at this node's spool; %s" \
+            "$id" "$nodes" "$nodes" "$node" "$(_integ_sid_hint "$id" "$node")"
+        return 0
+    fi
+    _integ_nodes_shared "$nodes" "$node" || return 0
+    local who="every node of the cluster"; [[ -z "$nodes" ]] || who="node(s) $nodes"
+    if [[ "$co" == 1 && -n "$path" ]]; then
+        printf "storage '%s' serves %s with path %s: --catalog-only would delete that path for all of them, and their PVE jobs would lose their backup target; %s" \
+            "$id" "$who" "$path" "$(_integ_sid_hint "$id" "$node")"
+    elif [[ "$co" == 0 && "$path" != "$spool" ]]; then
+        printf "storage '%s' serves %s with path %s, this node's spool is %s: one path cannot be every node's, and changing it would repoint the others; %s" \
+            "$id" "$who" "${path:-(none, catalogue only)}" "$spool" "$(_integ_sid_hint "$id" "$node")"
+    fi
+    return 0
 }
 
 # _integ_timer_on / _integ_timer_off: pbo-catalog.timer enabled and running, or neither.
@@ -576,7 +687,7 @@ _integ_result() {
     warns="$(printf '%s\n' "${INTEG_WARNINGS[@]+"${INTEG_WARNINGS[@]}"}" | jq -R . | jq -cs 'map(select(length > 0))')"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_emit "$(jq -cn --arg a "$action" --arg m "$mode" --argjson s "$steps" --argjson d "$diffs" --argjson w "$warns" \
-            --argjson co "${INTEG_CATALOG_ONLY:-false}" --arg sid "${PVE_STORAGE_ID:-pbo}" \
+            --argjson co "${INTEG_CATALOG_ONLY:-false}" --arg sid "$(_pve_storage_id)" \
             '{status:(if ($s | length) == 0 then "unchanged" else "ok" end), ok:true, action:$a, mode:$m,
               storage_id:$sid, catalog_only:$co, changed:(($s | length) > 0), steps:$s, diffs:$d, warnings:$w}')"
     elif (( ${#INTEG_STEPS[@]} == 0 )); then
@@ -608,7 +719,8 @@ integrate_enable() {
     _integ_require_change_rights enable
     _integ_lock
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for integrate"
-    local id="${PVE_STORAGE_ID:-pbo}" spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}"
+    local id spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}" node
+    id="$(_pve_storage_id)"; node="$(_local_node)"
     [[ "$id" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]] || die "$EX_CONFIG" "PVE_STORAGE_ID '$id' is not a valid PVE storage id"
     [[ "$spool" == /* ]] || die "$EX_CONFIG" "PVE_SPOOL_DIR must be an absolute path (got '$spool')"
 
@@ -639,6 +751,10 @@ integrate_enable() {
     if [[ "$(jq -r '.present and .type != "pbo"' <<<"$sj")" == true ]]; then
         fails+=("PVE already has a storage '$id' of type $(jq -r .type <<<"$sj"): set PVE_STORAGE_ID to a free id")
     fi
+    # storage.cfg is cluster-wide: converging an entry another node uses would
+    # point it at this node's spool
+    local why_other; why_other="$(_integ_storage_other_node "$sj" "$node" "$spool" "$co")"
+    [[ -z "$why_other" ]] || fails+=("$why_other")
     # a script: line naming a missing hook fails every vzdump on the node
     if (( ! co )) && [[ ! -x "$(_integ_hook_path)" ]]; then
         fails+=("the vzdump hook $(_integ_hook_path) is missing or not executable (./install.sh --integration $mode, or apt install pbo-pve-storage)")
@@ -685,7 +801,7 @@ integrate_enable() {
     # 4. the storage
     local want_path=""; (( co )) || want_path="$spool"
     if [[ "$(jq -r .present <<<"$sj")" != true ]]; then
-        local args=(--content backup --nodes "$(_local_node)"); [[ -n "$want_path" ]] && args+=(--path "$want_path")
+        local args=(--content backup --nodes "$node"); [[ -n "$want_path" ]] && args+=(--path "$want_path")
         _integ_run pvesm add pbo "$id" "${args[@]}" || die "$EX_UNAVAILABLE" "integrate: pvesm add pbo $id failed"
     else
         local have_path have_content
@@ -722,8 +838,8 @@ integrate_enable() {
         log_warn "integrate: ${INTEG_WARNINGS[-1]}"
     done < <(_integ_acl_lines "$id")
 
-    # 8. the mode, last
-    _integ_set_mode "$mode"
+    # 8. the mode, last (with a derived per-node storage id pinned beside it)
+    _integ_set_mode "$mode" "$(_integ_pin_id "$id")"
     _integ_result enable "$mode"
 }
 
@@ -739,8 +855,17 @@ integrate_disable() {
     _integ_require_change_rights disable
     _integ_lock
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for integrate"
-    local id="${PVE_STORAGE_ID:-pbo}" spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}" sj
+    local id spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}" sj node snodes
+    id="$(_pve_storage_id)"; node="$(_local_node)"
     sj="$(_integ_storage_json "$id")"
+    snodes="$(jq -r '.nodes // ""' <<<"$sj")"; snodes="${snodes//[[:space:]]/}"
+    # another node's storage (a config copied from that node names its pinned
+    # id): its jobs are not counted below (they do not serve this node), and
+    # `pvesm remove` would delete it for the whole cluster. Refused before any
+    # change, so disable stays all-or-nothing, as enable is.
+    if [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true && -n "$snodes" && ",$snodes," != *",$node,"* ]]; then
+        die "$EX_CONFIG" "integrate disable: storage '$id' belongs to node(s) $snodes, not $node: removing it here would delete it for the whole cluster. Unset PVE_STORAGE_ID on this node (pbo config unset PVE_STORAGE_ID) and run 'pbo integrate disable' again; nothing was changed"
+    fi
 
     # 1. no enabled PVE job may still write to pbo
     _guest_meta_load
@@ -778,7 +903,7 @@ integrate_disable() {
             INTEG_WARNINGS+=("the spool holds ${#left[@]} archive(s) (${left[*]}): disable stops here unless 'pbo ingest --pending' takes them")
             log_warn "integrate: ${INTEG_WARNINGS[-1]}"
         else
-            die "$EX_TEMPFAIL" "integrate disable: ${#left[@]} archive(s) are still in the spool $spool/dump (${left[*]}): 'pbo ingest --pending' takes archives older than 10 minutes; run 'pbo integrate disable' again after that. PBO_INTEGRATION is already standalone; the storage and the hook stay until then."
+            die "$EX_TEMPFAIL" "integrate disable: ${#left[@]} archive(s) are still in the spool $spool/dump (${left[*]}): 'pbo ingest --pending' takes archives older than ${INGEST_PENDING_MIN:-10} minutes; run 'pbo integrate disable' again after that. PBO_INTEGRATION is already standalone; the storage and the hook stay until then."
         fi
     fi
 
@@ -800,8 +925,28 @@ integrate_disable() {
         (( ${#staged[@]} )) && { _integ_run rm -f -- "${staged[@]}" || log_warn "integrate: could not empty $PVE_STAGING_DIR"; }
     fi
 
-    # 6. the storage
-    if [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true ]]; then
+    # 6. the storage. One that serves other nodes too (no `nodes`, or a list
+    # with others, in a cluster) is cluster-wide: removing it would take it from
+    # them while they still run in integration mode. This node is taken off its
+    # `nodes` instead, so only the last node removes it.
+    local others=''
+    if [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true ]] && _integ_nodes_shared "$snodes" "$node"; then
+        local n
+        if [[ -n "$snodes" ]]; then
+            for n in ${snodes//,/ }; do [[ "$n" == "$node" ]] || others+="${others:+,}$n"; done
+        else
+            while IFS= read -r n; do [[ -z "$n" || "$n" == "$node" ]] || others+="${others:+,}$n"; done < <(_cluster_node_names)
+        fi
+    fi
+    if [[ -n "$others" ]]; then
+        _integ_run pvesm set "$id" --nodes "$others" || die "$EX_UNAVAILABLE" "integrate disable: pvesm set $id --nodes $others failed (PBO_INTEGRATION is standalone, the hook line is gone; run 'pbo integrate disable' again)"
+        INTEG_WARNINGS+=("storage '$id' serves other nodes too: it stays for node(s) $others (storage.cfg: nodes $others), this node is no longer one of them")
+        log_warn "integrate: ${INTEG_WARNINGS[-1]}"
+    elif [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true ]] && _integ_nodes_shared "$snodes" "$node"; then
+        # shared, but the member list names no other node: not removed blind
+        INTEG_WARNINGS+=("storage '$id' serves every node of the cluster and the member list names no other node: left in storage.cfg; remove it with 'pvesm remove $id' once no node uses it")
+        log_warn "integrate: ${INTEG_WARNINGS[-1]}"
+    elif [[ "$(jq -r '.present and .type == "pbo"' <<<"$sj")" == true ]]; then
         _integ_run pvesm remove "$id" || die "$EX_UNAVAILABLE" "integrate disable: pvesm remove $id failed (PBO_INTEGRATION is standalone, the hook line is gone; run 'pbo integrate disable' again)"
     elif [[ "$(jq -r .present <<<"$sj")" == true ]]; then
         log_warn "integrate disable: storage '$id' is of type $(jq -r .type <<<"$sj"), not pbo: left alone"
@@ -838,7 +983,7 @@ integrate_disable() {
 #           or than a stop-mode job's guests together
 _doctor_integration_setup() {
     local ok="$1" bad="$2" warn="$3" mode id
-    mode="$(_integration_mode)"; id="${PVE_STORAGE_ID:-pbo}"
+    mode="$(_integration_mode)"; id="$(_pve_storage_id)"
     _di_bad()  { DI_LINES+=("$bad  $1"); DI_PROBLEMS=$((DI_PROBLEMS+1)); }
     _di_warn() { DI_LINES+=("$warn  $1"); DI_WARNS=$((DI_WARNS+1)); }
     if [[ "$mode" == standalone ]]; then
@@ -867,8 +1012,22 @@ _doctor_integration_setup() {
         _di_bad "storage '$id' is of type $(jq -r .type <<<"$sj"), not pbo"
     else
         path="$(jq -r '.path // ""' <<<"$sj")"; path="${path%/}"
-        DI_LINES+=("$ok  storage '$id' (pbo, $( [[ -n "$path" ]] && echo "backup target, spool $path" || echo "catalogue only"))")
+        local snodes node; snodes="$(jq -r '.nodes // ""' <<<"$sj")"; snodes="${snodes//[[:space:]]/}"; node="$(_local_node)"
+        if [[ -n "$snodes" && ",$snodes," != *",$node,"* ]]; then
+            _di_bad "storage '$id' is limited to node(s) $snodes, not $node: PVE runs no backup of this node on it ($(_integ_sid_hint "$id" "$node"), then 'pbo integrate enable $mode')"
+            path=""
+        else
+            DI_LINES+=("$ok  storage '$id' (pbo, $( [[ -n "$path" ]] && echo "backup target, spool $path" || echo "catalogue only"))")
+        fi
         [[ "$(jq -r .disabled <<<"$sj")" == true ]] && _di_warn "storage '$id' is disabled in PVE"
+        # a cluster that still has the one shared id of before 0.6. Only an
+        # entry that serves more than this node: one made before 0.6 with
+        # `nodes <this node>` is already this node's own storage, and the id
+        # rule keeps it.
+        local nn; nn="$(_cluster_node_count)"
+        if [[ "$id" == pbo ]] && (( nn > 1 )) && _integ_nodes_shared "$snodes" "$node"; then
+            _di_warn "storage 'pbo' in a cluster of $nn nodes serves $( [[ -z "$snodes" ]] && echo "every node" || echo "node(s) $snodes"): storage.cfg holds one path for every node it serves, so each node should have its own storage (pbo-$node). To move, on each node in turn: disable or retarget this node's PVE jobs that use 'pbo' (Datacenter -> Backup), 'pbo integrate disable' (it takes this node off the entry's nodes; the last node removes it), 'pbo config set PVE_STORAGE_ID pbo-$node', 'pbo integrate enable $mode', then recreate the jobs for this node with storage pbo-$node by hand (pbo never edits jobs.cfg)"
+        fi
     fi
 
     # the backup target: hook and spool
@@ -888,20 +1047,22 @@ _doctor_integration_setup() {
     fi
     if [[ -n "$path" || "$(jq -r .files <<<"$spj")" != 0 ]]; then
         [[ "$(jq -r .same_fs_as_cache <<<"$spj")" == true ]] || _di_bad "the spool ${PVE_SPOOL_DIR%/} is not on CACHE_DIR's filesystem: ingest cannot rename archives into the cache"
-        local age n; n="$(jq -r .files <<<"$spj")"; age="$(jq -r '.oldest_age // 0' <<<"$spj")"
-        if (( n > 0 && age > INTEG_SPOOL_MAX_AGE )); then
+        local age n maxage; n="$(jq -r .files <<<"$spj")"; age="$(jq -r '.oldest_age // 0' <<<"$spj")"
+        _cfg_int_r PVE_SPOOL_MAX_AGE; maxage="$_CI_R"
+        if (( n > 0 && age > maxage )); then
             _di_bad "$n archive(s) in the spool, the oldest $(( age / 3600 ))h old: ingest failed ('pbo ingest --pending', see the PVE task log)"
         elif (( n > 0 )); then
             _di_warn "$n archive(s) waiting in the spool (ingest --pending takes them)"
         fi
     fi
     # ingested snapshots whose offsite copy failed (recorded for ingest --pending)
-    local nc oldc
+    local nc oldc smax
     nc="$(_ingest_copy_list | wc -l)"
+    _cfg_int_r PVE_SPOOL_MAX_AGE; smax="$_CI_R"
     if (( nc > 0 )); then
-        oldc="$(find "$(_ingest_copy_dir)" -maxdepth 1 -type f -name '*_*' -mmin +$(( INTEG_SPOOL_MAX_AGE / 60 )) 2>/dev/null | wc -l)"
+        oldc="$(find "$(_ingest_copy_dir)" -maxdepth 1 -type f -name '*_*' -mmin +$(( smax / 60 )) 2>/dev/null | wc -l)"
         if (( oldc > 0 )); then
-            _di_bad "$nc ingested snapshot(s) are in the cache repo but not offsite, $oldc for more than $(( INTEG_SPOOL_MAX_AGE / 3600 ))h: run 'pbo ingest --pending' (records in $(_ingest_copy_dir))"
+            _di_bad "$nc ingested snapshot(s) are in the cache repo but not offsite, $oldc for more than $(( smax / 3600 ))h: run 'pbo ingest --pending' (records in $(_ingest_copy_dir))"
         else
             _di_warn "$nc ingested snapshot(s) wait for their offsite copy (ingest --pending takes them)"
         fi

@@ -41,7 +41,6 @@
 # copy: that would bring back snapshots offsite retention removed on purpose).
 
 INGEST_USAGE="ingest --vmid <vmid> --archive <spool archive> | ingest --pending"
-readonly INGEST_PENDING_MIN=10   # --pending leaves younger spool archives alone (minutes)
 IG_PATH="" IG_BASE="" IG_TYPE="" IG_TS=""
 INGEST_ARCHIVE_GLOB_RE='vzdump-(lxc|qemu)-[0-9]+-[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}\.(tar|vma)'
 
@@ -202,11 +201,13 @@ _vzdump_running() {
     return 0
 }
 
-# _ingest_pending_list → spool archives older than INGEST_PENDING_MIN minutes.
+# _ingest_pending_list → spool archives older than INGEST_PENDING_MIN minutes
+# (a config key since 0.6: how long a PVE job may take to finish an archive differs).
 _ingest_pending_list() {
     local spool; spool="$(_ingest_spool)"
     [[ -d "$spool" ]] || return 0
-    find "$spool" -maxdepth 1 -type f -mmin "+${INGEST_PENDING_MIN}" -regextype posix-extended \
+    _cfg_int_r INGEST_PENDING_MIN
+    find "$spool" -maxdepth 1 -type f -mmin "+${_CI_R}" -regextype posix-extended \
         -regex ".*/${INGEST_ARCHIVE_GLOB_RE}" -printf '%p\n' 2>/dev/null | sort
 }
 
@@ -232,7 +233,7 @@ ingest_pending() {
         [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "dry_run" "true" "pending:n" "${#cands[@]}" "vzdump_running:b" "$( ((busy)) && echo true || echo false )"
         return "$EX_OK"
     fi
-    (( ${#cands[@]} )) && log_info "ingest --pending: ${#cands[@]} spool archive(s) older than ${INGEST_PENDING_MIN} min"
+    (( ${#cands[@]} )) && log_info "ingest --pending: ${#cands[@]} spool archive(s) older than ${INGEST_PENDING_MIN:-10} min"
     local okn=0 failn=0 failed=() base v rc re="^${INGEST_ARCHIVE_GLOB_RE}$"
     for f in "${cands[@]+"${cands[@]}"}"; do
         base="${f##*/}"

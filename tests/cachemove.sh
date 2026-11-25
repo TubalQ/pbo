@@ -68,9 +68,10 @@ CFG="$RUN/etc/config"
 P() { env TEST_RUN="$RUN" TEST_NODE=pve1 PBO_CONFIG="$CFG" "$RUN/tree/pbo" "$@"; }
 
 printf 'testpass\n' > "$RUN/pass"; chmod 600 "$RUN/pass"
-# an unprivileged CT whose root maps to 200000 (the subuid fixture)
-printf 'root:200000:65536\n' > "$RUN/subuid"
-printf 'arch: amd64\nhostname: ct8001\nrootfs: teststore:8001/vm-8001-disk-0.raw,size=2G\nunprivileged: 1\n' > "$RUN/lxc/8001.conf"
+# an unprivileged CT whose root maps to 200000 (its own lxc.idmap: pve-container
+# ignores /etc/subuid, so does pbo); the subuid fixture says otherwise on purpose
+printf 'root:300000:65536\n' > "$RUN/subuid"
+printf 'arch: amd64\nhostname: ct8001\nrootfs: teststore:8001/vm-8001-disk-0.raw,size=2G\nunprivileged: 1\nlxc.idmap: u 0 200000 65536\nlxc.idmap: g 0 200000 65536\n' > "$RUN/lxc/8001.conf"
 ctuid=200000
 
 # mkcfg CACHE [line...]: the suite's config, every path below run-cachemove/

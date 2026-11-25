@@ -108,55 +108,15 @@ rdo_guests() {
 }
 
 # --- timers -----------------------------------------------------------------
-# _pbo_timer_units → the timers of this role; with the Proxmox integration on
-# (PBO_INTEGRATION both|integrated) also pbo-catalog.timer.
-_pbo_timer_units() {
-    if _is_janitor; then printf '%s\n' pbo-janitor.timer; return 0; fi
-    printf '%s\n' pbo.timer pbo-prune.timer pbo-verify.timer pbo-test-restore.timer
-    _integration_standalone || printf '%s\n' pbo-catalog.timer
-}
-
-# _sd_prop <unit> <property> → the value (systemctl show), empty if none
-_sd_prop() { systemctl show -p "$2" --value "$1" 2>/dev/null || true; }
-# _sd_time <systemd timestamp> → ISO 8601, or empty for none ("n/a", "0", "")
-_sd_time() { [[ -n "$1" && "$1" != n/a && "$1" != 0 ]] && date -d "$1" --iso-8601=seconds 2>/dev/null || true; }
-
-rdo_timers() {
-    local u svc out=''
-    while read -r u; do
-        svc="${u%.timer}.service"
-        out+="$(jq -cn --arg unit "$u" --arg svc "$svc" \
-            --arg load "$(_sd_prop "$u" LoadState)" --arg file "$(_sd_prop "$u" UnitFileState)" \
-            --arg act "$(_sd_prop "$u" ActiveState)" --arg cal "$(_sd_prop "$u" TimersCalendar)" \
-            --arg next "$(_sd_time "$(_sd_prop "$u" NextElapseUSecRealtime)")" \
-            --arg last "$(_sd_time "$(_sd_prop "$u" LastTriggerUSec)")" \
-            --arg sload "$(_sd_prop "$svc" LoadState)" --arg res "$(_sd_prop "$svc" Result)" \
-            --arg ex "$(_sd_prop "$svc" ExecMainStatus)" --arg sact "$(_sd_prop "$svc" ActiveState)" '
-            def nz: if . == "" then null else . end;
-            ($load == "loaded") as $inst
-            | { unit: $unit, service: $svc, installed: $inst,
-                enabled: ($file == "enabled"), active: ($act == "active"),
-                calendar: (($cal | capture("OnCalendar=(?<c>[^;]+?)\\s*;") | .c)? // null),
-                next: ($next | nz), last: ($last | nz),
-                last_result: (if $inst and $sload == "loaded" and ($last != "") then ($res | nz) else null end),
-                last_exit: (if $inst and ($last != "") and ($ex | test("^[0-9]+$")) then ($ex | tonumber) else null end),
-                running: ($sact == "activating" or $sact == "active") }')" || die "$EX_SOFTWARE" "timers: could not read $u"
-        out+=$'\n'
-    done < <(_pbo_timer_units)
-    out="$(printf '%s' "$out" | jq -cs '{status:"ok", ok:true, timers:.}')"
-    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$out"; return "$EX_OK"; fi
-    { printf 'TIMER\tSTATE\tSCHEDULE\tNEXT\tLAST\tRESULT\n'
-      jq -r '.timers[] | [ .unit, (if .installed | not then "not installed" elif .enabled then "enabled" else "disabled" end),
-              (.calendar // "-"), ((.next // "-") | .[0:16] | sub("T";" ")), ((.last // "-") | .[0:16] | sub("T";" ")),
-              (.last_result // "-") ] | @tsv' <<<"$out"; } | { column -t -s $'\t' 2>/dev/null || cat; }
-}
+# `pbo timers [apply]` and the schedules as config keys: lib/timers.sh.
 
 # --- config -----------------------------------------------------------------
 # `pbo config`: lib/config.sh.
 
 # --- version ----------------------------------------------------------------
 rdo_version() {
-    local rv; rv="$("${RESTIC_BIN:-restic}" version 2>/dev/null | awk '{print $2; exit}')" || rv=""
+    # as restic prints it (a -dev suffix kept); doctor compares _restic_version
+    local rv; rv="$(_restic_bin version 2>/dev/null | awk '{print $2; exit}')" || rv=""
     local out; out="$(jq -cn --arg v "${VERSION:-}" --argjson s "$PBO_JSON_SCHEMA" --argjson cs "${PBO_CONFIG_SCHEMA:-1}" \
         --arg role "${PBO_ROLE:-host}" --arg node "$(_local_node)" --arg rv "$rv" \
         '{status:"ok", ok:true, version:$v, json_schema:$s, config_schema:$cs, role:$role, node:$node,

@@ -6,6 +6,13 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # is needed: guests --json still lists the guests when the repo is unreachable.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 BIN=./pbo; ROOT="$PWD"
 RUN="$ROOT/run/ownership"; rm -rf "$RUN"; mkdir -p "$RUN"/{bin,conf,log,state,cache,lock}
 install -m 0755 tests/mocks/pct tests/mocks/qm tests/mocks/vzdump tests/mocks/pvesh tests/mocks/pvesm "$RUN/bin/"

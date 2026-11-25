@@ -4,9 +4,20 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # integration checks (lib/integrate.sh, ADR 0006/0007). A REAL local restic repo;
 # PVE (pvesm, pvesh, pveum, dpkg-query) and systemctl are mocked. storage.cfg and
 # vzdump.conf are files under run/, the plugin is a stand-in file whose load
-# test is PBO_PVE_PLUGIN_CHECK. Nothing on the host is touched.
+# test is PBO_PVE_PLUGIN_CHECK, pmxcfs' member list a file under run/ (one
+# node, then a cluster of three for the per-node storage ids). Nothing on the
+# host is read or touched: pbo runs as a copy of the entry point that sources
+# tests/fixtures/run_dir_guard.sh and stops (99) when a path it resolved lies
+# outside run/integrate.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -16,7 +27,22 @@ command -v restic >/dev/null 2>&1 || { echo "restic not installed, skipping inte
 
 printf 'pbo: integrate tests\n'
 RUN="$ROOT/run/integrate"; rm -rf "$RUN"
-mkdir -p "$RUN"/{cache,state,log,lock,conf,bin,sysd,plugin}
+mkdir -p "$RUN"/{cache,state,log,lock,conf,bin,sysd,plugin,pve,units,none,tree,qemu,mnt}
+export RESTIC_ENV_FILE="$RUN/none/restic.env" NTFY_CREDS_FILE="$RUN/none/ntfy.creds" PBO_PVE_TEMPLATE_DIR="$RUN/none/templates"
+NODE=pve1   # this node, as pmxcfs' member list names it
+members() { # members <node count>|none: pmxcfs' member list of a cluster of
+    # <count> nodes pve1..pveN (this node first; 1: a single node, which PVE
+    # lists as a cluster of one), or none: the shape without a cluster block
+    if [[ "$1" == none ]]; then printf '{\n"nodename": "%s",\n"version": 1\n}\n' "$NODE" > "$RUN/pve/.members"; return 0; fi
+    local i nl=''
+    for (( i = 1; i <= $1; i++ )); do nl+="${nl:+,}"$'\n'"\"pve$i\": { \"id\": $i, \"online\": 1, \"ip\": \"192.0.2.1$i\"}"; done
+    printf '{\n"nodename": "%s",\n"version": 4,\n"cluster": { "name": "lab", "version": 3, "nodes": %s, "quorate": 1 },\n"nodelist": {%s\n}\n}\n' "$NODE" "$1" "$nl" > "$RUN/pve/.members"
+}
+members 1
+# the entry point with the guard sourced right before main (lib/ linked)
+{ sed '$d' pbo; printf '%s\n' 'source "$SELF_DIR/../../../tests/fixtures/run_dir_guard.sh"'; tail -n 1 pbo; } > "$RUN/tree/pbo"
+chmod 755 "$RUN/tree/pbo"; ln -s "$ROOT/lib" "$RUN/tree/lib"
+export TEST_RUN="$RUN"; BIN="$RUN/tree/pbo"
 install -m 0755 tests/mocks/pct tests/mocks/qm tests/mocks/vzdump tests/mocks/pvesh tests/mocks/pvesm \
     tests/mocks/systemctl tests/mocks/dpkg-query tests/mocks/pveum "$RUN/bin/"
 export PATH="$RUN/bin:$PATH" MOCK_CONF_DIR="$RUN/conf" MOCK_LOG="$RUN/calls"
@@ -27,7 +53,7 @@ export PBO_PVE_PLUGIN_PATH="$RUN/plugin/PboPlugin.pm" PBO_PVE_PLUGIN_CHECK=true
 : > "$MOCK_LOG"
 printf 'testpass\n' > "$RUN/pass"; chmod 600 "$RUN/pass"
 printf '# stand-in for PboPlugin.pm\n' > "$RUN/plugin/PboPlugin.pm"
-HOOK="$ROOT/lib/vzdump-hook"   # what pbo names from a repo checkout (no vzdump-hook next to ./pbo)
+HOOK="$RUN/tree/lib/vzdump-hook"   # what pbo names from a checkout (no vzdump-hook next to its entry point)
 MARK="# pbo: added by 'pbo integrate enable' (remove with 'pbo integrate disable')"
 
 # the PVE side as it is before pbo: one dir storage, a vzdump.conf with defaults
@@ -48,12 +74,20 @@ RESTIC_CACHE_REPO=$RUN/cache/repo
 RESTIC_PASSWORD_FILE=$RUN/pass
 RESTIC_CACHE_DIR=$RUN/rcache
 NTFY_URL=
-NTFY_CREDS_FILE=/nonexistent
+NTFY_CREDS_FILE=$RUN/none/ntfy.creds
 NOTIFY_PVE=false
 PBO_CATALOG=$RUN/catalog/index.json
 PVE_STORAGE_CFG=$RUN/storage.cfg
+PBO_PVE_STORAGE_CFG=$RUN/storage.cfg
 VZDUMP_CONF=$RUN/vzdump.conf
 VZDUMP_LOCK=$RUN/vzdump.lock
+PBO_PVE_CFS_DIR=$RUN/pve
+PBO_PVE_LXC_DIR=$RUN/conf
+PBO_PVE_QEMU_DIR=$RUN/qemu
+PBO_SYSTEMD_DIR=$RUN/units
+PBO_PERMS_CONFIG_DIR=$RUN
+PBO_PERMS_PARENTS_TOP=$RUN
+PVE_CATALOG_MOUNT_DIR=$RUN/mnt/restic
 EOF
     for l in "$@"; do echo "$l"; done; } > "$RUN/config"; chmod 600 "$RUN/config"; }
 mkcfg
@@ -126,7 +160,7 @@ PBO_PVE_PLUGIN_CHECK=false P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q 'does not load into PVE::Storage' "$RUN/err" && ok "plugin not loadable: refused" || bad "plugin load: rc=$rc $(tail -1 "$RUN/err")"
 PBO_VZDUMP_HOOK="$RUN/nohook" P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q "the vzdump hook $RUN/nohook is missing or not executable" "$RUN/err" && ok "hook missing: refused (a script: line to nothing fails every vzdump)" || bad "hook missing: rc=$rc $(tail -1 "$RUN/err")"
-PVE_SPOOL_DIR=/proc/pbo-spool P integrate enable both --yes
+TEST_ALLOW=/proc/pbo-spool PVE_SPOOL_DIR=/proc/pbo-spool P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q 'PVE_SPOOL_DIR /proc/pbo-spool is not on the filesystem of CACHE_DIR' "$RUN/err" && ok "spool on another filesystem: refused" || bad "spool fs: rc=$rc $(tail -1 "$RUN/err")"
 cp "$RUN/config" "$RUN/config.good"; sed -i "s#^RESTIC_CACHE_REPO=.*#RESTIC_CACHE_REPO=$RUN/norepo#" "$RUN/config"
 P integrate enable both --yes
@@ -194,7 +228,7 @@ same "back to a backup target: the line is back" "$RUN/vz.want" "$RUN/vzdump.con
 
 # --- doctor ------------------------------------------------------------------------------------
 for id in 101 102 103; do printf 'arch: amd64\nhostname: g%s\nrootfs: teststore:vm-%s-disk-0,size=1G\nunprivileged: 1\n' "$id" "$id" > "$MOCK_CONF_DIR/$id.conf"; done
-node="$(jq -r '.nodename // empty' /etc/pve/.members 2>/dev/null)"; [[ -n "$node" ]] || node="$(hostname -s)"
+node="$NODE"
 printf '[{"vmid":101,"node":"%s","type":"lxc","name":"g101"},{"vmid":102,"node":"%s","type":"lxc","name":"g102"},
  {"vmid":103,"node":"%s","type":"lxc","name":"g103"}]\n' "$node" "$node" "$node" > "$RUN/res.json"
 export MOCK_PVESH_JSON="$RUN/res.json"
@@ -228,7 +262,7 @@ doctor_has "doctor FAIL: an ingested snapshot without its offsite copy for more 
 doctor_has "doctor WARN: disabled pbo job" warn "PVE job job-off: disabled"
 doctor_has "doctor WARN: a stop-mode job needs more spool than is free" warn "PVE job job-ka runs in stop mode: its archives wait in the spool until job-end, about 4000000000000000000 bytes for guest\\(s\\) 103"
 doctor_has "doctor WARN: notification-mode none" warn "PVE job job-a: notification-mode none"
-doctor_has "doctor WARN: job within an hour of pbo.timer" warn "PVE job job-a: runs within an hour of pbo.timer \\(05:00\\)"
+doctor_has "doctor WARN: job within PVE_JOB_WINDOW_MIN of pbo.timer" warn "PVE job job-a: runs within 60 min of pbo.timer \\(05:00\\)"
 doctor_has "doctor WARN: ACL for a non-root user" warn "user alice@pve has role PVEDatastoreUser on /storage/pbo"
 doctor_lacks "doctor: no ACL warning for NoAccess or root@pam" "bob@pve|root@pam has role"
 doctor_has "doctor WARN: old catalogue" warn "catalogue is [0-9]+ min old"
@@ -249,7 +283,7 @@ PBO_PVE_PLUGIN_PATH="$RUN/plugin/none.pm" PJ doctor
 doctor_has "doctor FAIL: plugin missing" fail "storage plugin .*none.pm missing"
 PBO_PVE_PLUGIN_CHECK=false PJ doctor
 doctor_has "doctor FAIL: plugin not loadable" fail "does not load into PVE::Storage"
-PVE_SPOOL_DIR=/proc/pbo-spool PJ doctor
+TEST_ALLOW=/proc/pbo-spool PVE_SPOOL_DIR=/proc/pbo-spool PJ doctor
 doctor_has "doctor FAIL: storage path is not PVE_SPOOL_DIR" fail "has path .*/cache/spool, PVE_SPOOL_DIR is /proc/pbo-spool"
 doctor_has "doctor FAIL: spool on another filesystem" fail "spool /proc/pbo-spool is not on CACHE_DIR's filesystem"
 rm -f "$RUN/sysd/pbo-catalog.timer.enabled"
@@ -323,6 +357,135 @@ log="$(cat "$RUN/log/pbo.log")"
 t1="$(grep -n 'systemctl enable --now pbo-catalog.timer' <<<"$log" | tail -1 | cut -d: -f1)"; t2="$(grep -n 'PBO_INTEGRATION=both written' <<<"$log" | tail -1 | cut -d: -f1)"
 [[ -n "$t1" && -n "$t2" ]] && (( t2 > t1 )) && ok "enable: the mode is written after the timer step" || bad "enable log order: '$t1' '$t2'"
 P integrate disable --yes
+
+# --- per-node storage ids in a cluster --------------------------------------------------------------
+# storage.cfg is one file for the cluster and a storage's path is the same on
+# every node it serves: each node gets pbo-<node> (--nodes <node>, its own
+# spool); a single node keeps pbo; an entry pbo made for this node keeps its
+# id; an explicit PVE_STORAGE_ID wins.
+reset_pve; mkcfg; rm -f "$RUN/cache/spool/dump/"vzdump-* 2>/dev/null
+sid() { "$BIN" config get PVE_STORAGE_ID 2>&1; }
+members none
+[[ "$(sid)" == pbo ]] && ok "storage id: pbo on a node whose member list has no cluster block" || bad "no-cluster id: $(sid)"
+members 1
+[[ "$(sid)" == pbo ]] && ok "storage id: pbo on a single node (pmxcfs lists it as a cluster of one, nodes: 1)" || bad "single node id: $(sid)"
+members 3
+[[ "$(sid)" == "pbo-$NODE" ]] && ok "storage id: pbo-<node> in a cluster of three" || bad "cluster id: $(sid)"
+printf '\npbo: pbo\n\tcontent backup\n\tnodes %s\n\tpath %s\n' "$NODE" "$RUN/cache/spool" >> "$RUN/storage.cfg"
+[[ "$(sid)" == pbo ]] && ok "storage id: an entry pbo made for this node before (nodes $NODE) keeps its id" || bad "kept id: $(sid)"
+cp "$RUN/storage.cfg.orig" "$RUN/storage.cfg"
+printf '\npbo: pbo\n\tcontent backup\n\tnodes pve2\n\tpath /srv/pve2/spool\n' >> "$RUN/storage.cfg"
+[[ "$(sid)" == "pbo-$NODE" ]] && ok "storage id: another node's pbo entry is not this node's (pbo-<node>)" || bad "other node's entry: $(sid)"
+mkcfg "PVE_STORAGE_ID=pbo-custom"
+[[ "$(sid)" == pbo-custom ]] && ok "storage id: an explicit PVE_STORAGE_ID wins" || bad "explicit id: $(sid)"
+mkcfg "PVE_STORAGE_ID=pbo"; snap
+P integrate enable both --yes
+[[ $rc == 69 ]] && grep -q "storage 'pbo' belongs to node(s) pve2 (storage.cfg: nodes pve2), not to $NODE" "$RUN/err" && grep -q "pbo config unset PVE_STORAGE_ID" "$RUN/err" \
+    && ok "enable refuses to take over another node's storage (it would point it at this node's spool)" || bad "other node's storage: rc=$rc $(tail -1 "$RUN/err")"
+unchanged "... and changes nothing"
+# enable from scratch in the cluster
+mkcfg; : > "$MOCK_LOG"
+P integrate enable both --yes
+[[ $rc == 0 ]] && grep -qx "pvesm add pbo pbo-$NODE --content backup --nodes $NODE --path $RUN/cache/spool" "$MOCK_LOG" \
+    && grep -q "^pbo: pbo-$NODE$" "$RUN/storage.cfg" && grep -q '^pbo: pbo$' "$RUN/storage.cfg" \
+    && ok "enable in a cluster: pvesm add pbo pbo-<node> --nodes <node> --path <its spool>; the other node's entry untouched" || bad "cluster enable: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -2 "$RUN/err")"
+grep -qx "PVE_STORAGE_ID=pbo-$NODE" "$RUN/config" && grep -qx 'PBO_INTEGRATION=both' "$RUN/config" \
+    && ok "enable: the derived per-node id pinned in the local config, next to the mode" || bad "pin: $(grep -E 'PVE_STORAGE_ID|PBO_INTEGRATION' "$RUN/config")"
+PJ integrate status
+has "status: the per-node storage, its recipe" \
+    ".storage.id == \"pbo-$NODE\" and .storage.present and .storage.nodes == \"$NODE\" and .recipe.source == \"storage.cfg\" and (.recipe.storage_cfg | startswith(\"pbo: pbo-$NODE\n\"))"
+PJ doctor
+doctor_has "doctor: the per-node storage OK" ok "storage 'pbo-$NODE' \\(pbo, backup target"
+doctor_lacks "doctor: no shared-id suggestion for a per-node storage" "in a cluster of"
+grep -q "\"storage_id\":\"pbo-$NODE\"" "$RUN/catalog/index.json" && ok "the catalogue names the configured storage id" || bad "catalog sid: $(jq -c '{storage_id}' "$RUN/catalog/index.json" 2>&1)"
+# a cluster-wide job on another node's storage backs up nothing here: it owns no guest of this node
+printf '\npbo: pbo-pve2\n\tcontent backup\n\tnodes pve2\n\tpath /srv/pve2/spool\n' >> "$RUN/storage.cfg"
+printf '[{"id":"job-pve2","all":1,"storage":"pbo-pve2","compress":"0"},{"id":"job-here","vmid":"101","storage":"pbo-%s","compress":"0"}]\n' "$NODE" > "$RUN/jobs.json"
+export MOCK_PVESH_BACKUP_JSON="$RUN/jobs.json"
+PJ integrate status
+has "ownership: a job on another node's pbo storage owns no guest here, the job on this node's does" \
+    '(.jobs | map(.id)) == ["job-here"] and .ownership["101"] == "pve:job-here" and .ownership["102"] == "pbo" and .ownership["103"] == "pbo"'
+printf '[{"id":"job-here","vmid":"101","storage":"pbo-%s","enabled":0}]\n' "$NODE" > "$RUN/jobs.json"
+: > "$MOCK_LOG"
+P integrate disable --yes
+[[ $rc == 0 ]] && grep -qx "pvesm remove pbo-$NODE" "$MOCK_LOG" && ! grep -q "^pbo: pbo-$NODE$" "$RUN/storage.cfg" \
+    && grep -q '^pbo: pbo-pve2$' "$RUN/storage.cfg" && grep -q '^pbo: pbo$' "$RUN/storage.cfg" \
+    && ok "disable in a cluster: removes this node's storage only" || bad "cluster disable: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -2 "$RUN/err")"
+unset MOCK_PVESH_BACKUP_JSON
+# the one shared id of before 0.6, serving every node: doctor suggests the move
+reset_pve; mkcfg "PBO_INTEGRATION=both"
+printf '\npbo: pbo\n\tcontent backup\n\tpath %s\n' "$RUN/cache/spool" >> "$RUN/storage.cfg"
+[[ "$(sid)" == pbo ]] && ok "storage id: a pbo entry for every node (no nodes) keeps its id" || bad "shared kept: $(sid)"
+PJ doctor
+doctor_has "doctor WARN: a cluster still on the shared id, with the way to move" warn "storage 'pbo' in a cluster of 3 nodes serves every node: .*\\(pbo-$NODE\\).*'pbo integrate disable' \\(it takes this node off the entry's nodes; the last node removes it\\).*'pbo config set PVE_STORAGE_ID pbo-$NODE'.*recreate the jobs for this node with storage pbo-$NODE by hand \\(pbo never edits jobs.cfg\\)"
+for m in none 1; do
+    members "$m"
+    PJ doctor
+    doctor_lacks "doctor: no such suggestion on a single node (member list: $m)" "in a cluster of"
+done
+members 3
+# an entry pbo made for this node before 0.6 (nodes <this node>) is its own storage already
+reset_pve; mkcfg "PBO_INTEGRATION=both"
+printf '\npbo: pbo\n\tcontent backup\n\tnodes %s\n\tpath %s\n' "$NODE" "$RUN/cache/spool" >> "$RUN/storage.cfg"
+PJ doctor
+doctor_lacks "doctor: no move suggestion for a kept per-node pbo entry (nodes $NODE)" "in a cluster of"
+reset_pve; mkcfg "PBO_INTEGRATION=both"
+printf '\npbo: pbo\n\tcontent backup\n\tnodes %s,pve2\n\tpath %s\n' "$NODE" "$RUN/cache/spool" >> "$RUN/storage.cfg"
+PJ doctor
+doctor_has "doctor WARN: a pbo entry for this node and another one is still shared" warn "storage 'pbo' in a cluster of 3 nodes serves node\\(s\\) $NODE,pve2: "
+
+# a shared entry (pve2 backs up to it) and a first enable on this node: its
+# path must not change, for the others' sake
+reset_pve; mkcfg
+printf '\npbo: pbo\n\tcontent backup\n\tpath %s\n' "$RUN/cache/spool" >> "$RUN/storage.cfg"; snap; : > "$MOCK_LOG"
+P integrate enable both --catalog-only --yes
+[[ $rc == 69 ]] && grep -q "storage 'pbo' serves every node of the cluster with path $RUN/cache/spool: --catalog-only would delete that path for all of them" "$RUN/err" \
+    && [[ "$(n_calls '^pvesm set')" == 0 ]] \
+    && ok "enable --catalog-only refuses to delete the path of a pbo entry every node uses (no pvesm set)" || bad "shared catalog-only: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -1 "$RUN/err")"
+unchanged "... and changes nothing"
+reset_pve; mkcfg
+printf '\npbo: pbo\n\tcontent backup\n\tnodes %s,pve2\n\tpath /srv/pve2/spool\n' "$NODE" >> "$RUN/storage.cfg"; snap; : > "$MOCK_LOG"
+P integrate enable both --yes
+[[ $rc == 69 ]] && grep -q "storage 'pbo' serves node(s) $NODE,pve2 with path /srv/pve2/spool, this node's spool is $RUN/cache/spool" "$RUN/err" \
+    && [[ "$(n_calls '^pvesm set')" == 0 ]] \
+    && ok "enable refuses to repoint a pbo entry this node shares with another (nodes $NODE,pve2, another path; no pvesm set)" || bad "shared repoint: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -1 "$RUN/err")"
+unchanged "... and changes nothing"
+# the id is already the derived default (the shared entry serves this node):
+# unsetting PVE_STORAGE_ID would change nothing, the hint says to set it
+reset_pve; mkcfg
+printf '\npbo: pbo\n\tcontent backup\n\tpath /srv/spool\n' >> "$RUN/storage.cfg"
+P integrate enable both --yes
+[[ $rc == 69 ]] && grep -qF "pbo config set PVE_STORAGE_ID pbo-$NODE" "$RUN/err" && ! grep -q 'config unset PVE_STORAGE_ID' "$RUN/err" \
+    && ok "refusal for a shared entry with another path: the hint sets pbo-<node> (an unset would keep 'pbo')" || bad "hint: rc=$rc $(tail -1 "$RUN/err")"
+
+# disable on a node of a shared entry takes this node off it; the others keep it
+reset_pve; mkcfg "PBO_INTEGRATION=both"
+printf '\npbo: pbo\n\tcontent backup\n\tpath %s\n' "$RUN/cache/spool" >> "$RUN/storage.cfg"; : > "$MOCK_LOG"
+P integrate disable --yes
+[[ $rc == 0 ]] && grep -qx 'pvesm set pbo --nodes pve2,pve3' "$MOCK_LOG" && [[ "$(n_calls '^pvesm remove')" == 0 ]] \
+    && grep -q '^pbo: pbo$' "$RUN/storage.cfg" && grep -qx $'\tnodes pve2,pve3' "$RUN/storage.cfg" \
+    && grep -q "storage 'pbo' serves other nodes too: it stays for node(s) pve2,pve3" "$RUN/err" \
+    && ok "disable with a pbo entry for every node: narrowed to the other nodes (pvesm set --nodes), not removed, with a warning" \
+    || bad "shared disable: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -2 "$RUN/err")"
+[[ "$(sid)" == "pbo-$NODE" && "$(mode_in_cfg)" == standalone ]] && ok "... after it, this node's default id is its own pbo-<node>" || bad "after shared disable: $(sid) $(mode_in_cfg)"
+reset_pve; mkcfg "PBO_INTEGRATION=both"
+printf '\npbo: pbo\n\tcontent backup\n\tnodes pve2,%s\n\tpath %s\n' "$NODE" "$RUN/cache/spool" >> "$RUN/storage.cfg"; : > "$MOCK_LOG"
+P integrate disable --yes
+[[ $rc == 0 ]] && grep -qx 'pvesm set pbo --nodes pve2' "$MOCK_LOG" && [[ "$(n_calls '^pvesm remove')" == 0 ]] && grep -qx $'\tnodes pve2' "$RUN/storage.cfg" \
+    && ok "disable with nodes pve2,<this node>: the entry stays for pve2 only" || bad "shared list disable: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -2 "$RUN/err")"
+
+# a config copied from another node names that node's pinned id: disable
+# must not remove it (it would be gone for the whole cluster)
+NODE=pve2; members 2
+reset_pve; mkcfg "PBO_INTEGRATION=both" "PVE_STORAGE_ID=pbo-pve1"
+printf '\npbo: pbo-pve1\n\tcontent backup\n\tnodes pve1\n\tpath /srv/pve1/spool\n' >> "$RUN/storage.cfg"; snap; : > "$MOCK_LOG"
+P integrate disable --yes
+[[ $rc == 78 ]] && grep -q "storage 'pbo-pve1' belongs to node(s) pve1, not pve2: removing it here would delete it for the whole cluster" "$RUN/err" \
+    && [[ "$(n_calls '^pvesm')" == 0 && "$(mode_in_cfg)" == both ]] \
+    && ok "disable refuses another node's storage (pinned id in a copied config): no pvesm call, the mode unchanged" || bad "other node disable: rc=$rc $(grep pvesm "$MOCK_LOG") $(tail -1 "$RUN/err")"
+unchanged "... and changes nothing"
+NODE=pve1; members 3
+reset_pve; mkcfg
 
 # --- roles and rights ---------------------------------------------------------------------------------
 mkcfg "PBO_ROLE=janitor"

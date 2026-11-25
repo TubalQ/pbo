@@ -30,10 +30,10 @@ _pf_add_check() { # <name> <ok:true|false> <detail>
     fi
 }
 
-# Storage type for a storeid (zfspool/lvmthin/dir/…) from storage.cfg.
+# Storage type for a storeid (zfspool/lvmthin/dir/…) from storage.cfg (PVE_STORAGE_CFG).
 _pf_storage_type() {
     awk -v id="$1" '/^[a-z]+:[[:space:]]*[^ ]/{ ty=$1; sub(/:$/,"",ty); if($2==id){print ty; exit} }' \
-        /etc/pve/storage.cfg 2>/dev/null
+        "${PVE_STORAGE_CFG:-/etc/pve/storage.cfg}" 2>/dev/null
 }
 
 # Build a storeid→pool map from storage.cfg (zfspool type only).
@@ -44,7 +44,7 @@ _pf_pool_for_storeid() {
         /^[a-z]+:/  { id="" }          # new block type, reset
         id!="" && $1=="pool" { map[id]=$2 }
         END { print (want in map) ? map[want] : want }
-    ' /etc/pve/storage.cfg 2>/dev/null || printf '%s' "$want"
+    ' "${PVE_STORAGE_CFG:-/etc/pve/storage.cfg}" 2>/dev/null || printf '%s' "$want"
 }
 
 # Parse `pct config <vmid>` → find rootfs + mpN, classify bind-mount/backup=0,
@@ -105,7 +105,8 @@ _pf_parse_volumes() {
     return 0
 }
 
-# ZFS space: per involved pool, require free ≥ 1.5 × sum of the volumes' used.
+# ZFS space: per involved pool, require free ≥ PREFLIGHT_POOL_FREE_PCT % (150 by
+# default) of the sum of the volumes' used.
 _pf_check_zfs_space() {
     if [[ "${#PF_BACKUP_VOLUMES[@]}" -eq 0 ]]; then
         if [[ "${#PF_NONZFS_VOLUMES[@]}" -gt 0 ]]; then
@@ -128,14 +129,15 @@ _pf_check_zfs_space() {
         used_by_pool[$pool]=$(( ${used_by_pool[$pool]:-0} + u ))
     done
     # Check each pool.
-    local free need ok_all=1 detail=""
+    local free need ok_all=1 detail="" pct
+    _cfg_int_r PREFLIGHT_POOL_FREE_PCT; pct="$_CI_R"
     for pool in "${!used_by_pool[@]}"; do
         free="$(zpool list -Hpo free "$pool" 2>/dev/null)" || free=""
         [[ "$free" =~ ^[0-9]+$ ]] || {
             _pf_add_check "zfs_space" "false" "cannot read free for pool $pool"
             return 1
         }
-        need=$(( used_by_pool[$pool] * 3 / 2 ))   # 1.5×
+        need=$(( used_by_pool[$pool] * pct / 100 ))
         detail+="${pool}: free=$(_pf_h "$free") need=$(_pf_h "$need"); "
         (( free >= need )) || ok_all=0
     done

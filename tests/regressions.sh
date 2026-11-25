@@ -4,6 +4,13 @@ export PBO_NO_NOTIFY=1
 # restic repos, Proxmox mocked.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -132,33 +139,32 @@ PATH="$RUN/bin-race:$PATH" PBO_CONFIG="$RUN/b2.cfg" $BIN --json run-schedule --b
     && ok "batch: a dump that vanished before its upload fails, no empty snapshot" || bad "batch vanished dump: rc=$rc snaps $(nsnap 8001) vs $n1 $(cat "$RUN/batch3.json")"
 
 # --- CACHE_DIR closed to local users, unprivileged CTs' mapped root let through ---
-printf 'root:200000:65536\n' > "$RUN/subuid"
 printf 'arch: amd64\nunprivileged: 1\nlxc.idmap: u 0 300000 65536\n[snap]\nlxc.idmap: u 0 1 1\n' > "$MOCK_CONF_DIR/8011.conf"
 printf 'arch: amd64\nhostname: priv\n' > "$MOCK_CONF_DIR/8012.conf"
-r="$(bash -c 'source lib/common.sh; source lib/appendonly.sh; PBO_PVE_LXC_DIR="$1"; PBO_SUBUID_FILE="$2"
-      for v in 8001 8011 8012 9999; do _ct_root_uid "$v" || printf -- "-"; printf " "; done' _ "$MOCK_CONF_DIR" "$RUN/subuid")"
-[[ "$r" == "200000 300000 - - " ]] && ok "_ct_root_uid: /etc/subuid range by default, the CT's own idmap first, privileged and missing CTs fail" || bad "_ct_root_uid: '$r'"
+r="$(bash -c 'source lib/common.sh; source lib/appendonly.sh; PBO_PVE_LXC_DIR="$1"
+      for v in 8001 8011 8012 9999; do _ct_root_uid "$v" || printf -- "-"; printf " "; done' _ "$MOCK_CONF_DIR")"
+[[ "$r" == "100000 300000 - - " ]] && ok "_ct_root_uid: 100000 without an idmap (as pve-container), the CT's own idmap first, privileged and missing CTs fail" || bad "_ct_root_uid: '$r'"
 rm -f "$MOCK_CONF_DIR/8011.conf" "$MOCK_CONF_DIR/8012.conf"
 chmod 0755 "$RUN/cache"; setfacl -b "$RUN/cache" 2>/dev/null || true
 out="$($BIN --json doctor 2>/dev/null)"
 jq -e '[.findings[] | select(.level == "warn" and (.message | test("CACHE_DIR .* is open to local users")))] | length == 1' >/dev/null 2>&1 <<<"$out" \
     && ok "doctor warns while CACHE_DIR is open to local users" || bad "doctor open cache: $(jq -c '[.findings[] | select(.message | test("CACHE_DIR"))]' <<<"$out")"
 if command -v setfacl >/dev/null 2>&1; then
-    PBO_SUBUID_FILE="$RUN/subuid" $BIN backup 8001 >/dev/null 2>&1; rc=$?
+    $BIN backup 8001 >/dev/null 2>&1; rc=$?
     m="$(stat -c %a "$RUN/cache")"
-    [[ $rc == 0 && "$m" == 750 ]] && getfacl -cpn "$RUN/cache" 2>/dev/null | grep -qx 'user:200000:--x' \
+    [[ $rc == 0 && "$m" == 750 ]] && getfacl -cpn "$RUN/cache" 2>/dev/null | grep -qx 'user:100000:--x' \
         && ok "backup of an unprivileged CT: CACHE_DIR closed (0750) with an ACL entry for its mapped root" || bad "cache protect: rc=$rc mode=$m $(getfacl -cpn "$RUN/cache" 2>/dev/null | tr '\n' ' ')"
-    out="$(PBO_SUBUID_FILE="$RUN/subuid" $BIN --json doctor 2>/dev/null)"
+    out="$($BIN --json doctor 2>/dev/null)"
     jq -e '[.findings[] | select(.level == "ok" and (.message | test("CACHE_DIR closed")))] | length == 1' >/dev/null 2>&1 <<<"$out" \
         && ok "doctor: CACHE_DIR closed, every unprivileged CT has its entry" || bad "doctor closed: $(jq -c '[.findings[] | select(.message | test("CACHE_DIR"))]' <<<"$out")"
     setfacl -b "$RUN/cache"; chmod 0750 "$RUN/cache"
-    out="$(PBO_SUBUID_FILE="$RUN/subuid" $BIN --json doctor 2>/dev/null)"
+    out="$($BIN --json doctor 2>/dev/null)"
     jq -e '[.findings[] | select(.level == "fail" and (.message | test("no ACL entry .* 8001")))] | length == 1' >/dev/null 2>&1 <<<"$out" \
         && ok "doctor fails when CACHE_DIR is closed without the entry (vzdump of the CT would fail)" || bad "doctor no acl: $(jq -c '[.findings[] | select(.message | test("CACHE_DIR"))]' <<<"$out")"
     chmod 0755 "$RUN/cache"
 else
     PATH_NOACL="$RUN/bin-noacl"; mkdir -p "$PATH_NOACL"
-    PBO_SUBUID_FILE="$RUN/subuid" $BIN backup 8001 >/dev/null 2>"$RUN/noacl.err"; rc=$?
+    $BIN backup 8001 >/dev/null 2>"$RUN/noacl.err"; rc=$?
     [[ $rc == 0 && "$(stat -c %a "$RUN/cache")" == 755 ]] && grep -q 'setfacl/getfacl (package acl)' "$RUN/noacl.err" \
         && ok "without setfacl: CACHE_DIR stays open (an unprivileged CT's vzdump would fail otherwise) and pbo warns" || bad "noacl: rc=$rc mode=$(stat -c %a "$RUN/cache")"
 fi

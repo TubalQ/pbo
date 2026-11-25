@@ -10,6 +10,13 @@ export PBO_NO_NOTIFY=1
 # file pbo writes, are tested here too. Nothing outside run-config/ is touched.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -36,7 +43,7 @@ out="$(S '
     for k in "${CS_ORDER[@]}"; do
         [[ "$seen" == *" $k "* ]] && echo "duplicate $k"; seen+="$k "
         case "${CS_TYPE[$k]}" in
-            bool|duration|path|dir|string|list|vmids|vmids-csv|url|command) ;;
+            bool|duration|path|dir|string|list|vmids|vmids-csv|url|command|version|calendar|timespan) ;;
             int:*) [[ "${CS_TYPE[$k]}" =~ ^int:[0-9]*:[0-9]*$ ]] || echo "bad int type $k" ;;
             decimal:*) [[ "${CS_TYPE[$k]}" =~ ^decimal:[0-9]*:[0-9]*$ ]] || echo "bad decimal type $k" ;;
             enum:*) [[ "${CS_TYPE[$k]}" =~ ^enum:[A-Za-z0-9_,-]+$ ]] || echo "bad enum $k" ;;
@@ -153,7 +160,7 @@ out="$(S '
 # an environment switch (CS_ENV_SWITCHES) or a known non-config variable (internal state)
 allow=' AUDIT_FILE AUDIT_RO_OVERRIDE AUDIT_RW_OVERRIDE AUDIT_T0 BASH C_0 C_G C_R C_Y DRY_RUN DUMPDIR GLOBAL_LOCK_HELD INTEG_CATALOG_ONLY INTEG_YES
     JSON_EMITTED JSON_OUTPUT LIST_NO_LOCK LIST_WITH_REASONS LOG_FILE PATH PBO_COMMAND PBO_CONFIG
-    PBO_CFG_LENIENT PBO_SUBCOMMAND PBO_CONFIG_LOCAL PBO_PERMS_FIXED PBO_PERMS_FIX_REPORT
+    PBO_CFG_LENIENT PBO_SUBCOMMAND PBO_CONFIG_LOCAL PBO_PERMS_FIXED PBO_PERMS_FIX_REPORT PBO_SCHED_FIXED PBO_SCHED_FIX_REPORT
     PBO_CONFIG_EXPLICIT PBO_CONFIG_LOADED PBO_CONFIG_SCHEMA PBO_CONFIG_SHARED_LOADED PBO_ERROR_LOGGED
     PBO_JOB_ID PBO_JSON_FD PBO_JSON_MARK
     PBO_SETUP_INTEGRATION RESTIC_LOCK_MSG RESTORE_ISOLATE RESTORE_KEEP_NET
@@ -161,7 +168,7 @@ allow=' AUDIT_FILE AUDIT_RO_OVERRIDE AUDIT_RW_OVERRIDE AUDIT_T0 BASH C_0 C_G C_R
     TR_ALLOW_LINKDOWN_NET TR_RESPOND_HOW TR_RESTRICTED TR_TRIGGER VERSION VMID_LOCK_HELD
     CFGW_CREATED CFGW_TMP CFG_LOCK_FD CFG_LOCK_HELD PBO_MOUNT_UNIT
     BASHPID CACHE_LOCK_FD CACHE_LOCK_MODE CATALOG_LOCK_FD INTEG_LOCK_FD CFGW_ERR PBO_START_US PBO_START_ID
-    CM_ERR CM_FIX_PARENTS CM_INIT_MSG CM_METHOD_WHY CM_ST_NODES CM_USAGE '
+    CM_ERR CM_FIX_PARENTS CM_INIT_MSG CM_METHOD_WHY CM_ST_NODES CM_USAGE TZDIR '
 out="$(S '
     allow="$1"
     for k in $(grep -ohE "\\\$\\{[A-Z][A-Z0-9_]*:[-=]" pbo lib/*.sh lib/vzdump-hook | sed -E "s/^\\\$\\{//; s/:.\$//" | sort -u); do
@@ -179,14 +186,19 @@ out="$(S 'for k in $CS_ENV_SWITCHES; do _cs_has "$k" && printf "%s(schema) " "$k
 # keys the tests put in config files are in the schema too (a test hook is flagged internal)
 out="$(S '
     for k in $(cat tests/*.sh | sed -nE "s/^[[:space:]]*(echo \"|printf .)?([A-Z][A-Z0-9_]*)=.*/\2/p" | sort -u); do
-        case "$k" in IFS|KEEP_OFSITE_DAILY|PATH|RUN|ROOT|BIN|W|TS|D|H|I|S|P|V|A|BR|OUT|OUT2|LIST|USAGE|TPL|TAG|STO|STORE|SRC|MARK|HOOK|HID|SPOOL|SLOCK|VTS|VMARK|VLOCK|LOCKPID|LOCKDIR|ROOTOK|RE|REAL_PLUGIN|PLUGIN|OFFSITE|DEFER|GLOBAL_LOCK|FAKE_LOG|PATH_NOACL|MY_OWN_KEY_NOBODY_KNOWS|STOREID|CFG|CFGH|INTEG_STEPS|SH|TEST_PAUSE_DIR) continue ;; esac
+        case "$k" in IFS|KEEP_OFSITE_DAILY|PATH|RUN|ROOT|BIN|W|TS|D|H|I|S|P|V|A|BR|OUT|OUT2|LIST|USAGE|TPL|TAG|STO|STORE|SRC|MARK|HOOK|HID|SPOOL|SLOCK|VTS|VMARK|VLOCK|LOCKPID|LOCKDIR|ROOTOK|RE|REAL_PLUGIN|PLUGIN|OFFSITE|DEFER|GLOBAL_LOCK|FAKE_LOG|PATH_NOACL|MY_OWN_KEY_NOBODY_KNOWS|STOREID|CFGH|INTEG_STEPS|SH|TEST_PAUSE_DIR) continue ;; esac
+        # tests/portability.sh and tests/hardcode.sh: their shell variables, and the
+        # variables of a RESTIC_ENV_FILE fixture (restic'"'"'s environment, not config keys)
+        case "$k" in ALLOW|CFG|E|ENVF|FILES|IR|LI|M|PF_BACKUP_VOLUMES|RR|SP|TZ|ZONES|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|XPROBE_TOKEN|REFV|SCHEMA_DEFS) continue ;; esac
+        # tests/schedule_config.sh and tests/integrate.sh: shell variables and test hooks (TEST_ALLOW of the run directory guard, PBO_TOOLS_MISSING)
+        case "$k" in IU|J|NODE|UNITS|TEST_ALLOW|PBO_TOOLS_MISSING) continue ;; esac
         [[ "$k" == MOCK_* || "$k" == PBO_INSTALL_* || "$k" == PBO_AUDIT_* ]] && continue
         case "$k" in PBO_CONFIG|PBO_CONFIG_LOADED|PBO_CONFIG_SHARED_LOADED) continue ;; esac   # set by load_config, not keys
         _cs_env_switch "$k" && continue
         _cs_has "$k" || printf "%s " "$k"
     done')"
 [[ -z "$out" ]] && ok "keys in the test configs are schema keys" || bad "test config keys not in the schema: $out"
-out="$(S 'for k in PBO_PVE_LXC_DIR PBO_PVE_QEMU_DIR PBO_SUBUID_FILE PBO_PVE_STORAGE_CFG PBO_PVE_TEMPLATE_DIR PBO_PVE_PLUGIN_CHECK PBO_CATALOG; do _cs_flag "$k" internal >/dev/null || printf "%s " "$k"; done')"
+out="$(S 'for k in PBO_PVE_LXC_DIR PBO_PVE_QEMU_DIR PBO_PVE_STORAGE_CFG PBO_PVE_TEMPLATE_DIR PBO_PVE_PLUGIN_CHECK PBO_CATALOG; do _cs_flag "$k" internal >/dev/null || printf "%s " "$k"; done')"
 [[ -z "$out" ]] && ok "test hooks are flagged internal" || bad "not internal: $out"
 
 # --- flags ---------------------------------------------------------------------------------------

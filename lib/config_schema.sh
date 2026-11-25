@@ -26,7 +26,12 @@
 #                      a space between two vmids is not: the code strips spaces and
 #                      splits on commas only (VZDUMP_STOP_VMIDS)
 #   url                scheme://...
+#   version            dotted numbers: 0.14.0 (compared part by part, as sort -V does)
 #   command            a program, or a shell command line
+#   calendar           a systemd calendar expression (OnCalendar=, systemd.time(7)):
+#                      checked with `systemd-analyze calendar`, else a conservative
+#                      syntax check; never unit-file syntax (%, \, =, [, newlines)
+#   timespan           a systemd time span (RandomizedDelaySec=): 15m, 1h, 90, 0
 # DEFAULT: a literal, ${KEY} references to keys EARLIER in the table (expanded
 #   with the current value of that key), or @fn: the function _cfgdef_<KEY>
 #   computes it into _CS_R (with --template: what the example shows). No
@@ -43,7 +48,7 @@
 #   follows=<KEY>      lives below <KEY> by default and moves with it
 #   samefs=<KEY>       must be on the same filesystem as <KEY>
 #   on_change=<hook>   what changing it implies (move-cache, restart-mount,
-#                      confirm-repo)
+#                      confirm-repo, apply-schedule)
 #   deprecated=<KEY>   replaced by <KEY>; still honoured, not in the example
 #   template=<value>   the value the example writes instead of the default (the
 #                      example is installed as the first /etc/pbo/config)
@@ -67,11 +72,24 @@ LOCK_DIR|dir|@fn|paths|host,janitor|advanced|default /run/pbo as root (STATE_DIR
 CACHEMOVE_SPACE_FACTOR|decimal:1:|1.1|paths|host|advanced|moving CACHE_DIR to another filesystem needs this many times the cache size free there
 VZDUMP_MODE|enum:snapshot,suspend,stop|snapshot|vzdump|host||vzdump --mode for every guest not forced to stop
 VZDUMP_STOP_VMIDS|vmids-csv||vzdump|host||these vmids are also backed up with --mode stop (comma-separated)
+PREFLIGHT_POOL_FREE_PCT|int:0:|150|vzdump|host|advanced|preflight: the ZFS pool of a guest needs this much free space, in percent of what its backed-up volumes use
 BACKUP_ORDER|vmids|auto|schedule|host||auto | a comma-separated vmid list (critical first)
 BACKUP_MODE|enum:stream,batch|stream|schedule|host||stream (one-by-one, low disk) | batch (dump all→upload)
+BATCH_FIT_PCT|int:1:100|85|schedule|host|advanced|batch mode runs only when the estimated dumps fit in this percentage of the free space of CACHE_DIR (else stream)
 GLOBAL_LOCK_TIMEOUT|int:0:|7200|schedule|host,janitor||seconds a scheduled run waits in the queue
 SCHEDULE_LOCK_TIMEOUT|int:0:|${GLOBAL_LOCK_TIMEOUT}|schedule|host,janitor|advanced|seconds the prune timer waits for a running run-schedule (and vice versa)
 PRUNE_OWNER|string||schedule|host||cluster: the node that prunes; empty = any node
+SCHEDULE_BACKUP|calendar|*-*-* 05:00:00|schedule|host|advanced,on_change=apply-schedule|when pbo.timer runs the nightly backup (systemd OnCalendar=)
+SCHEDULE_PRUNE|calendar|Sun *-*-* 06:30:00|schedule|host|advanced,on_change=apply-schedule|when pbo-prune.timer runs retention (after a week of nightly backups)
+SCHEDULE_PRUNE_DELAY|timespan|15m|schedule|host|advanced,on_change=apply-schedule|RandomizedDelaySec= of pbo-prune.timer (0 = start on time)
+SCHEDULE_VERIFY|calendar|Wed *-*-* 10:00:00|schedule|host|advanced,on_change=apply-schedule|when pbo-verify.timer runs the integrity check (away from backup and prune)
+SCHEDULE_VERIFY_DELAY|timespan|30m|schedule|host|advanced,on_change=apply-schedule|RandomizedDelaySec= of pbo-verify.timer
+SCHEDULE_TEST_RESTORE|calendar|Sat *-*-* 10:00:00|schedule|host|advanced,on_change=apply-schedule|when pbo-test-restore.timer restores and boots one guest
+SCHEDULE_TEST_RESTORE_DELAY|timespan|30m|schedule|host|advanced,on_change=apply-schedule|RandomizedDelaySec= of pbo-test-restore.timer
+SCHEDULE_CATALOG|calendar|*:0/15|schedule|host|advanced,on_change=apply-schedule|when pbo-catalog.timer refreshes the catalogue (Proxmox integration)
+SCHEDULE_CATALOG_DELAY|timespan|60|schedule|host|advanced,on_change=apply-schedule|RandomizedDelaySec= of pbo-catalog.timer
+SCHEDULE_JANITOR|calendar|*-*-* 12:30:00|schedule|janitor|advanced,on_change=apply-schedule|janitor: when pbo-janitor.timer runs retention, verify and the freshness check
+SCHEDULE_JANITOR_DELAY|timespan|15m|schedule|janitor|advanced,on_change=apply-schedule|RandomizedDelaySec= of pbo-janitor.timer
 KEEP_LOCAL|int:1:|2|retention|host||local cache repo: snapshots kept per guest
 RESTIC_KEEP_LAST|int:1:|${KEEP_LOCAL}|retention|host|advanced|local cache repo: keep-last per guest (follows KEEP_LOCAL)
 KEEP_OFFSITE_DAILY|int:0:|7|retention|host,janitor||offsite: daily snapshots kept per guest
@@ -110,6 +128,8 @@ RESTIC_SFTP_COMMAND|command||restic|host|secret,exec,local-only,advanced|full ss
 RESTIC_SFTP_CONNECTIONS|int:1:|8|restic|host|advanced|parallel sftp connections (faster restore; Storage Box ~10 max)
 RESTIC_RETRY_LOCK|duration|10m|restic|host,janitor|advanced|backup/copy/prune wait this long on a locked repo (restic >= 0.16)
 RESTIC_PASSWORD_FILE|path|/etc/pbo/restic-pass|restic|host,janitor|advanced,template_janitor=/etc/pbo/restic-pass|repo password (DR key), 0600
+RESTIC_ENV_FILE|path|/etc/pbo/restic.env|restic|host,janitor|local-only,advanced|KEY=VALUE lines exported to restic only (S3, B2, Azure, GCS, rclone credentials), 0600; a missing file is fine
+RESTIC_MIN|version|0.14.0|restic|host,janitor|advanced|the oldest restic pbo runs with (doctor FAIL, install.sh refuses); a rest-server user (RESTIC_REST_USERNAME) needs 0.16.1
 RESTIC_CACHE_DIR|dir|${STATE_DIR}/restic-cache|restic|host,janitor|advanced|the restic metadata cache
 PBO_KNOWN_HOSTS|path|/etc/pbo/known_hosts|restic|host|advanced|where `pbo setup` pins the host key of the SFTP server
 OFFSITE_APPEND_ONLY|bool|false|appendonly|host|advanced|host never forgets/prunes/removes keys offsite (the janitor does)
@@ -126,7 +146,7 @@ TR_WAIT_TRIES|int:1:|30|testrestore|host|advanced|how often to check that the co
 TR_WAIT_SLEEP|int:0:|2|testrestore|host|advanced|seconds between those checks
 TR_STORAGE|string||testrestore|host|advanced|storage for the throwaway copy; empty = the first one that can hold the guest
 PBO_INTEGRATION|enum:standalone,both,integrated|standalone|integration|host|advanced,managed=integrate|standalone | both | integrated
-PVE_STORAGE_ID|string|pbo|integration|host|advanced|the pbo storage in PVE
+PVE_STORAGE_ID|string|@fn|integration|host|advanced,local-only|the pbo storage in PVE: pbo on a single node, pbo-<node> in a cluster (an entry pbo made for this node keeps its id)
 PVE_SPOOL_DIR|dir|${CACHE_DIR}/spool|integration|host|advanced,follows=CACHE_DIR,samefs=CACHE_DIR|PVE jobs write here (same filesystem as CACHE_DIR)
 PVE_STAGING_DIR|dir|${CACHE_DIR}/staging|integration|host|advanced,follows=CACHE_DIR|archives staged for a restore from the PVE GUI
 PVE_STAGING_TTL|int:0:|21600|integration|host|advanced|seconds a staged archive is kept (6 h)
@@ -138,6 +158,10 @@ CATALOG_MOUNT_WAIT|int:0:|30|integration|host|advanced|seconds a task/CLI restor
 CATALOG_LOCK_TIMEOUT|int:0:|600|integration|host|advanced|seconds a catalogue refresh waits for another one
 CATALOG_MOUNT_BUSY_WAIT|int:0:|900|integration|host|advanced|prune/verify wait this long (s) while a restore reads through the mount, then exit 75
 CATALOG_MAX_AGE|int:1:|7200|integration|host|advanced|doctor warns when the catalogue is older (2 h)
+CATALOG_STAGE_WAIT|int:0:|10|integration|host|advanced|seconds a GUI request waits while another process stages the same archive, then asks to retry
+INGEST_PENDING_MIN|int:1:|10|integration|host|advanced|ingest --pending leaves spool archives younger than this many minutes alone (a PVE job may still write them)
+PVE_SPOOL_MAX_AGE|int:1:|86400|integration|host|advanced|doctor FAIL: spool archives, or ingested snapshots not yet offsite, older than this (s) are stuck (24 h)
+PVE_JOB_WINDOW_MIN|int:0:|60|integration|host|advanced|doctor warns about a PVE backup job to pbo that starts within this many minutes of a pbo timer
 VZDUMP_CONF|path|/etc/vzdump.conf|integration|host|advanced|its storage: line is the default for jobs without one
 PVE_STORAGE_CFG|path|/etc/pve/storage.cfg|integration|host|advanced|read when `pvesh get /storage` fails
 VZDUMP_LOCK|path|/var/run/vzdump.lock|integration|host|advanced|the vzdump node lock: `ingest --pending` waits for no running vzdump
@@ -149,12 +173,12 @@ HOST_BACKUP_PATHS|list|/etc/pve /etc/network/interfaces /etc/network/interfaces.
 HOST_BACKUP_EXCLUDES|list|@fn|hostbackup|host|advanced|never backed up: the DR key, the rest password, private keys (RESTIC_PASSWORD_FILE and RESTIC_REST_PASSWORD_FILE are excluded in any case)
 PBO_PVE_LXC_DIR|dir|/etc/pve/lxc|internal|host|internal|test hook: where CT configs are read
 PBO_PVE_QEMU_DIR|dir|/etc/pve/qemu-server|internal|host|internal|test hook: where VM configs are read
-PBO_SUBUID_FILE|path|/etc/subuid|internal|host|internal|test hook: the subordinate uid ranges (where an unprivileged CT root maps to)
 PBO_PERMS_PARENTS_TOP|dir||internal|host|internal|test hook: the CACHE_DIR parents check (doctor) skips the directories above this one (the test checkout sits below a 0700 home)
 PBO_PERMS_CONFIG_DIR|dir|/etc/pbo|internal|host,janitor|internal|test hook: the config directory pbo owns, which doctor --fix sets to the mode of the rule table; a config in any other directory has that directory checked only (other software keeps files there)
 PBO_PVE_CFS_DIR|dir|/etc/pve|internal|host|internal|test hook: where pmxcfs is mounted; a config below it keeps the pmxcfs modes and is only checked for secret and exec keys
 PBO_PVE_STORAGE_CFG|path|/etc/pve/storage.cfg|internal|host|internal|test hook: the storage.cfg lib/vzdump-hook reads (from its environment)
 PBO_PVE_TEMPLATE_DIR|dir|/etc/pve/notification-templates/default|internal|host,janitor|internal|test hook: Proxmox notification templates (read from the environment at start)
+PBO_SYSTEMD_DIR|dir|/etc/systemd/system|internal|host,janitor|internal|test hook: where the timer drop-ins (<timer>.d/schedule.conf) are written
 '
 }
 
@@ -201,6 +225,101 @@ _cfgdef_HOST_BACKUP_EXCLUDES() {
     fi
     _cs_value_r RESTIC_PASSWORD_FILE
     _CS_R+=" ${RESTIC_REST_PASSWORD_FILE:-/etc/pbo/rest-pass} $tail"
+}
+
+# The pbo storage's id in PVE. storage.cfg is one file for the whole cluster,
+# and a storage's `path` (the spool, below each node's own CACHE_DIR) is the
+# same on every node it serves: so in a cluster each node gets an entry of its
+# own, `pbo-<node>` with `--nodes <node>`. A single node keeps `pbo`, as
+# before (pmxcfs lists a node outside a cluster as a cluster of one). An entry
+# pbo already made for this node keeps its id, so an integration enabled
+# before 0.6, or before the node joined a cluster, is not renamed: the entry
+# `pbo-<node>`, else the first entry of type pbo whose `nodes` names this node
+# (or that has no `nodes`, so serves every node). A PVE_STORAGE_ID in the
+# config always wins (set_defaults calls this only for an unset key).
+# Bash alone, no jq and no fork: set_defaults runs on every pbo start. Reads
+# pmxcfs' member list and storage.cfg before the keys that move them in tests
+# are assigned (they follow in the table), hence the fallbacks.
+_cfgdef_PVE_STORAGE_ID() {
+    _CS_R=pbo
+    [[ "${1:-}" == --template ]] && return 0
+    local m="${PBO_PVE_CFS_DIR:-/etc/pve}/.members" txt=''
+    [[ -r "$m" ]] || return 0
+    { IFS= read -r -d '' txt < "$m"; } 2>/dev/null || true
+    [[ "$txt" =~ \"nodes\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} > 1 )) || return 0
+    [[ "$txt" =~ \"nodename\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9][A-Za-z0-9.-]*)\" ]] || return 0
+    _cs_storage_id_for_r "${BASH_REMATCH[1]}" "${PVE_STORAGE_CFG:-/etc/pve/storage.cfg}"
+}
+
+# _cs_storage_id_for_r NODE STORAGE_CFG → _CS_R: the id NODE's pbo storage has
+# in STORAGE_CFG (`pbo-NODE`, else the first pbo entry that serves NODE), else
+# `pbo-NODE` for a new one. Globs, no regex per line (the storage.cfg of a
+# large cluster has hundreds of lines).
+_cs_storage_id_for_r() {
+    local node="$1" cfg="$2" line t id='' nodes='' first='' hit=''
+    _CS_R="pbo-$node"
+    [[ -r "$cfg" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        case "$line" in
+            [[:space:]]*)
+                # a property of the entry above: only `nodes` matters
+                t="${line#"${line%%[![:space:]]*}"}"
+                if [[ -n "$id" && "$t" == nodes[[:space:]]* ]]; then
+                    t="${t#nodes}"; nodes="${t//[[:space:]]/}"
+                fi ;;
+            '#'*|'') ;;
+            *)  # a new entry: the one above ends
+                _cs_sid_note
+                if [[ "$line" == pbo:[[:space:]]* ]]; then
+                    t="${line#pbo:}"; t="${t#"${t%%[![:space:]]*}"}"; id="${t%%[[:space:]]*}"
+                fi ;;
+        esac
+    done < "$cfg"
+    _cs_sid_note
+    if [[ -n "$hit" ]]; then _CS_R="$hit"; elif [[ -n "$first" ]]; then _CS_R="$first"; fi
+    return 0
+}
+# _cs_sid_note: the pbo entry _cs_storage_id_for_r just read ends (its locals:
+# id, nodes, node, hit, first); note it when it is NODE's.
+_cs_sid_note() {
+    [[ -n "$id" ]] || return 0
+    [[ "$id" == "pbo-$node" ]] && hit="$id"
+    [[ -z "$first" && ( -z "$nodes" || ",$nodes," == *",$node,"* ) ]] && first="$id"
+    id='' nodes=''
+    return 0
+}
+
+# --- the restic version a config needs (RESTIC_MIN) --------------------------------
+# Here rather than in lib/restic.sh: install.sh sources only this file and the
+# reader, and refuses a restic that is too old before it installs anything.
+#
+# RESTIC_MIN's default, 0.14.0, is the oldest restic that has everything pbo
+# always uses (ADR 0009, "Portability"): `copy --from-repo`, `init
+# --copy-chunker-params --from-repo` and RESTIC_FROM_PASSWORD_FILE (0.14.0
+# renamed --repo2), the sftp.connections option (0.14.0) and repository format
+# 2 with compression, which restic 0.14 writes by default and older ones cannot
+# read. Newer features are optional: --retry-lock (0.16.0) is used only when
+# `restic --help` has it, the snapshot summary (0.17.0) only when present, and
+# `list --reasons` finds a forget reason's snapshot by time and tree where it
+# has no short_id (before 0.17.0).
+# One feature raises the floor where the config uses it: the rest-server login
+# goes to restic as RESTIC_REST_USERNAME/RESTIC_REST_PASSWORD (never on the
+# command line), which restic reads since 0.16.1.
+
+# _version_ge A B: version A >= B, dotted numbers compared part by part.
+_version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]; }
+
+# _restic_need_version <RESTIC_MIN> <RESTIC_REST_USERNAME> → "<version>|<why>":
+# the oldest restic the config runs with. An empty or malformed RESTIC_MIN is
+# the default (doctor names the bad value).
+_restic_need_version() {
+    local min="$1" why="RESTIC_MIN"
+    [[ "$min" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] || { _cs_load; min="${CS_DEFAULT[RESTIC_MIN]}"; }
+    if [[ -n "$2" ]] && ! _version_ge "$min" 0.16.1; then
+        min=0.16.1; why="RESTIC_REST_USERNAME: restic reads the rest-server login from its environment since 0.16.1"
+    fi
+    printf '%s|%s' "$min" "$why"
 }
 
 # --- prose for the generated example ---------------------------------------------
@@ -267,6 +386,12 @@ In a cluster: put the SAME config on every node, each node backs up only its
 own guests into the shared repo (an explicit list is filtered to local guests).
 PRUNE_OWNER, cluster only: restrict `prune` to one node (prune needs an exclusive
 repo lock). Empty = any node may prune (restic's lock keeps concurrent attempts safe).
+SCHEDULE_*: when each timer runs, in systemd's OnCalendar= syntax (man systemd.time),
+e.g. "Mon..Fri *-*-* 22:30:00"; the *_DELAY keys are its RandomizedDelaySec=.
+`pbo config set` writes them to a drop-in (<timer>.d/schedule.conf next to the
+units) and restarts the timer if it is enabled, its next run computed from now (a
+time moved earlier does not start the job at once); `pbo timers` shows what is in use.
+In a cluster, give the nodes different backup times: they share one repo.
 EOF
             ;;
         retention) cat <<'EOF'
@@ -296,6 +421,11 @@ The Storage Box needs port/key in the ssh command (the repo URL's host label is
 just a name). `pbo setup` pins the host key into /etc/pbo/known_hosts and uses
 StrictHostKeyChecking=yes; accept-new is the trust-on-first-use fallback:
   RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+Other restic backends (s3:, b2:, azure:, gs:, rclone:) read their credentials
+from the environment: put them in RESTIC_ENV_FILE (KEY=VALUE, chmod 600), e.g.
+  AWS_ACCESS_KEY_ID=...
+  AWS_SECRET_ACCESS_KEY=...
+pbo exports them to restic only, never to its own shell or the hooks.
 EOF
             ;;
         appendonly) cat <<'EOF'
@@ -510,8 +640,178 @@ _cs_validate() {
                 || { printf "%s='%s' is not a comma-separated list of vmids" "$k" "$v_shown"; return 1; } ;;
         url)
             [[ "$v" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+$ ]] || { printf "%s is not a URL (scheme://host...)" "$k"; return 1; } ;;
+        version)
+            [[ "$v" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] || { printf "%s='%s' is not a version (e.g. 0.14.0)" "$k" "$v_shown"; return 1; } ;;
+        calendar)
+            # the default is valid by construction (tests/schedule_config.sh):
+            # doctor and config check validate every key, no fork for it
+            _cs_default_r "$k"; [[ "$v" == "$_CS_R" ]] && return 0
+            _cs_calendar_check "$v" \
+                || { printf "%s='%s' is not a systemd calendar expression (%s; e.g. '*-*-* 05:00:00' or 'Sun 06:30', see man systemd.time)" "$k" "$v_shown" "$_CS_WHY"; return 1; } ;;
+        timespan)
+            _cs_default_r "$k"; [[ "$v" == "$_CS_R" ]] && return 0
+            _cs_timespan_check "$v" \
+                || { printf "%s='%s' is not a systemd time span (%s; e.g. 15m, 1h, 90s, 0)" "$k" "$v_shown" "$_CS_WHY"; return 1; } ;;
         path|dir|string|list|command) : ;;
         *) printf "%s has an unknown schema type '%s'" "$k" "$t"; return 1 ;;
     esac
+    return 0
+}
+
+# --- systemd values: the timer schedules (SCHEDULE_*) ------------------------------
+# A calendar or time span ends up as a line of a unit file (a drop-in written by
+# lib/timers.sh), so before systemd judges the syntax the value must be plain
+# text there: only the characters these expressions use. A % is a specifier in
+# a unit file, a \ continues the line, = and [ would start a setting or a
+# section, a newline a new line; none of them can get through. The rest is
+# systemd's own parser (`systemd-analyze calendar|timespan`, offline, nothing is
+# changed) when it is there. Without it (a CI container) a narrow check accepts
+# the common forms only, with every number in its range (hour 0-23, minute and
+# second 0-59, month 1-12, day 1-31, year 1970-2199) and a time zone only when
+# it is UTC or a file in the zoneinfo database; anything else is refused rather
+# than guessed, so a value it lets through is one systemd takes too. That
+# matters because the drop-in's `OnCalendar=` line first clears the unit's own
+# calendar: a value systemd then ignores leaves the timer with no trigger.
+# Results: _CS_WHY on failure.
+
+# _cs_sd_analyze: systemd-analyze can be used (PBO_TOOLS_MISSING, a test hook,
+# can hide it).
+_cs_sd_analyze() {
+    [[ " ${PBO_TOOLS_MISSING-} " != *" systemd-analyze "* ]] && command -v systemd-analyze >/dev/null 2>&1
+}
+
+# _cs_sd_run <systemd-analyze args...>: quiet, bounded in time.
+_cs_sd_run() {
+    local t=(); command -v timeout >/dev/null 2>&1 && t=(timeout 10)
+    "${t[@]}" systemd-analyze "$@" </dev/null >/dev/null 2>&1
+}
+
+# _cs_sd_plain VALUE CHARS: VALUE is non-empty, uses only CHARS (a bracket
+# expression body) and single blanks between words.
+_cs_sd_plain() {
+    local v="$1"
+    [[ -n "$v" ]] || { _CS_WHY='empty'; return 1; }
+    # shellcheck disable=SC2254  # the character set is a pattern on purpose
+    case "$v" in *[!$2]*) _CS_WHY='only letters, digits, blanks and * : , . / ~ - + _ are allowed'; return 1 ;; esac
+    if [[ "$v" == ' '* || "$v" == *' ' || "$v" == *'  '* ]]; then _CS_WHY='blanks at the start or end, or two in a row'; return 1; fi
+    return 0
+}
+
+# _cs_calendar_check VALUE: an OnCalendar= expression.
+_cs_calendar_check() {
+    local v="$1" i=0 n w ok
+    _CS_WHY=''
+    _cs_sd_plain "$v" 'A-Za-z0-9*:,./~+_ -' || return 1
+    if _cs_sd_analyze; then
+        _cs_sd_run calendar -- "$v" && return 0
+        _CS_WHY='systemd-analyze calendar cannot parse it'; return 1
+    fi
+    case "$v" in minutely|hourly|daily|weekly|monthly|yearly|annually|quarterly|semiannually) return 0 ;; esac
+    # [weekdays] [date] [time] [time zone], each part as systemd.time writes it
+    local -a p=(); read -r -a p <<<"$v"
+    n="${#p[@]}"
+    (( n >= 1 && n <= 4 )) || { _CS_WHY='more parts than weekday, date, time and time zone'; return 1; }
+    if [[ "${p[i]}" =~ ^[A-Za-z]+(\.\.[A-Za-z]+)?(,[A-Za-z]+(\.\.[A-Za-z]+)?)*$ ]]; then
+        ok=1
+        for w in ${p[i]//[.,]/ }; do
+            case "${w,,}" in mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday) ;; *) ok=0 ;; esac
+        done
+        (( ok )) || { _CS_WHY="'${p[i]}' is not a list of weekdays"; return 1; }
+        i=$((i+1))
+    fi
+    if (( i < n )) && [[ "${p[i]}" =~ ^[0-9*][0-9*.,/~]*-[0-9*.,/~-]*$ ]]; then
+        _cs_cal_date "${p[i]}" || return 1
+        i=$((i+1))
+    fi
+    if (( i < n )) && [[ "${p[i]}" =~ ^[0-9*][0-9*.,/]*:[0-9*.,/:]*$ ]]; then
+        _cs_cal_time "${p[i]}" || return 1
+        i=$((i+1))
+    fi
+    if (( i > 0 && i == n - 1 )) && [[ "${p[i]}" =~ ^(UTC|[A-Z][A-Za-z_+-]*(/[A-Za-z0-9_+-]+)+)$ ]]; then
+        # a name systemd does not know is refused by it too: only one the
+        # zoneinfo database has (the regex keeps the name a plain relative path)
+        if [[ "${p[i]}" != UTC && ! -f "${TZDIR:-/usr/share/zoneinfo}/${p[i]}" ]]; then
+            _CS_WHY="'${p[i]}' is not a time zone in ${TZDIR:-/usr/share/zoneinfo} (systemd-analyze is not installed to judge it)"; return 1
+        fi
+        i=$((i+1))
+    fi
+    (( i == n )) || { _CS_WHY="'${p[i]}' is not a weekday, date, time or time zone part (systemd-analyze is not installed to judge it)"; return 1; }
+    return 0
+}
+
+# _cs_cal_field TEXT MIN MAX NAME [frac]: one field of a calendar date or time
+# without systemd-analyze: '*', or a comma list of numbers or A..B ranges (each
+# may repeat: /N), every number MIN..MAX (frac: a fraction is allowed, as for
+# seconds). Numbers are decimal (10#): a leading zero is not octal.
+_cs_cal_field() {
+    local spec="$1" lo="$2" hi="$3" name="$4" frac="${5:-}" item b x prev
+    if [[ -z "$spec" || "$spec" == ,* || "$spec" == *, || "$spec" == *,,* ]]; then
+        _CS_WHY="the $name is empty, or has an empty item in '$spec'"; return 1
+    fi
+    # read, not an unquoted expansion: '*' must not be a glob
+    local -a items=()
+    IFS=, read -r -a items <<<"$spec"
+    for item in "${items[@]}"; do
+        if [[ "$item" == */* ]]; then
+            [[ "${item##*/}" =~ ^[0-9]+$ ]] && (( 10#${item##*/} > 0 )) \
+                || { _CS_WHY="'$item' repeats by '${item##*/}', not a positive number (systemd-analyze is not installed to judge it)"; return 1; }
+            item="${item%/*}"
+            # systemd repeats from a number only ('0/15'), never from '*'
+            [[ "$item" != '*' ]] || { _CS_WHY="'*/${1##*/}' repeats from '*': write a start, e.g. 0/${1##*/}"; return 1; }
+        fi
+        [[ "$item" == '*' ]] && continue
+        if [[ "$item" == *...* || "$item" == *..*..* ]]; then
+            _CS_WHY="'$item' is not a number or an A..B range for the $name (systemd-analyze is not installed to judge it)"; return 1
+        fi
+        prev=''
+        for b in "${item%%..*}" "${item##*..}"; do
+            x="$b"; [[ -n "$frac" ]] && x="${x%%.*}"
+            if [[ -z "$b" || ! "$x" =~ ^[0-9]+$ || ( -z "$frac" && "$b" == *.* ) || ( "$b" == *.* && ! "$b" =~ ^[0-9]+\.[0-9]+$ ) ]]; then
+                _CS_WHY="'$item' is not a number or a range for the $name (systemd-analyze is not installed to judge it)"; return 1
+            fi
+            (( 10#$x >= lo && 10#$x <= hi )) || { _CS_WHY="'$x' is out of range for the $name ($lo-$hi)"; return 1; }
+            [[ -z "$prev" ]] || (( 10#$prev <= 10#$x )) || { _CS_WHY="the range '$item' runs backwards"; return 1; }
+            prev="$x"
+        done
+    done
+    return 0
+}
+
+# _cs_cal_date TEXT: [year-]month-day, '~' before the day counting from the
+# end of the month.
+_cs_cal_date() {
+    local d="$1" day rest mon year='' sep=-
+    [[ "$d" == *~* ]] && sep='~'
+    [[ "$d" != *~*~* ]] || { _CS_WHY="'$d' has more than one '~'"; return 1; }
+    day="${d##*"$sep"}"; rest="${d%"$sep"*}"
+    mon="${rest##*-}"; [[ "$rest" == *-* ]] && year="${rest%-*}"
+    [[ "$year" != *-* ]] || { _CS_WHY="'$d' is not [year-]month-day"; return 1; }
+    if [[ -n "$year" || "$rest" == *-* ]]; then _cs_cal_field "$year" 1970 2199 year || return 1; fi
+    _cs_cal_field "$mon" 1 12 month && _cs_cal_field "$day" 1 31 day
+}
+
+# _cs_cal_time TEXT: hour:minute[:second].
+_cs_cal_time() {
+    local -a tf=()
+    IFS=: read -r -a tf <<<"$1"
+    [[ "$1" != *: ]] && (( ${#tf[@]} == 2 || ${#tf[@]} == 3 )) \
+        || { _CS_WHY="'$1' is not hour:minute[:second]"; return 1; }
+    _cs_cal_field "${tf[0]}" 0 23 hour && _cs_cal_field "${tf[1]}" 0 59 minute \
+        && { (( ${#tf[@]} == 2 )) || _cs_cal_field "${tf[2]}" 0 59 second frac; }
+}
+
+# _cs_timespan_check VALUE: a RandomizedDelaySec= time span.
+_cs_timespan_check() {
+    local v="$1" w
+    _CS_WHY=''
+    _cs_sd_plain "$v" 'A-Za-z0-9. ' || return 1
+    if _cs_sd_analyze; then
+        _cs_sd_run timespan -- "$v" && return 0
+        _CS_WHY='systemd-analyze timespan cannot parse it'; return 1
+    fi
+    for w in $v; do
+        [[ "$w" =~ ^[0-9]+(\.[0-9]+)?(us|usec|ms|msec|s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours|d|day|days|w|week|weeks)?$ ]] \
+            || { _CS_WHY="'$w' is not a number with a unit (us, ms, s, min, h, d, w)"; return 1; }
+    done
     return 0
 }

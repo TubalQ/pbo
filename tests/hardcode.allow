@@ -1,0 +1,46 @@
+# tests/hardcode.allow: values tests/hardcode.sh lets through, one per line:
+#   <extended regex, matched against "<file>:<value>">  <why the value is fixed>
+# Everything else that differs between installations is a key in
+# lib/config_schema.sh (with its default there) or derived at run time.
+
+# --- what the system and Proxmox VE fix ----------------------------------------------
+:/dev/(null|urandom)$                                     the kernel's devices
+:/proc(/|$)                                               procfs: the mount table, open file descriptors, process command lines
+^lib/jobs.sh:/run/systemd/system$                         systemd's own marker that it runs as init (sd_booted)
+:/etc/os-release$                                         the os-release(5) file every systemd distribution has
+:/etc/pve(/|$)                                            pmxcfs is mounted at /etc/pve on every Proxmox VE node (tests move it with PBO_PVE_CFS_DIR and the other test hooks)
+:/etc/vzdump.conf$                                        Proxmox's node-wide vzdump defaults (VZDUMP_CONF moves it for tests), named in help texts
+:/usr/share/perl5(/|$)                                    where Debian's perl finds PVE::Storage::Custom plugins
+^pve-plugin/PboPlugin.pm:/var/lib/dpkg/status$            dpkg's database: the plugin reads its own package version
+^systemd/[^:]+:/bin/sh$                                   the POSIX shell
+^lib/json.sh:/tmp$                                        the POSIX default of TMPDIR (${TMPDIR:-/tmp}, not a config key)
+^lib/config.sh:/tmp$                                      the POSIX default of TMPDIR for a dry run's temp file (${TMPDIR:-/tmp})
+:/etc/systemd/system$                                     systemd's directory for local units (install.sh puts the units there)
+^install.sh:/etc/logrotate.d/pbo$                         logrotate's drop-in directory
+:/(usr/)?(local/)?s?bin$                                  the standard PATH, for a program started with an empty environment (vzdump's hook, the clean subshell of config check --compare-bash)
+:/etc/rest-server/tls/cert.pem$                           rest-server's own default certificate path, offered by the wizard
+
+# --- the two install layouts (tests/portability.sh runs every unit in both) -----------
+:/usr/local/(lib/pbo|sbin/pbo|share/pbo)(/|$)             install.sh's layout; packaging/build-deb.sh rewrites the units to /usr/lib/pbo and /usr/sbin
+:/usr/(lib/pbo|sbin/pbo)(/|$)                             the .deb's layout
+^(install.sh|lib/common.sh):/lib(/\*\.sh)?$               lib/ below the source tree or SELF_DIR, not a system path
+:/etc/pbo$                                                pbo's config directory (PBO_CONFIG names another config file)
+:/etc/pbo/config$                                         pbo's config file (PBO_CONFIG names another one)
+^pve-plugin/PboPlugin.pm:/var/lib/pbo/catalog/index.json$ the catalogue the storage plugin reads: PVE loads the plugin without pbo's config (PBO_CATALOG moves it in tests only)
+^install.sh:/run/pbo-web-tls$                             removed when upgrading over 0.4 (the old web UI's runtime directory)
+
+# --- lists of system directories pbo refuses to touch ---------------------------------
+^lib/perms.sh:/(bin|boot|dev|etc|home|lib|lib64|media|mnt|opt|proc|root|run|run/lock|sbin|srv|sys|tmp|usr|usr/local|var|var/cache|var/lib|var/lock|var/log|var/run|var/tmp)$   PERM_SYSTEM_DIRS: the shared system directories a permission rule never changes (a directory added there is added here too)
+^lib/host.sh:/(etc|usr|boot|bin|sbin|lib|lib64|root|var/lib|proc|sys|dev)(/\*|/pve\*)?$   restore-host refuses to extract into a system directory
+^lib/host.sh:/var/tmp/host-restore$                       an example in restore-host's refusal message
+
+# --- texts and examples ---------------------------------------------------------------
+:config(\.janitor)?\.example$                             the example config files (etc/), not host names
+^systemd/[^:]+:github.com$                                the project's documentation URL (Documentation=)
+^lib/config_parse.sh:/root/..$                            an example in a refusal message (write the full path, not ~/)
+^lib/menu.sh:(/var/cache/pbo|/root/.ssh/id_ed25519|/root/pbo-dr-key.txt|/var/tmp/pbo-restore-)$   suggestions the setup wizard offers (the operator can change each); the wizard is reworked with the config writer
+^lib/menu.sh:(ntfy.example.com|uXXXXX-subN.your-storagebox.de)$                                   placeholders in the wizard's prompts
+
+# --- the timer schedules (SCHEDULE_* keys, drop-ins written by lib/timers.sh) ---------
+^systemd/pbo[a-z-]*\.timer:[0-9:]+$                       OnCalendar= of the units: the schema defaults (tests/schedule_config.sh checks they agree); a custom schedule is a drop-in
+^lib/menu.sh:(05:00|06:30|10:00)$                         the setup wizard's timer questions name the default times (the wizard is reworked in M8)

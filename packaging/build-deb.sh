@@ -33,12 +33,15 @@ install -d "$ROOT/usr/share/pbo/templates"; install -m 0644 "$SRC"/templates/pbo
 install -m 0644 "$SRC"/README.md "$SRC"/RUNBOOK.md "$SRC"/SECURITY.md "$SRC"/CHANGELOG.md "$ROOT/usr/share/doc/pbo/"
 install -m 0644 "$SRC"/LICENSE "$ROOT/usr/share/doc/pbo/copyright"
 
+# restic >= 0.14.0: the default of RESTIC_MIN (lib/config_schema.sh; doctor and
+# install.sh check the config's own minimum). acl: setfacl/getfacl for the
+# CACHE_DIR entry of unprivileged CTs; util-linux: flock, setpriv, findmnt.
 cat > "$ROOT/DEBIAN/control" <<CTL
 Package: pbo
 Version: $DEBVER
 Architecture: all
 Maintainer: TubalQ <71977914+TubalQ@users.noreply.github.com>
-Depends: bash (>= 5), restic (>= 0.16), jq, zstd, util-linux, curl, openssl, openssh-client
+Depends: bash (>= 5), restic (>= 0.14.0), jq, zstd, util-linux, acl, curl, openssl, openssh-client
 Suggests: proxmox-ve
 Breaks: pbo-web
 Section: admin
@@ -69,6 +72,13 @@ if [ "$1" = configure ]; then
         fi
     fi
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload || true
+    # the timer schedules of an existing config (SCHEDULE_*) as drop-ins next to
+    # the units: drop-ins in /etc survive an upgrade, this re-applies a config
+    # edited by hand. Reported only, like the config check.
+    if [ -f /etc/pbo/config ]; then
+        rc=0; out="$(/usr/sbin/pbo timers apply 2>&1)" || rc=$?
+        [ "$rc" = 0 ] || { echo "pbo: 'pbo timers apply' (exit $rc):"; printf '%s\n' "$out" | sed 's/^/    /'; }
+    fi
     # Proxmox notification templates, cluster-wide via pmxcfs (plain cp, no chmod)
     if [ -d /etc/pve ]; then
         mkdir -p /etc/pve/notification-templates/default 2>/dev/null \

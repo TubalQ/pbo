@@ -18,8 +18,9 @@ readonly JANITOR_COMMANDS="init doctor list usage verify prune unlock rotate-key
 
 # _role_check <command>: refuse guest operations on a janitor, and a config that
 # claims both roles. Called from main() after load_config. Under `pbo config
-# check|template` (PBO_CFG_LENIENT=1, set only by main()) a broken role config
-# is not fatal: check reports it as an error at its line (_cfg_check_values).
+# check|template` and `catalog _umount` (PBO_CFG_LENIENT=1, set only by main())
+# a broken role config is not fatal: check reports it as an error at its line
+# (_cfg_check_values).
 # The janitor drops to JANITOR_USER first, which reads the config again (0640
 # root:<JANITOR_USER>), except for `config check|set|unset` run as root: they
 # are about /etc/pbo/config itself, which the janitor user may read but not
@@ -36,6 +37,8 @@ _role_check() {
             # PBO_JANITOR_ALLOW_ROOT=1 exists for the test suite only.
             local stay=0
             [[ "$cmd" == config ]] && case "${PBO_SUBCOMMAND:-}" in check|set|unset) stay=1 ;; esac
+            # the timer drop-ins are root's files in the systemd directory
+            [[ "$cmd" == timers && "${PBO_SUBCOMMAND:-}" == apply ]] && stay=1
             if [[ "$EUID" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 ]]; then
                 # root writes nothing into the janitor user's LOG_DIR: not the
                 # audit line of a command that stays root (the EXIT trap), not
@@ -50,7 +53,7 @@ _role_check() {
                 id "$ju" >/dev/null 2>&1 || die "$EX_CONFIG" "JANITOR_USER '$ju' does not exist"
                 [[ "$(id -u "$ju")" != 0 ]] || die "$EX_CONFIG" "JANITOR_USER must not be root"
                 # doctor --fix: the owners need root, so that pass runs now (lib/perms.sh)
-                [[ "$cmd" != doctor ]] || _perm_root_pass
+                [[ "$cmd" != doctor ]] || { _perm_root_pass; _sched_ensure; _sched_root_pass; }
                 exec "${PBO_RUNUSER_BIN:-runuser}" -u "$ju" -- "${SELF_DIR}/pbo" "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}"
             fi
             if [[ "${PBO_CFG_LENIENT:-0}" == 1 ]]; then return 0; fi

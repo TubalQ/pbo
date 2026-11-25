@@ -38,9 +38,11 @@
 the schema (`lib/config_schema.sh`) and the read-only `pbo config` commands, M2
 the config grammar (the reader next to `source`), M3 loading (the reader
 replaces `source`), M4 the writer (`pbo config set|unset`), M5 retention per
-guest, M6 permissions, M7 the cache move, M8 the wizard. This ADR is filled in
-as the milestones land: grammar, schema format, writer, the move's state
-machine, the retention equivalence argument, and the permission table.
+guest, M6 permissions, M7 the cache move, M8 the wizard, MP portability
+(nothing that differs between installations hard-coded; part 1 without the
+writer, part 2 with it). This ADR is filled in as the milestones land:
+grammar, schema format, writer, the move's state machine, the retention
+equivalence argument, the permission table, and the portability rules.
 
 ### Config grammar (M2)
 
@@ -83,7 +85,8 @@ keeps working).
   config keys to child processes); accepted and recorded in `CFG_EXPORT` for
   `http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (M3 exports
   those to the programs pbo runs); refused for anything else, with the hint to
-  use a systemd drop-in (`Environment=`) or, once it exists, `RESTIC_ENV_FILE`.
+  put variables for restic in `RESTIC_ENV_FILE` (see "Portability"), others
+  in a systemd drop-in (`Environment=`).
   An exported `PATH`, `IFS`, `BASH_ENV` or `LD_PRELOAD` would change what root
   runs. An unquoted `{` on an export line is refused: `export` is a declaration
   builtin, so bash brace-expands its argument (`export KEEP_LOCAL={1,2}` sets
@@ -181,9 +184,10 @@ variables; nothing the config says can run, export or overwrite anything else.
   bash but no longer run as code (CHANGELOG 0.6.0 migration notes). pbo does not
   run on the rest of the file: a dropped line would silently fall back to a
   default (another repo, another retention). Lenient mode (`PBO_CFG_LENIENT`,
-  set only by main() for `config check` and `config template`) keeps the
-  accepted lines and goes on, so check can report and template does not depend
-  on the config.
+  set only by main() for `config check`, `config template` and `catalog
+  _umount`) keeps the accepted lines and goes on, so check can report, template
+  does not depend on the config, and pbo-mount.service's cleanup (a lazy
+  unmount of a FUSE mount, no restic) still runs on a config pbo refuses.
 - **Variables.** `PBO_CONFIG_LOCAL` is always the local file (`/etc/pbo/config`
   or `PBO_CONFIG`), whether it exists or not: the only file pbo writes. 0.5's
   `_cfg_set` (setup, menu) and `_integ_set_mode` (integrate) wrote to
@@ -573,8 +577,8 @@ where to point METRICS_FILE).
   user is a test or dev setup. The DR key's and the other secrets' owner on a
   host is reported, not changed.
 
-**Parents.** For each unprivileged CT's mapped root (from `lxc.idmap` or
-`/etc/subuid`, `_ct_root_uid`) and each directory above the real CACHE_DIR,
+**Parents.** For each unprivileged CT's mapped root (from its `lxc.idmap`,
+else 100000: `_ct_root_uid`) and each directory above the real CACHE_DIR,
 root enters the directory and `setpriv --reuid U --regid U --clear-groups --
 test -x .` asks the kernel whether U may pass it (ACLs included). Each
 directory is judged on its own, so one pass names every directory that blocks.
@@ -767,3 +771,330 @@ only when it is empty (its user owns the directory; the move refuses with 78
 and says how). Retention after a move groups each guest's old and new paths
 (M5). The journal of the last move stays (doctor names it) and carries the
 earlier ones' old directories.
+### Portability (MP, part 1)
+
+**Principle.** Everything that can differ between hosts is a schema key with a
+default, or is derived at run time: paths, names, times, limits, the backend
+and uids. What is genuinely fixed (pmxcfs at `/etc/pve`, `/proc`, the two
+install layouts, the shared system directories pbo refuses to touch) is listed
+with its reason. Part 1 is everything that needs no config writer; the timer
+schedules (systemd drop-ins written by `config set`) and per-node storage ids
+in a cluster came with the writer in part 2 (below).
+
+**The lint.** `tests/hardcode.sh` scans what runs on a host (`pbo`, `lib/`
+without the schema, `install.sh`, `systemd/`, `pve-plugin/`) for absolute
+paths, host names and IP addresses, and clock times outside comments. A
+literal fallback of a config key (`${KEY:-...}`) counts as the schema's value:
+tests/config.sh proves each equals the key's default. Everything else must
+match an entry of `tests/hardcode.allow` (an extended regex over
+`<file>:<value>` and its reason); an entry that matches nothing fails the lint
+too, so the list is what the code really holds. Fixed on the way:
+preflight read `/etc/pve/storage.cfg` instead of `PVE_STORAGE_CFG`,
+`_local_node` read `/etc/pve/.members` instead of the pmxcfs directory
+(`PBO_PVE_CFS_DIR`), and install.sh named the default log, state and cache
+directories instead of taking them from the schema.
+
+**RESTIC_ENV_FILE.** S3, B2, Azure, GCS and rclone take their credentials
+from environment variables, which the strict reader does not export (an
+exported `PATH` or `LD_PRELOAD` changes what root runs). They live in
+`RESTIC_ENV_FILE` (default `/etc/pbo/restic.env`; local-only: the
+cluster-shared config cannot point every node at a file in pmxcfs, which
+passes the mode check and could carry variables that make restic or a backend
+SDK run a program):
+
+- The config grammar (`_cfg_parse_file` with origin `envfile`): any variable
+  name, `export` allowed, a `${NAME}` only to a name set earlier in the same
+  file (never pbo's environment), no message ever repeats a value.
+- Names that change what runs, that pbo sets for restic itself, or that are
+  pbo's own are refused with their line: `PATH`, `IFS`, `ENV`, `BASH_ENV`,
+  `LD_*`, `GCONV_PATH`, `BASH_FUNC_*` and the like; `RESTIC_REPOSITORY*`,
+  `RESTIC_PASSWORD*`, `RESTIC_FROM_*`, `RESTIC_CACHE_DIR`,
+  `RESTIC_REST_USERNAME`/`PASSWORD` (from the config); `RESTIC_HOST`, which
+  since restic 0.17 filters every snapshot command by host, while pbo passes
+  the node as `--host` on backup only and expects listings and retention to
+  see all hosts; every config key (`RESTIC_BIN`, `RESTIC_SFTP_COMMAND`,
+  `RESTIC_REST_PASSWORD_FILE`, `RESTIC_CACERT`, ...: they belong in the
+  config, where the exec and local-only rules apply) and pbo's internal names
+  (`RESTIC_OPTS`, `PBO_*`, `CFG_*`, `RENV_*`, `_*`, `EX_*`).
+- File rules, those of the config tightened for a file that holds nothing but
+  secrets: a regular file (no symlink), owned by root or the user pbo runs as
+  (on a janitor also JANITOR_USER: root reads the file before it drops to
+  that user), not writable by group or others, not readable by others. A
+  missing file is fine. The permission table fixes it to 0600 (janitor: the
+  user's, 0400).
+- Scope: load_config checks the file once and keeps only its key names
+  (`RENV_KEYS`); the values are read again in the subshell of each restic
+  call and set on restic's command alone (`env -- KEY=VALUE ... restic`,
+  `_restic_pf`), never as variables of that shell: the program, its options
+  and the rest-server password file are taken from the config before the file
+  is read, so even a name the list missed cannot change what pbo runs or
+  reads. pbo's shell, the programs it runs
+  (vzdump, pct, systemctl, curl) and the hooks never see them. Every restic
+  call that opens a repo goes through `_restic_pf` (rotate-key's own password
+  files too); `restic version` and `--help` go through `_restic_bin`, without
+  the environment; tests/portability.sh checks that nothing else runs
+  `RESTIC_BIN`. The rest-server login is now exported in that subshell too
+  (rotate-key exported it into pbo's shell).
+- A file pbo refuses stops every command with 78, like a refused config line,
+  except those that diagnose it: `config` (check lists the file's errors by
+  line), `doctor` (FAIL per finding), `version` and `help`, and `catalog
+  _umount` (below). There a restic call is refused with the reason instead of
+  being run without the credentials. install.sh's upgrade guard checks the
+  file with the same code and refuses the install while pbo would refuse it.
+
+**pbo-mount.service.** Its `ExecStopPost` unmounted the fixed `/run/pbo/mnt`,
+while `PVE_CATALOG_MOUNT_DIR` is a key: with another mount point a dead FUSE
+mount stayed behind. `pbo catalog _umount` reads the config and lazily
+unmounts what is mounted at that directory only when it is a FUSE mount
+(findmnt; the kernel's mount table without it): nothing mounted is fine,
+another filesystem there is left alone. It runs no restic, so it loads the
+config leniently (as `config check` does) and is exempt from the
+RESTIC_ENV_FILE stop: when restic died because of a refused config line or
+env file, the dead mount still goes, and the next start does not fail on it.
+The units keep the install.sh path (`/usr/local/lib/pbo`) and
+`packaging/build-deb.sh` rewrites them; a test installs both layouts
+(install.sh's own functions into a tree, the .deb for real when `dpkg-deb` is
+there) and checks that every program a unit runs exists there, runs, and is
+called with a command pbo has (and, for `catalog`, a subcommand it has).
+
+**RESTIC_MIN.** The default, 0.14.0, is the oldest restic with everything
+pbo always uses: `copy --from-repo`, `init --copy-chunker-params --from-repo`
+and `RESTIC_FROM_PASSWORD_FILE` (0.14.0 renamed `--repo2`), the
+`sftp.connections` option (0.14.0), and repository format 2, which 0.14
+writes by default and older releases cannot read. The rest is older (`--no-lock`
+for `cat`, `dump`, `forget --json` with reasons, `--group-by ''`, `mount
+--allow-other`, percentages for `--read-data-subset`) or optional: `--retry-lock`
+(0.16.0) is used only when `restic --help` lists it, the snapshot summary
+(0.17.0) only when present. A forget reason names its snapshot by `short_id`
+only since 0.17.0; `list --reasons` finds it by time and tree in the group's
+keep list on older releases. One feature raises the floor where it is used:
+the rest-server login goes to restic in its environment, never on its command
+line, which restic reads since 0.16.1 (`RESTIC_REST_USERNAME` set: 0.16.1).
+pbo uses no `rewrite`, no `--skip-if-unchanged`, no JSON field newer than
+these. Doctor FAILs below the minimum; install.sh refuses before any pbo file
+is copied (`--force` installs anyway) and names what to install, downloading
+nothing. Both read the cluster-shared config and the local one, so a
+rest-server login or a raised `RESTIC_MIN` in the shared file counts. The .deb depends on restic (>= 0.14.0) instead of (>= 0.16), so
+distributions that ship 0.14 can install it; CI still runs one pinned
+release, so the range below it is supported by this analysis, not by a test
+run (README, "Compatibility").
+
+**Thresholds.** The fixed values an operator could reasonably need to change
+became advanced keys with the old value as default: `PREFLIGHT_POOL_FREE_PCT`
+(150: a ZFS pool's free space against what the guest's volumes use),
+`BATCH_FIT_PCT` (85: how much of CACHE_DIR's free space batch mode may plan
+for), `INGEST_PENDING_MIN` (10 min), `PVE_SPOOL_MAX_AGE` (24 h),
+`PVE_JOB_WINDOW_MIN` (60 min) and `CATALOG_STAGE_WAIT` (10 s). The waits,
+TTLs and lock timeouts were keys already. Arithmetic reads them through
+`_cfg_int_r`, which falls back to the default for a value that is not a whole
+number (doctor names it), so a typo never breaks a backup. Protocol constants
+stay: exit codes, the catalogue and JSON versions, pbo's own polling steps,
+the PVE versions the integration needs.
+
+**Dependencies.** `setfacl`/`getfacl` (the CACHE_DIR entry for unprivileged
+CTs) come from `acl`, which minimal Debian installs lack; `setpriv` (the
+parents check) and `findmnt` (the mount cleanup) from `util-linux`. The .deb
+depends on both, install.sh installs them, doctor names the exact package
+when one is missing.
+
+**Time.** vzdump names an archive after the node's local time, and pbo's own
+names and `ts=` tags do the same (`date +%Y_%m_%d-%H_%M_%S`); the ts is only
+ever compared as text. Instants are instants: the catalogue's ctime is the
+snapshot's restic time (with its offset), the timers' next run is parsed with
+the zone systemctl printed it in. Retention is restic's: it buckets each
+snapshot by the local day of the offset it recorded, which is the node's zone
+when the snapshot was taken, and pbo passes that plan through. The storage
+plugin's fallback ctime reads the name as local time. tests/portability.sh
+runs these paths under UTC, +05:30 and -03:00; for retention it takes the
+snapshots in each zone and checks that zone's own plan, which differs
+between the three. A PVE job's next run is compared with pbo's
+timer times as minutes of the local day, which is what both are.
+
+**A CT's mapped root.** `_ct_root_uid` takes the CT's own `lxc.idmap: u 0`
+line in its main section, else 100000. pve-container never reads
+`/etc/subuid`: a CT without an idmap always runs its root as 100000, so pbo
+read root's range there (0.5) and put the CACHE_DIR ACL on another uid when
+an admin had changed that range. It no longer reads the file. Tested with
+idmaps (split ranges, g lines, a snapshot section); never the real files.
+
+**`pbo doctor --report`.** An environment report for a bug report, text or
+JSON: pbo's version and layout (deb, install.sh or source), the PVE package
+versions, restic, kernel, perl, bash, systemd and OS release, the UTC offset,
+single node or cluster (node count and quorum, from pmxcfs' member list), the
+filesystem type of CACHE_DIR and whether it has POSIX ACLs (read-only: ZFS
+acltype, mount options), the backend type of each repo (sftp, rest, s3, b2,
+azure, gs, swift, rclone, local, other), append-only, the integration mode,
+whether RESTIC_ENV_FILE exists and how many variables it sets, and which
+optional tools exist. It never prints a node or host name, URL, user, path or
+value: every field is a version, a count, a type or a yes/no, and a value that
+is not version-shaped is shown as "other". tests/portability.sh plants
+secrets, URLs, users, hosts, a port and paths in the config and checks that
+none appears.
+
+### Portability (MP, part 2): timer schedules, per-node storage ids
+
+**Timer schedules.** The times were fixed in `systemd/*.timer` (and repeated in
+install.sh's messages and doctor's job-window check), so another schedule meant
+editing a unit file that the next reinstall or package upgrade put back.
+
+- **Keys.** `SCHEDULE_BACKUP`, `SCHEDULE_PRUNE`, `SCHEDULE_VERIFY`,
+  `SCHEDULE_TEST_RESTORE`, `SCHEDULE_CATALOG` (host) and `SCHEDULE_JANITOR`
+  (janitor: the roles column, so `config set` refuses the other role's keys),
+  and `SCHEDULE_*_DELAY` for the `RandomizedDelaySec=` of each timer that has
+  one (not pbo.timer: its start should be predictable). All advanced, so a new
+  config follows the defaults. A default is the value in the unit file, which
+  keeps it: the unit works without pbo's config, and tests/schedule_config.sh
+  checks that every unit has its keys and that the two agree. The mapping
+  timer -> keys is one table in `lib/timers.sh`.
+- **Types.** `calendar` (OnCalendar=) and `timespan` (RandomizedDelaySec=).
+  A value becomes a line of a unit file, so before systemd judges the syntax
+  it must be plain text there: letters, digits, blanks and `* : , . / ~ - + _`
+  only (a `%` is a specifier, `\` continues the line, `=` and `[` start a
+  setting or a section, a newline a new line; the writer refuses control
+  characters anyway). Then `systemd-analyze calendar|timespan` (offline, changes
+  nothing) decides; without it (a CI container) a narrow check accepts only
+  the common forms (weekdays, `[year-]month-day`, `hour:minute[:second]`, a
+  time zone; numbers with units), every number in its range (hour 0-23, minute
+  and second 0-59, month 1-12, day 1-31, year 1970-2199, a repetition only from
+  a number), and a time zone only when it is UTC or a file in the zoneinfo
+  database, so what it lets through systemd takes too. Anything else is refused
+  rather than guessed: the drop-in clears the unit's calendar first, and a value
+  systemd then ignores leaves the timer with no trigger. A default is valid by
+  construction and not checked again (doctor validates every key on each run).
+- **Drop-ins, not unit edits.** A timer whose keys differ from their defaults
+  gets `<PBO_SYSTEMD_DIR>/<timer>.d/schedule.conf` (`PBO_SYSTEMD_DIR`, an
+  internal key, is `/etc/systemd/system`; the .deb's units in
+  `/usr/lib/systemd/system` read drop-ins there too): `[Timer]`, `OnCalendar=`
+  (empty: OnCalendar= is a list, the unit's entry must go) and the value,
+  `RandomizedDelaySec=` only when its key differs. A timer at its defaults has
+  no drop-in; an old one is removed, and the `.d` directory when that leaves it
+  empty (an admin's `override.conf` stays; `schedule.conf` sorts after it, so
+  the config wins). The file is written atomically (temp file in the directory,
+  0644, rename), never through a symlink, and never for a value pbo refuses
+  (that timer keeps what it has; the run exits 78).
+- **Who applies them.** The `apply-schedule` on_change hook of `config
+  set|unset`, after the write, for the timers whose keys changed, from the
+  values just written (the shell still holds the old ones); `pbo timers apply`
+  for every timer of the role, which install.sh runs after installing the units
+  and the .deb's postinst after an upgrade, so a reinstall keeps a custom
+  schedule; `pbo doctor --fix`. After a change: `systemctl daemon-reload` once.
+  A plain restart is not enough: every pbo timer has `Persistent=true`, and
+  systemd computes a calendar timer's next elapse from its last trigger (the
+  stamp file), so a new time earlier than the last run would have elapsed
+  already and the job would start at once (a full backup at midday, a prune
+  with its exclusive lock, a test restore booting a guest). So a schedule
+  change resets the timer's persistent state: each changed timer that
+  `is-enabled` is stopped before its drop-in is written (a stopped timer is not
+  re-armed by the reload), `systemctl clean --what=state` removes its stamp
+  after the reload (systemd 247 or later; when it fails the report says the
+  timer may start at once), and it is started again when it was running. Its
+  next run is then the first elapse of the new calendar from now; a run missed
+  under the old schedule is not caught up, which is the lesser surprise. A
+  disabled timer stays disabled, an enabled one that was not running stays
+  stopped (pbo never enables or starts a timer of its own accord). Without
+  systemctl the step is skipped with a note; a failing stop, reload or start is
+  a failed after-write hook (69, the config stays written). A dry run says what
+  it would write and calls nothing. On a janitor `config set|unset` and `timers
+  apply` stay root (the drop-ins are root's, in the systemd directory), and
+  `doctor --fix` started as root applies them before it drops to JANITOR_USER
+  and hands the result on, as the permission pass does
+  (`PBO_SCHED_FIX_REPORT`); the doctor running as JANITOR_USER audit-logs those
+  changes ("... (as root, before dropping to <user>)"), root writes nothing into
+  that user's LOG_DIR.
+- **The cluster-shared file.** A schedule there reaches every node's config,
+  but the hook runs only on the node that wrote it. The others are not changed
+  behind their back: their doctor warns that the drop-in does not match, and
+  `pbo timers apply` (or `doctor --fix`) there applies it.
+- **Doctor.** A drop-in that differs from what the config wants (drift), one
+  the config no longer wants (stale), a schedule pbo refuses, unit files
+  systemd has not reloaded (`NeedDaemonReload`, also after a drop-in was
+  removed), and a calendar in systemd (`TimersCalendar`) that is not the
+  config's are warnings: the timer runs, on another schedule than the config
+  says. The last one catches an `override.conf` from `systemctl edit` that sets
+  `OnCalendar=` (the way to change a time before 0.6) and a reload that did not
+  happen; both sides are compared in systemd's normalized form
+  (`systemd-analyze calendar`), and not at all without it. The PVE job window
+  (`PVE_JOB_WINDOW_MIN`) compares a job's next run, as a minute of the local
+  day, with the minutes at which the backup, prune and verify timers run (the
+  calendar systemd runs when it says, else the configured one): plain
+  `HH:MM[:SS]` (lists too) is read directly, anything else
+  (wildcards, repetitions, a time zone) is expanded with `systemd-analyze
+  calendar --iterations`, which prints local times; a schedule whose times
+  cannot be worked out, or that pbo refuses, is left out rather than guessed.
+- **`pbo timers`** shows the calendar systemd runs (falling back to the
+  configured one), the source of the configured one (default, config, shared,
+  env, as `config list` says it), and notes a drop-in that does not match and a
+  calendar in systemd that is not the config's.
+
+**Per-node storage ids.** `pbo integrate enable` created `pbo` with `--nodes
+<this node>` and this node's spool as `path`. storage.cfg is one file for the
+cluster: a second node enabling the integration found `pbo` there, of type pbo,
+and converged its path to its own spool, which broke the first node's.
+
+- **Decision.** `PVE_STORAGE_ID`'s default is derived (`_cfgdef_PVE_STORAGE_ID`,
+  bash alone, no fork, since set_defaults runs on every start): `pbo` when
+  pmxcfs' member list names at most one node (a node outside a cluster lists
+  itself as a cluster of one) or cannot be read, so every single-node
+  installation is unchanged; else `pbo-<node>`. An entry pbo already made for
+  this node keeps its id: `pbo-<node>` if storage.cfg has it, else the first
+  entry of type pbo whose `nodes` names this node or that has no `nodes` (it
+  serves every node). So a cluster that enabled the integration before 0.6, or
+  a node that joined a cluster after enabling it, is not renamed by the
+  upgrade. A `PVE_STORAGE_ID` in the local config or the environment always
+  wins. It is a per-node value (`local-only`): a `PVE_STORAGE_ID` in the
+  cluster-shared file is ignored (doctor FAIL), set it per node; otherwise one
+  node's id would be every node's, and the remedy doctor names (a local unset)
+  could not undo it.
+- **Pinned on enable.** A derived per-node id is written to the local config in
+  the same transaction as `PBO_INTEGRATION` (step 8, last). From then on the id
+  does not depend on what pmxcfs shows (a start while /etc/pve is not mounted,
+  a node that leaves the cluster), and `config list` shows it as configured.
+  `pbo` is never pinned (a single node's config stays as it was).
+- **Another node's storage.** enable refuses (69, nothing changed) an existing
+  pbo entry whose `nodes` leave this node out: converging it would repoint a
+  storage another node uses. An entry this node shares with others (in a
+  cluster: no `nodes`, or a list that names another node too) may be used as
+  it is, but enable refuses when step 4 would change its path: to this node's
+  spool (it repoints the others) or, with `--catalog-only`, away (their jobs
+  lose their backup target). The refusal's hint offers `config unset
+  PVE_STORAGE_ID` only when that changes the id; while a shared entry serves
+  this node the derived default keeps its id, so the hint says to set
+  `pbo-<node>`. disable refuses (78, before any change) an entry whose `nodes`
+  leave this node out: a config copied from another node names that node's
+  pinned id, its jobs are not counted here, and `pvesm remove` would delete it
+  for the cluster. A shared entry is not removed by disable either: this node
+  is taken off its `nodes` (`pvesm set --nodes <the others>`, from the entry or
+  pmxcfs' node list), so only the last node removes it, and this node's
+  default id becomes `pbo-<node>`. Doctor FAILs a storage whose `nodes` leave
+  this node out (PVE runs no job of this node on it). In a cluster where `pbo`
+  serves more than this node, doctor warns and names the move, node by node:
+  disable or retarget this node's jobs, `integrate disable`, set
+  `PVE_STORAGE_ID pbo-<node>`, `integrate enable`, recreate the jobs per node by
+  hand. An entry made before 0.6 with `nodes <this node>` is already this
+  node's own storage: no warning. pbo never edits jobs.cfg (ADR 0007), so it
+  does not move them itself.
+- **Ownership.** A job owns guests here only when its storage serves this node
+  (no `nodes`, or `nodes` names it): a job for every node on another node's
+  storage fails on this node, so counting it would leave this node's guests to
+  nobody (fail open, as everywhere in ownership).
+- **One id everywhere.** The catalogue (`storage_id`), `integrate
+  status|enable|disable`, doctor and the job checks take the id from
+  `_pve_storage_id` (the configured or derived value); the vzdump hook and the
+  plugin never named it (they match the type `pbo` and PVE's storeid).
+
+**Tests.** `tests/schedule_config.sh` (the keys against the units, drop-ins
+written and removed, reload, and stop / `clean --what=state` / start in that
+order for a running enabled timer only, refused values with and without
+systemd-analyze, dry run, `timers [apply]`, doctor's warnings and `--fix`, the
+calendar systemd runs against the config through the systemctl mock,
+install.sh over fresh units, the janitor's keys and its root pass through a
+fake runuser, the job window)
+and the cluster part of `tests/integrate.sh` (a mocked member list of one and
+three nodes: the derived id, an entry kept, an explicit id, another node's
+storage refused, enable/status/disable with `pbo-<node>`, ownership, the
+move warning). Both run a copy of pbo that stops (99) when a path it resolved
+(the config files, the directories, the PVE paths, the systemd directory) lies
+outside the suite's run directory, before any command runs and before any
+config or drop-in write (`tests/fixtures/run_dir_guard.sh`), and every suite
+points `PBO_SYSTEMD_DIR` into the checkout, so no test can read or change a
+host's units.

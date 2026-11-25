@@ -40,6 +40,8 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/views.sh
 source "${SELF_DIR}/lib/views.sh"
+# shellcheck source=lib/timers.sh
+source "${SELF_DIR}/lib/timers.sh"
 # shellcheck source=lib/config_schema.sh
 source "${SELF_DIR}/lib/config_schema.sh"
 # shellcheck source=lib/config.sh
@@ -72,6 +74,8 @@ source "${SELF_DIR}/lib/menu.sh"
 source "${SELF_DIR}/lib/perms.sh"
 # shellcheck source=lib/cachemove.sh
 source "${SELF_DIR}/lib/cachemove.sh"
+# shellcheck source=lib/report.sh
+source "${SELF_DIR}/lib/report.sh"
 
 readonly VERSION="0.6.0-dev"
 
@@ -108,12 +112,15 @@ Commands:
   status                      running jobs, queue length, who holds the global lock
   metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
-  doctor [--fix [--fix-parents]] [--perms-only]
-                              health check (repo, timer, permissions, per-guest age);
-                              --fix applies the permission table (modes, owners, the CACHE_DIR
-                              ACL; audited, with --dry-run listed only), --fix-parents also lets
+  doctor [--fix [--fix-parents]] [--perms-only] | doctor --report
+                              health check (repo, timer and its schedule, permissions, restic version,
+                              per-guest age); --fix applies the permission table (modes, owners, the
+                              CACHE_DIR ACL) and the timer drop-ins (audited, with --dry-run listed
+                              only), --fix-parents also lets
                               unprivileged CTs pass the directories above CACHE_DIR (u:<uid>:--x),
-                              --perms-only checks (or fixes) permissions alone
+                              --perms-only checks (or fixes) permissions alone. --report: the
+                              environment for a bug report (versions, filesystem, backend types,
+                              tools; no host name, URL, path or secret)
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   job start <command> [args]  run an action in the background (backup, restore, verify, prune,
                               test-restore, ...); prints the job id at once
@@ -121,7 +128,11 @@ Commands:
   policy get <vmid>           the guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
                               change it (writes the guest's pbo-* Proxmox tags, others untouched)
-  timers                      the pbo timers: enabled, next and last run, last result
+  timers                      the pbo timers: enabled, the schedule and where it comes from
+                              (default or config: SCHEDULE_*), next and last run, last result
+  timers apply                write the timers' schedule drop-ins from the config (<timer>.d/
+                              schedule.conf; none for a default), daemon-reload, restart the
+                              enabled ones whose schedule changed (install.sh runs it)
   config [show]               the effective configuration (secrets never shown)
   config list [--all]         the keys for this role: value, source, type (--all: test hooks and
                               the other role's keys too)
@@ -133,7 +144,9 @@ Commands:
                               --shared writes the cluster-shared /etc/pve/pbo/config (no secret,
                               exec or per-node key); --yes confirms a new repo (no data is moved);
                               --force writes a key the schema does not know. Keys managed by another
-                              command (PBO_INTEGRATION: pbo integrate) are refused
+                              command (PBO_INTEGRATION: pbo integrate) are refused. SCHEDULE_*
+                              (systemd OnCalendar=, checked with systemd-analyze): the timer's
+                              drop-in is written and an enabled timer restarted
   config set CACHE_DIR <dir> [--yes] [--keep-old] [--fix-parents] [--verify-data] [--force]
                               move the cache with its data: all checks first (--dry-run prints them
                               and the plan), then a journalled move: backups, ingest, restores and
@@ -189,13 +202,16 @@ Commands:
   ingest --vmid <vmid> --archive <path>
                               upload an archive a PVE backup job wrote to the pbo spool (the
                               vzdump hook runs this; guest lock only, cache and offsite)
-  ingest --pending            ingest spool archives older than 10 min (unless vzdump runs) and
+  ingest --pending            ingest spool archives older than INGEST_PENDING_MIN (10 min) unless vzdump runs, and
                               copy offsite the ingested snapshots whose copy failed
   integrate status            the Proxmox integration: mode, PVE versions, plugin, storage, hook,
                               spool, catalogue, PVE jobs to pbo, the storage.cfg/vzdump.conf recipe
   integrate enable <both|integrated> [--catalog-only] [--yes]
                               add the pbo storage to PVE (and, unless --catalog-only, the spool
-                              path and the vzdump hook), start pbo-catalog.timer, set the mode
+                              path and the vzdump hook), start pbo-catalog.timer, set the mode.
+                              Its id is PVE_STORAGE_ID: pbo on a single node, pbo-<node> (--nodes
+                              <node>, pinned in the local config) in a cluster; an entry pbo
+                              already made for this node keeps its id
   integrate disable [--yes]   back to standalone: mode first, then hook, storage and timer go
                               (refused while an enabled PVE job writes to pbo)
 
@@ -326,7 +342,8 @@ cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result 
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
 cmd_doctor() {
-    _doctor_args "$@" || die "$EX_USAGE" "unknown doctor flag: $DOCTOR_BAD_ARG (use --fix, --fix-parents, --perms-only, --dry-run)"
+    _doctor_args "$@" || die "$EX_USAGE" "unknown doctor flag: $DOCTOR_BAD_ARG (use --fix, --fix-parents, --perms-only, --report, --dry-run)"
+    if (( DOCTOR_REPORT )); then rdo_doctor_report; return; fi
     # --fix changes modes, owners and ACLs: the command record in audit.jsonl
     # must not claim read_only (a dry run still is)
     (( DOCTOR_FIX )) && AUDIT_RW_OVERRIDE=1
@@ -477,10 +494,20 @@ main() {
     # refuses, and `config template` does not depend on it, so neither stops on
     # a line the reader refuses. Set here only, never from the environment: a
     # lenient load elsewhere would run a command on what is left of the config.
+    # `catalog _umount` (pbo-mount.service's ExecStopPost) loads leniently too
+    # and runs on a RESTIC_ENV_FILE pbo refuses: it only lazily unmounts a FUSE
+    # mount at PVE_CATALOG_MOUNT_DIR and runs no restic, and a dead mount left
+    # there would make the next start fail.
     PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0
     if [[ "$PBO_COMMAND" == config ]]; then
         PBO_SUBCOMMAND="${1:-show}"
         case "$PBO_SUBCOMMAND" in check|template) PBO_CFG_LENIENT=1 ;; esac
+    elif [[ "$PBO_COMMAND" == catalog ]]; then
+        PBO_SUBCOMMAND="${1:-}"
+        [[ "$PBO_SUBCOMMAND" == _umount ]] && PBO_CFG_LENIENT=1
+    elif [[ "$PBO_COMMAND" == timers ]]; then
+        # `timers apply` stays root on a janitor: the drop-ins are root's
+        PBO_SUBCOMMAND="${1:-}"
     fi
     load_config
     json_open

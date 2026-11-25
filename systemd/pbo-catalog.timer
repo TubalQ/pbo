@@ -3,6 +3,10 @@ Description=Refresh the pbo catalogue and release expired staged archives every 
 Documentation=https://github.com/TubalQ/PBO
 
 [Timer]
+# The defaults of SCHEDULE_CATALOG (OnCalendar=) and SCHEDULE_CATALOG_DELAY
+# (RandomizedDelaySec=) in lib/config_schema.sh; tests check they agree.
+# `pbo config set SCHEDULE_CATALOG ...` changes it with a drop-in
+# (pbo-catalog.timer.d/schedule.conf): an edit here is undone by a reinstall.
 OnCalendar=*:0/15
 RandomizedDelaySec=60
 Persistent=true

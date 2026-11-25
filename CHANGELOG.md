@@ -8,7 +8,9 @@ behaviour; the entry says so when it does.
 Planned (ADR 0009): a config schema, `pbo config list|get|set|unset|check|template`,
 a strict KEY=VALUE reader instead of sourcing the config, moving CACHE_DIR with
 `pbo config set CACHE_DIR`, retention grouped per guest, `pbo doctor --fix`, and
-nothing that differs between installations hard-coded.
+nothing that differs between installations hard-coded (landed: `RESTIC_ENV_FILE`,
+`RESTIC_MIN`, threshold keys, `pbo doctor --report`, the hard-coding lint, the
+timer schedules as config keys and per-node storage ids in a cluster).
 
 Changes behaviour: **the config is no longer run as code.** pbo 0.5 sourced
 `/etc/pbo/config` (and `/etc/pve/pbo/config`) as shell code. pbo 0.6 reads them
@@ -19,6 +21,15 @@ stops every pbo command, timer and the vzdump hook with exit 78 (`EX_CONFIG`),
 naming the first three lines; `pbo config check` lists them all. `install.sh`
 checks the existing config first and changes nothing when it would be refused
 (`--force` installs anyway). See the migration notes below.
+
+Changes behaviour, in a cluster only: a node that turns the Proxmox integration
+on from scratch gets a storage of its own, `pbo-<node>` (`--nodes <node>`, its own
+spool path), instead of the one `pbo` storage for the whole cluster
+(`PVE_STORAGE_ID`'s default is derived; enable pins it in the local config). A
+single node keeps `pbo`, and an existing storage pbo made for this node keeps its
+id, so no installation is renamed by the upgrade. PVE backup jobs name a storage:
+create them per node (pbo never edits jobs.cfg; doctor explains a move from a
+shared `pbo`).
 
 Changes behaviour: retention is grouped per guest for a guest whose snapshots lie
 under more than one path (CACHE_DIR moved, a host backup whose path list
@@ -299,6 +310,152 @@ Added
   on disk no longer names; a process that read the config before a move does
   not create the old CACHE_DIR again either.
 
+- `RESTIC_ENV_FILE` (advanced, local-only; default `/etc/pbo/restic.env`; ADR
+  0009, "Portability"): `KEY=VALUE` lines in the config grammar (quotes,
+  `export`, `${NAME}` to a name set earlier in the file), given to restic and
+  nothing else. This is where S3, B2, Azure, GCS and rclone credentials go
+  (`AWS_ACCESS_KEY_ID=...`); a `rest:`, `sftp:` or local repo needs none. A
+  missing file is fine. A file that is a symlink, owned by another user,
+  writable by group or others or readable by others, or that sets `PATH`,
+  `LD_*`, `RESTIC_PASSWORD*`, `RESTIC_REPOSITORY*`, `RESTIC_FROM_*`,
+  `RESTIC_CACHE_DIR`, `RESTIC_HOST` (pbo expects every snapshot query to see
+  all hosts), the rest-server login, a config key (`RESTIC_BIN`,
+  `RESTIC_REST_PASSWORD_FILE`, ...: they belong in the config) or one of pbo's
+  internal names, stops every restic command (exit 78, like a config line pbo
+  refuses); `pbo config check` lists its errors by line and `pbo doctor`
+  reports them as FAIL. The values are read in the subshell of each restic call
+  and set on restic's command alone (`env`), so they cannot change what pbo
+  runs: pbo's own shell, the programs it runs and the hooks never see them, and
+  doctor, `config list|show|check` and the report show the file and its key
+  names, never a value. The cluster-shared config cannot name the file. The
+  permission table checks it (0600 or 0400, `doctor --fix`), and `install.sh`
+  refuses an upgrade while pbo would refuse the file (`--force` installs
+  anyway).
+- `pbo catalog _umount`: the `ExecStopPost` of pbo-mount.service. It reads
+  `PVE_CATALOG_MOUNT_DIR` from the config and lazily unmounts what is mounted
+  there only when it is a FUSE mount (nothing mounted is fine, another
+  filesystem is left alone). It runs no restic, so it also runs on a config
+  line or a RESTIC_ENV_FILE pbo refuses: the dead mount of a restic that
+  failed because of them is still removed.
+- `RESTIC_MIN` (advanced; default 0.14.0, the oldest restic with every feature
+  pbo always uses: `copy --from-repo`, `RESTIC_FROM_PASSWORD_FILE`,
+  `sftp.connections`, repository format 2; ADR 0009 has the list). A
+  rest-server login (`RESTIC_REST_USERNAME`) needs 0.16.1, which reads it from
+  the environment. `pbo doctor` reports the restic version and FAILs below the
+  minimum; `install.sh` refuses before it copies any pbo file and names what to
+  install (`--force` installs anyway); it reads the cluster-shared config and
+  the local one, as pbo does. Nothing is downloaded. `pbo list --reasons` works
+  on 0.14 to 0.16 too, whose forget JSON names a reason's snapshot without its
+  id: pbo finds it by time and tree.
+- Thresholds that differ between sites are advanced keys, with the old fixed
+  values as defaults: `PREFLIGHT_POOL_FREE_PCT` (150, the free space a guest's
+  ZFS pool needs against what its volumes use), `BATCH_FIT_PCT` (85, the share
+  of CACHE_DIR's free space batch mode may plan for), `INGEST_PENDING_MIN` (10,
+  minutes before `ingest --pending` takes a spool archive), `PVE_SPOOL_MAX_AGE`
+  (86400 s, doctor's limit for a stuck spool archive or offsite copy),
+  `PVE_JOB_WINDOW_MIN` (60, doctor's window around pbo's timers) and
+  `CATALOG_STAGE_WAIT` (10 s, a GUI request waiting for another staging of the
+  same archive). A value that is not a whole number falls back to the default
+  (doctor names it).
+- `pbo doctor` names missing tools with the package to install: `setfacl` and
+  `getfacl` (acl), `setpriv` and `findmnt` (util-linux).
+- `pbo doctor --report [--json]`: an environment report to attach to a bug
+  report: pbo's version and layout (deb, install.sh, source), the PVE package
+  versions, restic, kernel, perl, bash, systemd and OS release, the UTC offset,
+  single node or cluster (node count, quorum), CACHE_DIR's filesystem type and
+  POSIX ACL support, each repo's backend type (sftp, rest, s3, b2, azure, gs,
+  swift, rclone, local), append-only, the integration mode, whether
+  RESTIC_ENV_FILE exists (and its number of variables) and which optional tools
+  exist. No node or host name, URL, user, path or secret.
+- `tests/hardcode.sh`: a lint in CI (through tests/all.sh) that fails on an
+  absolute path, host name, IP address or clock time in `pbo`, `lib/`,
+  `install.sh`, `systemd/` or `pve-plugin/` that is not a schema default, a
+  comment, or an entry with its reason in `tests/hardcode.allow` (an entry that
+  matches nothing fails too).
+- `tests/portability.sh`: RESTIC_ENV_FILE's scope and refusals, `catalog
+  _umount`, every systemd unit in both install layouts (the .deb built for
+  real), RESTIC_MIN in doctor and install.sh, the new threshold keys, the
+  dependencies, timestamps under UTC, +05:30 and -03:00 (archive names, the
+  catalogue's ctime, the timers' next run, and that the retention plan restic
+  makes from the local day each snapshot recorded is passed through unchanged),
+  `_ct_root_uid` with custom idmaps, and `doctor --report` with secrets, URLs,
+  hosts and paths planted in the config. Every suite points RESTIC_ENV_FILE
+  into the checkout, and the config corpus check fails when a config a suite
+  loaded resolves a secret file to one of the machine's own.
+- README: a compatibility matrix (what the suites and CI test, and what they
+  do not: PVE versions, restic versions, layouts, filesystems, backends,
+  clusters, time zones).
+- Timer schedules as config keys (ADR 0009, "Portability, part 2"):
+  `SCHEDULE_BACKUP`, `SCHEDULE_PRUNE`, `SCHEDULE_VERIFY`,
+  `SCHEDULE_TEST_RESTORE`, `SCHEDULE_CATALOG` (host) and `SCHEDULE_JANITOR`
+  (janitor) in systemd's `OnCalendar=` syntax, with the `RandomizedDelaySec=`
+  of the timers that have one as `SCHEDULE_*_DELAY`. The defaults are the
+  values in `systemd/*.timer` (unchanged: 05:00 nightly, Sunday 06:30, Wednesday
+  and Saturday 10:00, every 15 minutes, 12:30 on a janitor). The new types
+  `calendar` and `timespan` are checked with `systemd-analyze` when it is
+  installed and, when it is not, with a narrow check that takes the common
+  forms only, every number in its range and a time zone only when it is UTC or
+  in the zoneinfo database (anything else is refused rather than guessed: the
+  drop-in clears the unit's calendar, so a value systemd ignored would leave the
+  timer with no trigger); a value with a newline, `%`, `\`, `=` or `[`
+  (unit-file syntax) is always refused, with 78 and nothing written. `pbo
+  config set|unset` writes the timer's drop-in
+  (`/etc/systemd/system/<timer>.d/schedule.conf`: `OnCalendar=` cleared, then
+  the value) and runs `systemctl daemon-reload`; a key back at its default
+  removes the drop-in. The unit files are never edited. A schedule change
+  resets the timer's persistent state: an enabled timer is stopped before its
+  drop-in changes, its last-trigger stamp is cleared after the reload
+  (`systemctl clean --what=state`, systemd 247 or later) and it is started again
+  when it was running, so its next run is computed from now. A change to an
+  earlier time than the last run therefore does not start the job at once, and
+  a run missed under the old schedule is not caught up. A disabled timer stays
+  disabled, an enabled one that was not running stays stopped.
+- `pbo timers apply`: writes (or removes) every drop-in of the role from the
+  config. `install.sh` runs it after installing the units and the `.deb`'s
+  postinst after an upgrade, so a reinstall keeps a custom schedule; `pbo
+  doctor --fix` applies them too (on a janitor started as root, before it drops
+  to the janitor user). `pbo doctor` WARNs when a drop-in does not match the
+  config (a hand edit, the cluster-shared file, a value refused), when systemd
+  has not reloaded its unit files, and when the calendar systemd runs
+  (TimersCalendar) is not the config's (another drop-in such as an
+  `override.conf` from `systemctl edit` sets `OnCalendar=`). On a janitor
+  started as root, the re-exec'd doctor audit-logs the drop-ins root wrote.
+  `pbo timers` shows the calendar systemd runs in its SCHEDULE column, the
+  source of the configured one (default, config, shared, env), and a note
+  where the two differ; doctor's PVE job window compares jobs with the
+  calendar systemd runs.
+- Per-node storage ids in a cluster: `PVE_STORAGE_ID` defaults to `pbo` on a
+  single node and to `pbo-<node>` in a cluster (pmxcfs' member list), unless
+  storage.cfg already has a pbo storage for this node (`pbo-<node>`, or one
+  whose `nodes` names it or that has none), which keeps its id. An explicit
+  `PVE_STORAGE_ID` always wins; it is per node (`local-only`): a value in the
+  cluster-shared file is ignored (doctor FAIL), set it per node. `pbo integrate
+  enable` pins a derived per-node id in the local config and refuses to take
+  over another node's pbo storage (its `nodes` leave this node out), or to
+  change the path of an entry it shares with other nodes (no `nodes`, or a
+  list with others): setting it to this node's spool would repoint them, and
+  `--catalog-only` deleting it would take their backup target away. `pbo
+  integrate disable` refuses another node's storage before it changes
+  anything, and takes this node off a shared entry's `nodes` instead of
+  removing it, so only the last node removes it. Doctor FAILs a storage whose
+  `nodes` leave this node out, and in a cluster where `pbo` serves more than
+  this node it WARNs with the way to move, node by node (disable, set
+  `PVE_STORAGE_ID pbo-<node>`, enable, recreate the jobs per node by hand).
+- `tests/schedule_config.sh` (in tests/all.sh): the schedule keys against the
+  units, drop-ins written and removed, reload and the stop / clean / start
+  order (running enabled timers only), refused values with and without
+  systemd-analyze, dry run, `pbo timers [apply]`, doctor's drift warnings and
+  `--fix`, the calendar systemd runs against the config, install.sh
+  re-applying a schedule over fresh units, the janitor's keys and its root
+  pass (a fake runuser), the PVE job window. `tests/integrate.sh` runs pbo with
+  a mocked pmxcfs member list (no cluster block, a cluster of one, of two and
+  of three) for the per-node ids, shared entries, enable/disable/status and
+  ownership in a cluster. Both run a copy of pbo that stops (99) when a path it
+  resolved (config, directories, PVE paths, the systemd directory) lies
+  outside the suite's run directory (`tests/fixtures/run_dir_guard.sh`); every
+  suite points `PBO_SYSTEMD_DIR` and pmxcfs (`PBO_PVE_CFS_DIR`,
+  `PVE_STORAGE_CFG`) into the checkout.
+
 Changed
 - The config writers of `pbo setup`, the menu (`_cfg_set`) and `pbo integrate`
   (`PBO_INTEGRATION`) go through the same writer as `pbo config set`: values
@@ -364,6 +521,38 @@ Changed
   refused it (69). With the Proxmox integration on, an empty cache whose spool
   follows is moved the same way (the storage path changes) instead of the M4
   refusal.
+- pbo-mount.service runs `pbo catalog _umount` after it stops instead of
+  `umount -l /run/pbo/mnt`: with another `PVE_CATALOG_MOUNT_DIR` a dead FUSE
+  mount was left behind.
+- The `.deb` depends on `restic (>= 0.14.0)` (was `>= 0.16`) and on `acl`;
+  `install.sh` installs `acl` and `util-linux` when `setfacl`, `getfacl`,
+  `setpriv` or `findmnt` is missing.
+- Every restic call that opens a repo goes through one wrapper, which exports
+  RESTIC_ENV_FILE and the rest-server login in its own subshell: `rotate-key`
+  exported the rest-server password into pbo's shell, and ran restic outside
+  the wrapper.
+- `_ct_root_uid` no longer reads `/etc/subuid`: without an `lxc.idmap: u 0`
+  line pve-container always maps CT root to 100000 and ignores that file, so a
+  custom root range there put the CACHE_DIR ACL (and doctor's check of its
+  parents) on a uid the CT does not run as, and its vzdump failed.
+- Preflight reads storage.cfg from `PVE_STORAGE_CFG`, and the node name comes
+  from the pmxcfs directory pbo is configured with; `install.sh` takes the
+  default log, state and cache directories from the schema. All three had the
+  default path written out.
+- The refusal of `export FOO=...` in the config points restic's variables to
+  `RESTIC_ENV_FILE`.
+- Doctor's warning about a PVE job near a pbo timer compares the job with the
+  configured backup, prune and verify schedules (any calendar expression whose
+  times can be worked out: plain times are read directly, wildcards and
+  repetitions through `systemd-analyze calendar`), names the run closest to
+  the job and the window (`runs within 60 min of pbo.timer (05:00)`; it said
+  "within an hour" whatever `PVE_JOB_WINDOW_MIN` was).
+- Guest ownership (`both`, `integrated`) counts only the pbo storages that
+  serve this node (no `nodes`, or `nodes` names it): a cluster-wide job on
+  another node's pbo storage does not back up this node's guests (vzdump finds
+  the storage unavailable here), so it no longer leaves them to nobody.
+- The catalogue, `pbo integrate` and doctor take the storage id from
+  `PVE_STORAGE_ID` as configured (or derived), never from a literal `pbo`.
 
 Fixed
 - The check for a running vzdump (`_vzdump_running`, `ingest --pending`)

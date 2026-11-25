@@ -93,6 +93,40 @@ after the host has been off past a Sunday they fire together right after boot. T
 prune timer runs `prune --queue`, which waits for the backup run to finish (up to
 `SCHEDULE_LOCK_TIMEOUT`). A manual `pbo prune` exits at once if a backup is running.
 
+### Changing the schedule
+
+The times are config keys in systemd's `OnCalendar=` syntax: `SCHEDULE_BACKUP`,
+`SCHEDULE_PRUNE`, `SCHEDULE_VERIFY`, `SCHEDULE_TEST_RESTORE`, `SCHEDULE_CATALOG` (and
+`SCHEDULE_JANITOR` on a janitor), each with a `_DELAY` key for its
+`RandomizedDelaySec=` where the timer has one. Do not edit the unit files: a
+reinstall or a package upgrade puts the defaults back.
+
+```bash
+systemd-analyze calendar --iterations=3 "Mon..Fri *-*-* 22:30:00"   # try the expression first
+pbo --dry-run config set SCHEDULE_BACKUP "Mon..Fri *-*-* 22:30:00"  # the config diff and the drop-in it would write
+pbo config set SCHEDULE_BACKUP "Mon..Fri *-*-* 22:30:00"
+pbo timers                                                           # SCHEDULE, SOURCE (config), NEXT
+systemctl list-timers 'pbo*'
+pbo config unset SCHEDULE_BACKUP                                     # back to the default, the drop-in goes
+```
+
+`config set` refuses a value systemd cannot parse (exit 78, nothing written),
+writes `/etc/systemd/system/pbo.timer.d/schedule.conf` (it clears the unit's
+`OnCalendar=`, then sets the new one) and reloads systemd. A schedule change resets
+the timer's persistent state: an enabled timer is stopped first, its last-trigger
+stamp is cleared (`systemctl clean --what=state`) and it is started again if it was
+running, so its next run is computed from now. Moving a time to earlier than the
+last run therefore does not start the job at once, and a run missed under the old
+schedule is not caught up. A disabled timer stays disabled. If the config was edited by hand, or
+in the cluster-shared file, `pbo doctor` warns that the drop-in does not match:
+`pbo timers apply` (or `pbo doctor --fix`) writes it. The SCHEDULE column of `pbo
+timers` is the calendar systemd runs: an `override.conf` from `systemctl edit` (the
+way to change a time before 0.6) that sets `OnCalendar=` wins over the config, and
+`pbo timers` and `pbo doctor` say so; remove that override (or its `OnCalendar=`
+lines) and set the key instead. `pbo doctor` also warns when a Proxmox backup job to
+pbo starts within `PVE_JOB_WINDOW_MIN` minutes of the backup, prune or verify
+schedule.
+
 ## Restore with the tool
 
 ```bash
@@ -148,13 +182,44 @@ so you get cluster-wide dedup with no central coordinator. Points to remember:
   once. The local file still wins where they differ.
 - Prune from one node only, or set `PRUNE_OWNER`, because prune takes an exclusive
   lock.
+- Stagger the backup times per node (`pbo config set SCHEDULE_BACKUP ...` on each
+  node, in its local config). A schedule set with `--shared` reaches every node's
+  config, but only the node that ran it gets its timer updated: run `pbo timers
+  apply` on the others (their doctor warns until then).
+- With the Proxmox integration each node has its own storage, `pbo-<node>`
+  (`nodes <node>`, the path of that node's spool). `pbo integrate enable` on a node
+  of a cluster creates it and pins `PVE_STORAGE_ID=pbo-<node>` in the local config;
+  a single node keeps `pbo`. Make one Proxmox backup job per node, on that node's
+  storage. A job for every node on one node's storage fails on the others, and
+  pbo does not count it as backing up their guests.
+- **Moving off the shared `pbo` storage** (a cluster that enabled the integration
+  before 0.6; doctor warns "storage 'pbo' in a cluster of N nodes"). On each node
+  that uses it:
+  1. In Datacenter -> Backup, disable the jobs that write to `pbo` (or point them at
+     another storage for the moment). pbo never edits jobs.cfg.
+  2. `pbo integrate disable --yes` (it ingests what is left in the spool; while
+     `pbo` still serves other nodes it takes this node off the storage's `nodes`
+     instead of removing it, and the last node removes it; pbo.timer backs up
+     every guest meanwhile).
+  3. `pbo config set PVE_STORAGE_ID pbo-<node>` (unsetting it is enough only once
+     `pbo` no longer serves this node).
+  4. `pbo integrate enable both` (or `integrated`): it adds `pbo-<node>` with this
+     node's spool.
+  5. Recreate the jobs by hand, one per node, with `Storage: pbo-<node>`, and
+     delete the old ones. The snapshots stay where they are: the GUI lists them
+     under the new storage.
+  A node whose config names another node's storage is refused by `pbo integrate
+  enable` (its spool path would be repointed) and by `pbo integrate disable` (it
+  would remove that storage for the whole cluster), and failed by doctor.
+  `PVE_STORAGE_ID` is per node: a line in the cluster-shared config is ignored.
 
 ## The Proxmox integration
 
 Only with `PBO_INTEGRATION=both` or `integrated` (README, "Proxmox GUI").
 
 - **Health.** `pbo integrate status` shows the mode, the versions, plugin,
-  storage, hook, spool, catalogue, the Proxmox jobs to `pbo` and who owns which
+  storage (`pbo`, or `pbo-<node>` in a cluster), hook, spool, catalogue, the
+  Proxmox jobs to it and who owns which
   guest, plus the exact `storage.cfg` stanza and `vzdump.conf` line (keep those in
   your host recipe). `pbo doctor` fails on anything broken.
 - **A Proxmox job to `pbo` failed.** Look at its task log. Archives still in the

@@ -2,7 +2,8 @@
 # mock pvesh: answers by API path. Logs to $MOCK_LOG.
 #   /cluster/backup  → the file $MOCK_PVESH_BACKUP_JSON, default []
 #   /storage         → the file $MOCK_PVESH_STORAGE_JSON; without it the stanzas of
-#                      $MOCK_STORAGE_CFG (storage.cfg format) as [{storage, type}]; default []
+#                      $MOCK_STORAGE_CFG (storage.cfg format) as [{storage, type}] (plus
+#                      nodes when the stanza has a nodes line, as the API gives it); default []
 #   anything else    → the file $MOCK_PVESH_JSON; default empty, i.e. no cluster
 #                      view, so cluster filtering is a no-op and an explicit
 #                      BACKUP_ORDER is used as-is
@@ -16,7 +17,11 @@ case "$path" in
     /cluster/backup) if [ -n "${MOCK_PVESH_BACKUP_JSON:-}" ]; then cat "$MOCK_PVESH_BACKUP_JSON"; else echo '[]'; fi ;;
     /storage)        if [ -n "${MOCK_PVESH_STORAGE_JSON:-}" ]; then cat "$MOCK_PVESH_STORAGE_JSON"
                      elif [ -n "${MOCK_STORAGE_CFG:-}" ] && [ -f "$MOCK_STORAGE_CFG" ]; then
-                         sed -nE 's/^([A-Za-z][A-Za-z0-9_-]*):[[:space:]]+([^[:space:]]+)[[:space:]]*$/{"storage":"\2","type":"\1"}/p' "$MOCK_STORAGE_CFG" | jq -cs .
+                         awk '
+                             function out() { if (id != "") { printf "{\"storage\":\"%s\",\"type\":\"%s\"%s}\n", id, ty, (nd == "" ? "" : ",\"nodes\":\"" nd "\"") } id = ""; nd = "" }
+                             /^[A-Za-z][A-Za-z0-9_-]*:[ \t]+[^ \t]+[ \t]*$/ { out(); ty = $1; sub(/:$/, "", ty); id = $2; next }
+                             /^[ \t]+nodes[ \t]/ { nd = $2 }
+                             END { out() }' "$MOCK_STORAGE_CFG" | jq -cs .
                      else echo '[]'; fi ;;
     *)               cat "${MOCK_PVESH_JSON:-/dev/null}" 2>/dev/null || echo '[]' ;;
 esac

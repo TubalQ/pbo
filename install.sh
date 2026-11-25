@@ -23,9 +23,11 @@
 # tests/install.sh can source it. PBO_INSTALL_TEST=1 (tests only) lets these be
 # overridden: PBO_INSTALL_CFGDIR, PBO_INSTALL_PLUGIN_DIR, PBO_INSTALL_STORAGE_CFG, PBO_INSTALL_SYSTEMCTL,
 # PBO_INSTALL_DPKG_QUERY, PBO_INSTALL_PLUGIN_CHECK, PBO_INSTALL_TTY (0|1),
-# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_SHARED_CFG (the
-# cluster-shared config; none in test mode unless set), PBO_INSTALL_PBO (the pbo
-# inst_perms runs).
+# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_BIN (the pbo symlink;
+# the compat alias goes next to it), PBO_INSTALL_SHARED_CFG (the cluster-shared
+# config; none in test mode unless set), PBO_INSTALL_PBO (the pbo inst_perms
+# runs). In test mode inst_host_units writes no notification templates
+# (/etc/pve), so tests/portability.sh can install the units into a tree.
 #
 # Upgrade guard (0.6, ADR 0009): before any file is replaced, the existing
 # config is read with the strict reader of this source tree, the way pbo 0.6
@@ -56,6 +58,7 @@ if [[ "${PBO_INSTALL_TEST:-0}" == 1 ]]; then
     DPKG_QUERY="${PBO_INSTALL_DPKG_QUERY:-$DPKG_QUERY}"
     LIBDIR="${PBO_INSTALL_LIBDIR:-$LIBDIR}"
     UNITDIR="${PBO_INSTALL_UNITDIR:-$UNITDIR}"
+    BIN="${PBO_INSTALL_BIN:-$BIN}"
 fi
 PLUGIN_FILE="$PLUGIN_DIR/PboPlugin.pm"
 # the minimums of the Proxmox integration (lib/integrate.sh, the pbo-pve-storage package)
@@ -148,6 +151,8 @@ inst_config_mode() {
 # the migration hint for a file bash accepts. --force (FORCE=1) installs anyway,
 # with a warning. A line the reader accepts but pbo ignores (an exec or
 # local-only key in the shared file) does not stop pbo: named, not refused.
+# RESTIC_ENV_FILE is checked the same way (inst_env_file_check): pbo stops on
+# a file it refuses just as on a refused config line.
 inst_config_guard() {
     local e f bashok=()
     inst_cfg_reader
@@ -163,21 +168,47 @@ inst_config_guard() {
         echo "==> Config: lines pbo ignores (doctor reports them as FAIL)"
         for e in "${CFG_IGNORED[@]}"; do echo "    $e"; done
     fi
-    (( ${#CFG_ERRORS[@]} )) || return 0
-    echo "==> Config: read the way pbo 0.6 reads it (KEY=VALUE, not run as shell code)"
-    for e in "${CFG_ERRORS[@]}"; do echo "    $e"; done
-    for f in "${PBO_CONFIG_FILES[@]}"; do
-        [[ " ${CFG_ERRORS[*]}" == *" $f:"* ]] || continue
-        bash -n -- "$f" 2>/dev/null && bashok+=("$f")
-    done
-    for f in "${bashok[@]+"${bashok[@]}"}"; do
-        echo "    $f is valid bash, but pbo 0.6 no longer runs the config as code; see the 0.6.0 migration notes in CHANGELOG.md"
-    done
+    inst_env_file_check
+    (( ${#CFG_ERRORS[@]} + ${#RENV_ERRORS[@]} )) || return 0
+    if (( ${#CFG_ERRORS[@]} )); then
+        echo "==> Config: read the way pbo 0.6 reads it (KEY=VALUE, not run as shell code)"
+        for e in "${CFG_ERRORS[@]}"; do echo "    $e"; done
+        for f in "${PBO_CONFIG_FILES[@]}"; do
+            [[ " ${CFG_ERRORS[*]}" == *" $f:"* ]] || continue
+            bash -n -- "$f" 2>/dev/null && bashok+=("$f")
+        done
+        for f in "${bashok[@]+"${bashok[@]}"}"; do
+            echo "    $f is valid bash, but pbo 0.6 no longer runs the config as code; see the 0.6.0 migration notes in CHANGELOG.md"
+        done
+    fi
+    if (( ${#RENV_ERRORS[@]} )); then
+        echo "==> RESTIC_ENV_FILE (restic's backend environment): pbo would refuse it"
+        for e in "${RENV_ERRORS[@]}"; do echo "    $e"; done
+        echo "    it holds credentials: chmod 600 and chown root (a systemd EnvironmentFile for other variables belongs elsewhere)"
+    fi
     if [[ "$FORCE" == 1 ]]; then
-        echo "    WARNING: --force: installing anyway. Every pbo command stops on this config (exit 78) until the lines above are fixed ('$BIN config check' names each one)."
+        echo "    WARNING: --force: installing anyway. Every pbo command stops on this config (exit 78) until the problems above are fixed ('$BIN config check' names each one)."
         return 0
     fi
-    die "the installed pbo would refuse this config (above). Nothing was changed. Fix the lines (each KEY=VALUE, see CHANGELOG.md), check with '$SRC/pbo config check --file <file>', then run install.sh again (or with --force to install anyway)."
+    die "the installed pbo would refuse this config (above). Nothing was changed. Fix the problems (each config line KEY=VALUE, see CHANGELOG.md), check with '$SRC/pbo config check --file <file>', then run install.sh again (or with --force to install anyway)."
+}
+
+# inst_env_file_check → RENV_ERRORS: RESTIC_ENV_FILE (from the config just
+# read, else the schema default) checked by the code of the version being
+# installed (_restic_env_read in lib/restic.sh: owner, mode, symlink, grammar,
+# refused names). Only the names of its keys are kept, never a value. In test
+# mode the default is moved along with CFGDIR.
+inst_env_file_check() {
+    _cs_load
+    if ! declare -F _restic_env_read >/dev/null; then
+        # shellcheck source=lib/restic.sh
+        source "$SRC/lib/restic.sh"
+    fi
+    local def="${CS_DEFAULT[RESTIC_ENV_FILE]}"
+    [[ "${PBO_INSTALL_TEST:-0}" != 1 ]] || def="$CFGDIR/${def##*/}"
+    local RESTIC_ENV_FILE="${CFG_VAL[RESTIC_ENV_FILE]:-$def}" PBO_ROLE="$ROLE" JANITOR_USER="$JUSER"
+    _restic_env_read || true
+    _RENV_VAL=()
 }
 
 # inst_is_tty: a person at a terminal (PBO_INSTALL_TTY in test mode).
@@ -289,8 +320,13 @@ inst_deps() {
     # restic jq zstd flock curl openssl: the tool + the setup wizard (openssl mints
     # the DR key). ssh/sftp/ssh-keygen/ssh-keyscan come from openssh-client, which
     # the wizard uses to make and pin an SSH key and to test the connection.
+    # setfacl/getfacl (acl): the CACHE_DIR entry an unprivileged CT's vzdump
+    # passes through; setpriv (util-linux): doctor's check of the directories
+    # above it; findmnt (util-linux): pbo-mount.service's cleanup. A minimal
+    # Debian has no acl package.
     declare -A pkg=( [restic]=restic [jq]=jq [zstd]=zstd [flock]=util-linux [curl]=curl
-                     [openssl]=openssl [ssh-keygen]=openssh-client )
+                     [openssl]=openssl [ssh-keygen]=openssh-client
+                     [setfacl]=acl [getfacl]=acl [setpriv]=util-linux [findmnt]=util-linux )
     local need=() b; for b in "${!pkg[@]}"; do command -v "$b" >/dev/null 2>&1 || need+=("${pkg[$b]}"); done
     if [[ "${#need[@]}" -gt 0 ]]; then
         # unique package list
@@ -298,12 +334,41 @@ inst_deps() {
         echo "    installing: ${need[*]}"
         apt-get update -qq && apt-get install -y "${need[@]}"
     else
-        echo "    all present (restic jq zstd flock curl openssl openssh-client)"
+        echo "    all present (restic jq zstd flock curl openssl openssh-client acl util-linux)"
     fi
     [[ "$ROLE" == janitor ]] || for b in vzdump pct qm zfs; do command -v "$b" >/dev/null 2>&1 || echo "    WARNING: '$b' missing, required on a real Proxmox host."; done
 }
 
-inst_program() {
+# inst_restic_check: the restic that pbo will run (RESTIC_BIN from the existing
+# config, else restic on PATH) is at least the version the config needs
+# (RESTIC_MIN, raised for a rest-server login: _restic_need_version in
+# lib/config_schema.sh). The config is the cluster-shared file, then the local
+# one, as pbo merges them (RESTIC_BIN is an exec key the reader drops from the
+# shared file, so the restic checked is still the node's own). Run after the dependencies and before any pbo file is
+# copied: an older restic fails in the middle of the first backup or copy.
+# --force installs anyway. No restic is downloaded.
+inst_restic_check() {
+    local f="$CFGDIR/config" bin=restic min='' ruser='' v need why
+    inst_cfg_reader
+    _cfg_reset; declare -gA CFG_ENV=()
+    if [[ -n "$SHARED_CFG" && -r "$SHARED_CFG" ]]; then _cfg_parse_file "$SHARED_CFG" shared || true; fi
+    if [[ -r "$f" ]]; then _cfg_parse_file "$f" local || true; fi
+    bin="${CFG_VAL[RESTIC_BIN]:-restic}"; min="${CFG_VAL[RESTIC_MIN]:-}"; ruser="${CFG_VAL[RESTIC_REST_USERNAME]:-}"
+    need="$(_restic_need_version "$min" "$ruser")"; why="${need#*|}"; need="${need%%|*}"
+    v="$("$bin" version 2>/dev/null | awk '$1 == "restic" { print $2; exit }')" || v=''
+    v="${v%%[-+~]*}"
+    echo "==> restic: ${v:-not found} ($bin; this config needs >= $need)"
+    if [[ -n "$v" ]] && _version_ge "$v" "$need"; then return 0; fi
+    local msg="restic ${v:-is missing or does not run} ($bin)"
+    [[ -z "$v" ]] || msg="restic $v ($bin) is older than $need ($why)"
+    msg+=". No pbo file was installed. Install restic >= $need (a newer distribution or backports package, or the static release binary from the restic project, checked against its published checksum) and set RESTIC_BIN in $f if it is not the restic on PATH, then run install.sh again (--force installs anyway)."
+    if [[ "$FORCE" == 1 ]]; then echo "    WARNING: --force: $msg"; return 0; fi
+    die "$msg"
+}
+
+# inst_program_files: pbo and its libraries into LIBDIR, BIN linked to it
+# (tests/portability.sh runs the units against what this installs).
+inst_program_files() {
     echo "==> Program files → $LIBDIR"
     install -d -m 0755 "$LIBDIR" "$LIBDIR/lib"
     install -m 0755 "$SRC/pbo" "$LIBDIR/pbo"
@@ -311,8 +376,12 @@ inst_program() {
     ln -sf "$LIBDIR/pbo" "$BIN"
     echo "    $BIN → $LIBDIR/pbo"
     # Backward-compat: keep the old name working (pbo was formerly 'lxc-offsite').
-    ln -sf "$LIBDIR/pbo" /usr/local/sbin/lxc-offsite
-    echo "    /usr/local/sbin/lxc-offsite → $LIBDIR/pbo  (compat alias)"
+    ln -sf "$LIBDIR/pbo" "${BIN%/*}/lxc-offsite"
+    echo "    ${BIN%/*}/lxc-offsite → $LIBDIR/pbo  (compat alias)"
+}
+
+inst_program() {
+    inst_program_files
 
     echo "==> logrotate"
     install -m 0644 "$SRC/etc/logrotate.d/pbo" /etc/logrotate.d/pbo
@@ -323,12 +392,18 @@ inst_program() {
     fi
 
     echo "==> Directories"
-    install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
+    # the schema's default directories (a fresh install's config uses them); a
+    # config that moves them gets its own from pbo (ensure_dirs) and their
+    # modes from doctor --fix. Never the configured ones here: the janitor's
+    # recursive chown must not run on a directory someone pointed elsewhere.
+    inst_cfg_reader; _cs_load
+    local logd="${CS_DEFAULT[LOG_DIR]}" stated="${CS_DEFAULT[STATE_DIR]}" cached="${CS_DEFAULT[CACHE_DIR]}"
+    install -d -m 0755 "$logd" "$stated" "$stated/jobs"
     install -d -m 0700 "$CFGDIR"
     if [[ "$ROLE" == janitor ]]; then
         # The janitor runs as $JUSER: it needs its state/log dirs and to read the config.
-        install -d -m 0755 /var/cache/pbo
-        chown -R "$JUSER:$JUSER" /var/log/pbo /var/lib/pbo /var/cache/pbo
+        install -d -m 0755 "$cached"
+        chown -R "$JUSER:$JUSER" "$logd" "$stated" "$cached"
         chown "root:$JUSER" "$CFGDIR"; chmod 0750 "$CFGDIR"
     fi
 
@@ -364,6 +439,24 @@ inst_perms() {
     return 0
 }
 
+# inst_schedules: the timer schedules of the config (SCHEDULE_*, lib/timers.sh)
+# as drop-ins next to the units just installed, through the pbo just installed
+# (`pbo timers apply`): the units carry the defaults, so a reinstall over a
+# config with a custom schedule keeps it. A drop-in the config no longer wants
+# goes. Its output is shown; it never fails the install (doctor names a drift,
+# `pbo doctor --fix` applies it again).
+inst_schedules() {
+    echo "==> Timer schedules ($BIN timers apply)"
+    local pbo="$BIN" out rc=0
+    [[ "${PBO_INSTALL_TEST:-0}" == 1 && -n "${PBO_INSTALL_PBO:-}" ]] && pbo="$PBO_INSTALL_PBO"
+    out="$(PBO_SYSTEMD_DIR="$UNITDIR" "$pbo" timers apply 2>&1)" || rc=$?
+    [[ -z "$out" ]] || printf '%s\n' "$out" | sed 's/^/    /'
+    if (( rc != 0 )); then
+        echo "    WARNING: the timer schedules could not all be applied (exit $rc); fix the config, then run '$BIN timers apply'."
+    fi
+    return 0
+}
+
 inst_janitor_units() {
     echo "==> systemd units (installed, NOT enabled)"
     sed "s/^User=.*/User=$JUSER/; s/^Group=.*/Group=$JUSER/" "$SRC/systemd/pbo-janitor.service" > "$UNITDIR/pbo-janitor.service"
@@ -377,7 +470,7 @@ Installed: pbo janitor (runs as $JUSER).
   1. Edit $CFGDIR/config: RESTIC_OFFSITE_REPO = the repo directory on this disk.
   2. Put the repo password in $CFGDIR/restic-pass, chown $JUSER, chmod 0400.
   3. Check it:   $BIN doctor        (drops to $JUSER by itself)
-  4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily 12:30)
+  4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily, SCHEDULE_JANITOR)
 
 Started as root, pbo re-execs itself as $JUSER (JANITOR_USER in the config), so
 plain "$BIN doctor" is fine.
@@ -422,7 +515,8 @@ inst_host_units() {
 
     # Proxmox notification templates. /etc/pve is pmxcfs: plain cp, no
     # chmod/chown. Cluster-wide, so installing on one node covers all of them.
-    if [[ -d /etc/pve ]]; then
+    # Not in test mode: the paths are the host's own.
+    if [[ "${PBO_INSTALL_TEST:-0}" != 1 && -d /etc/pve ]]; then
         install -d /usr/local/share/pbo/templates
         install -m 0644 "$SRC"/templates/pbo-*.hbs /usr/local/share/pbo/templates/
         if mkdir -p /etc/pve/notification-templates/default 2>/dev/null \
@@ -461,10 +555,12 @@ Installed: pbo (Proxmox Backup Offsite).
   Health:     $BIN doctor     check repo, timer, key perms, per-guest age
 
 The wizard offers to enable the schedule at the end. To do it by hand instead:
-  systemctl enable --now pbo.timer         (backups, 05:00 nightly)
-  systemctl enable --now pbo-prune.timer   (prune, Sun 06:30)
-  systemctl enable --now pbo-verify.timer  (integrity, Wed 10:00, 1/12 of the data per run)
-  systemctl enable --now pbo-test-restore.timer  (restore test, Sat 10:00, one guest per run)
+  systemctl enable --now pbo.timer         (backups, nightly: SCHEDULE_BACKUP)
+  systemctl enable --now pbo-prune.timer   (prune, weekly: SCHEDULE_PRUNE)
+  systemctl enable --now pbo-verify.timer  (integrity, weekly, 1/12 of the data per run: SCHEDULE_VERIFY)
+  systemctl enable --now pbo-test-restore.timer  (restore test, weekly, one guest per run: SCHEDULE_TEST_RESTORE)
+'$BIN timers' shows when each runs; 'pbo config set SCHEDULE_BACKUP "<OnCalendar>"'
+changes it (a drop-in next to the unit, the timer restarted if enabled).
 EOF
     if [[ "$MODE" != standalone ]]; then cat <<EOF
 
@@ -517,13 +613,15 @@ main() {
     fi
 
     inst_deps
+    inst_restic_check
     inst_program
-    if [[ "$ROLE" == janitor ]]; then inst_perms; inst_janitor_units; exit 0; fi
+    if [[ "$ROLE" == janitor ]]; then inst_perms; inst_janitor_units; inst_schedules; exit 0; fi
     inst_web_remove
     inst_host_units
     inst_integration
     "$SYSTEMCTL" daemon-reload
     inst_perms
+    inst_schedules
     inst_final_message
 
     # --- interactive first-run setup (only on a real terminal) ---

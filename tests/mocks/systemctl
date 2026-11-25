@@ -8,6 +8,9 @@
 #   start/stop <unit>:          create/remove <unit>.active
 #   enable/disable [--now] <unit...>: create/remove <unit>.enabled (and .active with --now)
 #   cat <unit>:                 succeeds when <unit> is in $MOCK_SYSTEMCTL_UNITS (space-separated)
+#   show -p <prop> --value <unit>: the value(s) of <prop>= lines in
+#                               $MOCK_SYSTEMCTL_DIR/<unit>.show (none: empty, exit 0)
+#   clean --what=state <unit>:  succeeds (systemd 247+ removes the timer's stamp)
 #   MOCK_SYSTEMCTL_FAIL="<verb> [<verb>...]": those verbs exit 1
 #   MOCK_SYSTEMCTL_START_HOOK=<script>: start runs `bash <script> <unit>` first
 #                               (what the unit would see at that moment); its
@@ -41,5 +44,11 @@ case "$cmd" in
         done
         exit 0 ;;
     cat)   [[ " ${MOCK_SYSTEMCTL_UNITS:-} " == *" $unit "* ]] && { echo "# $unit (mock)"; exit 0; }; exit 1 ;;
+    show)
+        prop=''; prev=''; for a in "$@"; do [[ "$prev" == -p ]] && prop="$a"; prev="$a"; done
+        unit="${*: -1}"
+        [[ -n "$d" && -n "$prop" && -f "$d/$unit.show" ]] || exit 0
+        while IFS= read -r l; do [[ "$l" == "$prop="* ]] && printf '%s\n' "${l#*=}"; done < "$d/$unit.show"
+        exit 0 ;;
     *) exit 0 ;;
 esac

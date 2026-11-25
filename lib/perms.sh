@@ -52,6 +52,7 @@ _perm_rules() {
             "config/..|dir|root|$jg|0750|-|fix|root writes the config, $ju only reads it" \
             "config|file|root|$jg|0640|-|fix|root writes the config, $ju only reads it" \
             "RESTIC_PASSWORD_FILE|file|$ju|-|0400/0600|-|fix|the DR key: whoever reads it can decrypt every backup" \
+            "RESTIC_ENV_FILE|file|$ju|-|0400/0600|-|fix|the backend credentials restic gets (S3, B2, Azure, GCS, rclone)" \
             "NTFY_CREDS_FILE|file|$ju|-|<0640|-|fix|the ntfy credentials (group-readable is allowed: other tools may share the file)"
         return 0
     fi
@@ -78,6 +79,7 @@ _perm_rules() {
         "config-shared|keys|-|-|-|-|check|pmxcfs copies the cluster-shared config to every node" \
         "RESTIC_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the DR key: whoever reads it can decrypt every backup" \
         "RESTIC_REST_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the rest-server password" \
+        "RESTIC_ENV_FILE|file|root?|-|0600/0400|-|fix|the backend credentials restic gets (S3, B2, Azure, GCS, rclone)" \
         "NTFY_CREDS_FILE|file|root?|-|<0640|-|fix|the ntfy credentials (group-readable is allowed: other tools may share the file)" \
         "PVE_CATALOG_MOUNT_DIR/..|dir|root|-|<0700|-|check|the cache repo is mounted below it with allow_other: only root may enter"
     [[ "${METRICS_ENABLED:-true}" != true ]] \
@@ -598,27 +600,30 @@ _perm_change_text() {
 
 # --- doctor ---------------------------------------------------------------------
 # doctor's own flags (_doctor_args), 0 for a caller that never parsed them.
-DOCTOR_FIX=0 DOCTOR_FIX_PARENTS=0 DOCTOR_PERMS_ONLY=0 DP_CHANGES_JSON=null
+DOCTOR_FIX=0 DOCTOR_FIX_PARENTS=0 DOCTOR_PERMS_ONLY=0 DOCTOR_REPORT=0 DP_CHANGES_JSON=null
 # PERM_KEY_MISSING_OK=1 (doctor --perms-only): a DR key that does not exist yet
 # is a warning, not a failure. install.sh runs --perms-only before `pbo setup`
 # made the key, and no permission fix can create it; full doctor still fails.
 PERM_KEY_MISSING_OK=0
 
 # _doctor_args <args...>: doctor's own flags into DOCTOR_FIX, DOCTOR_FIX_PARENTS
-# (implies --fix), DOCTOR_PERMS_ONLY; --dry-run also works after the command.
-# Returns 1 (and DOCTOR_BAD_ARG) on anything else.
+# (implies --fix), DOCTOR_PERMS_ONLY, DOCTOR_REPORT (the environment report,
+# lib/report.sh: read-only, so not with --fix or --perms-only); --dry-run also
+# works after the command. Returns 1 (and DOCTOR_BAD_ARG) on anything else.
 _doctor_args() {
-    DOCTOR_FIX=0 DOCTOR_FIX_PARENTS=0 DOCTOR_PERMS_ONLY=0 DOCTOR_BAD_ARG=""
+    DOCTOR_FIX=0 DOCTOR_FIX_PARENTS=0 DOCTOR_PERMS_ONLY=0 DOCTOR_REPORT=0 DOCTOR_BAD_ARG=""
     while (( $# )); do
         case "$1" in
             --fix) DOCTOR_FIX=1 ;;
             --fix-parents) DOCTOR_FIX=1; DOCTOR_FIX_PARENTS=1 ;;
             --perms-only) DOCTOR_PERMS_ONLY=1 ;;
+            --report) DOCTOR_REPORT=1 ;;
             --dry-run) DRY_RUN=1 ;;
             *) DOCTOR_BAD_ARG="$1"; return 1 ;;
         esac
         shift
     done
+    if (( DOCTOR_REPORT && (DOCTOR_FIX || DOCTOR_PERMS_ONLY) )); then DOCTOR_BAD_ARG="--report (it changes nothing: not with --fix or --perms-only)"; return 1; fi
     return 0
 }
 

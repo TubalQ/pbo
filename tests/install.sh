@@ -7,6 +7,13 @@ export PBO_NO_NOTIFY=1
 # systemctl and dpkg-query mocked. Nothing is installed on the host.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
+# timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
+# machine's own files: point them into the checkout, at paths nothing creates
+# (a config line still wins)
+export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.creds" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
 ROOT="$PWD"
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -137,7 +144,7 @@ out="$(CACHE_DIR=/from-env G)"; [[ "$out" == *"used before it is set"* ]] && ok 
 # that says so and exits at once, so even a broken guard installs nothing here.
 if [[ "$(id -u)" == 0 ]]; then
     printf 'KEEP_LOCAL=a b\n' > "$RUN/etc/config"
-    stubs='for f in inst_resolve_mode inst_version_refusal inst_deps inst_program inst_janitor_units inst_web_remove inst_host_units inst_integration inst_final_message; do eval "$f() { echo STEP-RAN; exit 99; }"; done; SYSTEMCTL=false'
+    stubs='for f in inst_resolve_mode inst_version_refusal inst_deps inst_restic_check inst_program inst_janitor_units inst_web_remove inst_host_units inst_integration inst_final_message; do eval "$f() { echo STEP-RAN; exit 99; }"; done; SYSTEMCTL=false'
     out="$(S "$stubs; main" 2>&1)"; rc=$?
     [[ $rc != 0 && "$out" == *"Nothing was changed"* && "$out" != *STEP-RAN* ]] && ok "main: a refused config stops install.sh before the mode, the deps or any file" || bad "main guard: rc=$rc $out"
     printf 'KEEP_LOCAL=3\n' > "$RUN/etc/config"
@@ -146,6 +153,41 @@ if [[ "$(id -u)" == 0 ]]; then
 fi
 rm -f "$RUN/etc/config" "$RUN/shared.cfg"
 [[ "$(G)" == "rc=0" ]] && ok "guard: no config yet → silent" || bad "guard no config: $(G)"
+# RESTIC_ENV_FILE: a file pbo refuses (here at the default path, in CFGDIR:
+# a 0644 systemd EnvironmentFile, say) stops every command, so the install too
+printf 'AWS_ACCESS_KEY_ID=install-probe-value\n' > "$RUN/etc/restic.env"; chmod 0644 "$RUN/etc/restic.env"
+snap="$(ls -la "$RUN/etc" "$RUN/plugin" 2>&1)"
+out="$(G)"; rc=$?
+[[ $rc != 0 && "$out" == *"RESTIC_ENV_FILE"*"$RUN/etc/restic.env:0: REFUSING a restic environment file with mode 0644"* && "$out" == *"chmod 600"* \
+   && "$out" == *"Nothing was changed"* && "$out" != *"rc=0"* && "$out" != *install-probe-value* && "$(ls -la "$RUN/etc" "$RUN/plugin" 2>&1)" == "$snap" ]] \
+    && ok "guard: a 0644 RESTIC_ENV_FILE at the default path stops the install (nothing changed, no value shown)" || bad "guard env file: rc=$rc $out"
+out="$(S 'FORCE=1; inst_config_guard; echo "rc=$?"' 2>&1)"
+[[ "$out" == *"REFUSING"* && "$out" == *"WARNING: --force"* && "$out" == *"rc=0" ]] && ok "guard: ... --force installs anyway, warned" || bad "guard env --force: $out"
+if [[ "$(id -u)" == 0 ]]; then
+    out="$(S "$stubs; main" 2>&1)"; rc=$?
+    [[ $rc != 0 && "$out" == *"Nothing was changed"* && "$out" != *STEP-RAN* ]] && ok "main: the refused RESTIC_ENV_FILE stops install.sh before any step" || bad "main env guard: rc=$rc $out"
+fi
+chmod 0600 "$RUN/etc/restic.env"
+[[ "$(G)" == "rc=0" ]] && ok "guard: a 0600 RESTIC_ENV_FILE passes" || bad "guard env 0600: $(G)"
+printf 'RESTIC_ENV_FILE=%s\n' "$RUN/etc/other.env" > "$RUN/etc/config"; printf 'PATH=/x\n' > "$RUN/etc/other.env"; chmod 0600 "$RUN/etc/other.env"
+out="$(G)"; [[ "$out" == *"$RUN/etc/other.env:1: PATH may not be set here"* && "$out" == *"Nothing was changed"* ]] \
+    && ok "guard: the RESTIC_ENV_FILE the config names, checked like pbo checks it" || bad "guard env named: $out"
+rm -f "$RUN/etc/restic.env" "$RUN/etc/other.env" "$RUN/etc/config"
+
+# --- the restic version check reads the shared file too, as pbo does ---------------------------------
+printf '#!/usr/bin/env bash\necho "restic 0.14.0 compiled with go1.19 on linux/amd64"\n' > "$RUN/bin/restic-014"; chmod 0755 "$RUN/bin/restic-014"
+printf 'RESTIC_REST_USERNAME=pve1\n' > "$RUN/shared.cfg"
+printf 'RESTIC_BIN=%s\n' "$RUN/bin/restic-014" > "$RUN/etc/config"; chmod 600 "$RUN/etc/config"
+out="$(PBO_INSTALL_SHARED_CFG="$RUN/shared.cfg" S 'inst_restic_check; echo survived' 2>&1)"
+[[ "$out" == *"restic 0.14.0 ($RUN/bin/restic-014) is older than 0.16.1 (RESTIC_REST_USERNAME"* && "$out" != *survived* ]] \
+    && ok "restic check: a rest-server user in the cluster-shared config raises the floor (0.14.0 refused)" || bad "restic shared user: $out"
+printf 'RESTIC_MIN=0.17.0\nRESTIC_BIN=/nonexistent-shared-restic\n' > "$RUN/shared.cfg"
+out="$(PBO_INSTALL_SHARED_CFG="$RUN/shared.cfg" S 'inst_restic_check; echo survived' 2>&1)"
+[[ "$out" == *"restic 0.14.0 ($RUN/bin/restic-014) is older than 0.17.0 (RESTIC_MIN)"* && "$out" != *survived* ]] \
+    && ok "restic check: RESTIC_MIN from the shared file counts, its RESTIC_BIN does not (exec, node-local)" || bad "restic shared min: $out"
+out="$(S 'inst_restic_check; echo survived' 2>&1)"
+[[ "$out" == *"==> restic: 0.14.0"* && "$out" == *survived* ]] && ok "restic check: without the shared file 0.14.0 is enough" || bad "restic local only: $out"
+rm -f "$RUN/etc/config" "$RUN/shared.cfg"
 # it runs before anything is changed: first in main after the arguments
 body="$(S 'declare -f main')"
 [[ "$(grep -n 'inst_config_guard' <<<"$body" | cut -d: -f1)" -lt "$(grep -n 'inst_deps' <<<"$body" | cut -d: -f1)" \
