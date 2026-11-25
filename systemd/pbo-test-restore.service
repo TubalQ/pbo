@@ -1,0 +1,14 @@
+[Unit]
+Description=pbo: scheduled restore test (restore, boot, destroy a throwaway copy)
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Restores the guest that has gone longest without a test to a throwaway vmid
+# (network removed), boots it, waits for it to answer, destroys it, and records
+# the evidence in /var/lib/pbo/restore-tests.jsonl + restore-report.{json,txt}.
+ExecStart=/usr/local/lib/pbo/pbo test-restore --scheduled
+TimeoutStartSec=6h
+Nice=10

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# mock systemctl: logs every call to $MOCK_LOG and never touches the real init.
+#   is-active [--quiet] <unit>: active when $MOCK_SYSTEMCTL_DIR/<unit>.active exists
+#                               or <unit> is in $MOCK_SYSTEMCTL_ACTIVE (space-separated)
+#   is-enabled <unit>:          without MOCK_SYSTEMCTL_ENABLED set, every unit is
+#                               enabled (exit 0). With it set (even empty): enabled
+#                               when listed there or $MOCK_SYSTEMCTL_DIR/<unit>.enabled exists
+#   start/stop <unit>:          create/remove <unit>.active
+#   enable/disable [--now] <unit...>: create/remove <unit>.enabled (and .active with --now)
+#   cat <unit>:                 succeeds when <unit> is in $MOCK_SYSTEMCTL_UNITS (space-separated)
+#   MOCK_SYSTEMCTL_FAIL="<verb> [<verb>...]": those verbs exit 1
+# Without MOCK_SYSTEMCTL_DIR every unit is inactive; anything else succeeds silently.
+[ -n "${MOCK_LOG:-}" ] && echo "systemctl $*" >> "$MOCK_LOG"
+d="${MOCK_SYSTEMCTL_DIR:-}"
+now=0; args=(); for a in "$@"; do [[ "$a" == --now ]] && now=1; [[ "$a" == --* ]] || args+=("$a"); done
+cmd="${args[0]:-}" unit="${args[1]:-}"
+[[ " ${MOCK_SYSTEMCTL_FAIL:-} " == *" $cmd "* ]] && { echo "mock systemctl: $cmd failed" >&2; exit 1; }
+case "$cmd" in
+    is-active)
+        if [[ -n "$unit" ]] && { [[ -n "$d" && -e "$d/$unit.active" ]] || [[ " ${MOCK_SYSTEMCTL_ACTIVE:-} " == *" $unit "* ]]; }; then
+            [[ " $* " == *" --quiet "* ]] || echo active; exit 0
+        fi
+        [[ " $* " == *" --quiet "* ]] || echo inactive; exit 3 ;;
+    is-enabled)
+        [[ -n "${MOCK_SYSTEMCTL_ENABLED+x}" ]] || exit 0
+        if [[ -n "$unit" ]] && { [[ " $MOCK_SYSTEMCTL_ENABLED " == *" $unit "* ]] || [[ -n "$d" && -e "$d/$unit.enabled" ]]; }; then
+            echo enabled; exit 0
+        fi
+        echo disabled; exit 1 ;;
+    start) [[ -n "$d" && -n "$unit" ]] && : > "$d/$unit.active"; exit 0 ;;
+    stop)  [[ -n "$d" && -n "$unit" ]] && rm -f "$d/$unit.active"; exit 0 ;;
+    enable|disable)
+        [[ -n "$d" ]] || exit 0
+        for u in "${args[@]:1}"; do
+            if [[ "$cmd" == enable ]]; then : > "$d/$u.enabled"; (( now )) && : > "$d/$u.active"
+            else rm -f "$d/$u.enabled"; (( now )) && rm -f "$d/$u.active"; fi
+        done
+        exit 0 ;;
+    cat)   [[ " ${MOCK_SYSTEMCTL_UNITS:-} " == *" $unit "* ]] && { echo "# $unit (mock)"; exit 0; }; exit 1 ;;
+    *) exit 0 ;;
+esac

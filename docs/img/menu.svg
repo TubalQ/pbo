@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="557" height="271" viewBox="0 0 557 271" role="img" aria-label="The pbo main menu (demo data)">
+<title>The pbo main menu (demo data)</title>
+<rect width="100%" height="100%" rx="8" fill="#16191d"/>
+<rect width="100%" height="30" rx="8" fill="#23272e"/><rect y="22" width="100%" height="8" fill="#23272e"/>
+<circle cx="18" cy="15" r="6" fill="#ff5f56"/>
+<circle cx="38" cy="15" r="6" fill="#ffbd2e"/>
+<circle cx="58" cy="15" r="6" fill="#27c93f"/>
+<g font-family="DejaVu Sans Mono, Menlo, Consolas, Liberation Mono, monospace" font-size="14" fill="#d8dee9">
+<text y="60" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">┌─ </tspan><tspan x="43.2" fill="#4fc1d6" font-weight="bold">PBO</tspan><tspan x="68.4" fill="#4fc1d6"> · Proxmox Backup Offsite ────────────────────────┐</tspan></text>
+<text y="79" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">│</tspan><tspan x="26.4" > engine </tspan><tspan x="93.6" font-weight="bold">restic</tspan><tspan x="144.0" > · offsite </tspan><tspan x="236.4" fill="#4fc1d6">sftp:storagebox:pbo</tspan><tspan x="396.0" > · protected </tspan><tspan x="505.2" font-weight="bold">4</tspan></text>
+<text y="98" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">└───────────────────────────────────────────────────────────┘</tspan></text>
+<text y="117" xml:space="preserve"></text>
+<text y="136" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">[1]</tspan><tspan x="60.0" > Setup / onboarding        </tspan><tspan x="286.8" font-weight="bold">[4]</tspan><tspan x="312.0" > Export DR key</tspan></text>
+<text y="155" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">[2]</tspan><tspan x="60.0" > Guests (scan/add/delete)  </tspan><tspan x="286.8" font-weight="bold">[5]</tspan><tspan x="312.0" > Status</tspan></text>
+<text y="174" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">[3]</tspan><tspan x="60.0" > Back up                    </tspan><tspan x="295.2" font-weight="bold">[6]</tspan><tspan x="320.4" > Restore</tspan></text>
+<text y="193" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">[7]</tspan><tspan x="60.0" > Maintenance (prune/verify) </tspan><tspan x="295.2" font-weight="bold">[8]</tspan><tspan x="320.4" > Help</tspan></text>
+<text y="212" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">[0]</tspan><tspan x="60.0" > Quit</tspan></text>
+<text y="231" xml:space="preserve"></text>
+<text y="250" xml:space="preserve"><tspan x="18.0" >Choice: </tspan></text>
+<rect x="86.2" y="238" width="7.4" height="16" fill="#d8dee9"/>
+</g></svg>

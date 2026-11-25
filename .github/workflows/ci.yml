@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (shellcheck, jq, zstd, restic)
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck jq zstd
+          # Pin restic to match the version the tool is developed against.
+          RESTIC_VER=0.18.0
+          curl -fsSL -o /tmp/restic.bz2 \
+            "https://github.com/restic/restic/releases/download/v${RESTIC_VER}/restic_${RESTIC_VER}_linux_amd64.bz2"
+          bunzip2 /tmp/restic.bz2
+          sudo install -m 0755 /tmp/restic /usr/local/bin/restic
+          restic version
+
+      - name: ShellCheck
+        run: shellcheck --severity=warning -x pbo install.sh lib/*.sh lib/vzdump-hook tests/*.sh tests/mocks/* tests/integration/pve-storage.sh packaging/build-deb.sh
+
+      - name: Syntax check
+        run: |
+          for f in pbo install.sh lib/*.sh; do bash -n "$f"; done
+          sh -n lib/vzdump-hook
+
+      - name: Perl plugin
+        # the PVE storage plugin against stubbed PVE modules (tests/perl/lib);
+        # tests/integration/pve-storage.sh covers the real ones on a PVE host
+        run: |
+          perl -I tests/perl/lib -c pve-plugin/PboPlugin.pm
+          prove -I tests/perl/lib tests/perl/
+
+      - name: Tests
+        # every FAIL line also becomes an annotation, readable without a log download
+        run: |
+          set -o pipefail
+          rc=0; bash tests/all.sh 2>&1 | tee /tmp/tests.log || rc=$?
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/tests.log | grep -E '^(=== |  FAIL )' | awk '/^=== /{s=$2; next} {sub(/^  FAIL /,""); print "::error title=" s "::" substr($0,1,900)}' || true
+          exit $rc
+
+  deb:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .deb
+        run: packaging/build-deb.sh dist
+      - name: Inspect package
+        run: |
+          for d in dist/*.deb; do dpkg-deb --info "$d"; dpkg-deb --contents "$d"; done
+      - name: Check pbo-pve-storage
+        # the PVE trigger restarts the daemons; prerm guards storage.cfg and the hook
+        run: |
+          set -eux
+          d="$(ls dist/pbo-pve-storage_*_all.deb)"
+          ctl="$(dpkg-deb --ctrl-tarfile "$d" | tar t)"
+          grep -qx './triggers' <<<"$ctl"
+          grep -qx './prerm' <<<"$ctl"
+          dpkg-deb -I "$d" triggers | grep -qx 'activate-noawait pve-api-updates'
+          dpkg-deb -I "$d" prerm | grep -q "pbo integrate disable"
+          dpkg-deb --contents "$d" | grep './usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm$' >/dev/null
+          dpkg-deb --contents "$d" | grep -E '^-rwxr-xr-x .* \./usr/lib/pbo/vzdump-hook$' >/dev/null
+          dpkg-deb -I "$d" prerm | grep -q '^HOOK=/usr/lib/pbo/vzdump-hook'
+          if dpkg-deb --contents dist/pbo_*_all.deb | grep -E 'pbo-catalog|pbo-mount|PboPlugin|vzdump-hook'; then
+            echo "the pbo package must not carry the integration files"; exit 1
+          fi
+          # pbo-web is gone (0.5.0): no package, and pbo breaks an old one
+          if ls dist/pbo-web_* 2>/dev/null; then echo "no pbo-web package any more"; exit 1; fi
+          dpkg-deb -f dist/pbo_*_all.deb Breaks | grep -qx 'pbo-web'
+          if dpkg-deb --contents dist/pbo_*_all.deb | grep 'pbo-web'; then echo "pbo must not ship pbo-web files"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pbo-deb
+          path: dist/*
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # vX.Y.Z-rcN → a pre-release (not "latest")
+        run: |
+          pre=(); [[ "$GITHUB_REF_NAME" == *-rc* ]] && pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* --title "pbo ${GITHUB_REF_NAME#v}" --notes "See CHANGELOG.md." --verify-tag "${pre[@]}"

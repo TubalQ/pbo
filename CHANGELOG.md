@@ -1,0 +1,508 @@
+# Changelog
+
+Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
+behaviour; the entry says so when it does.
+
+## 0.5.0 (unreleased)
+
+Changes behaviour: pbo-web is gone, and the Proxmox integration is new (off by
+default). A host that stays `standalone` and never ran pbo-web behaves as 0.4.1.
+
+Removed
+- **pbo-web, the web UI** (ADR 0008, supersedes ADR 0005): the Go code, the
+  `pbo-web` package, `pbo-web.service`, `pbo-web-helper.service`, the egress rule,
+  `etc/web.env.example`, `packaging/dev-build-web.sh`, the CI job and the web design
+  files. The Proxmox GUI (with the integration) and the CLI cover it; isolated
+  restores stay `pbo restore`. `install.sh` removes a pbo-web it installed
+  (services, binary, the `pbo-web` user, `/etc/pbo/web.env`, `/etc/pbo/web-tls`);
+  the `pbo` package `Breaks: pbo-web`, so apt removes the old package. Close TCP
+  8008 in the firewall afterwards. The CLI options pbo-web used stay.
+
+
+Added
+- `PBO_INTEGRATION=standalone|both|integrated` (default `standalone`, unchanged
+  behaviour, no extra `pvesh` calls) and guest ownership (lib/ownership.sh,
+  ADR 0007): in `both`, run-schedule skips guests that an enabled PVE backup job
+  to a `pbo` storage owns and logs which job; in `integrated` it backs up nothing.
+  If the jobs cannot be read it backs up every guest (fail open) and warns.
+  Doctor's freshness check and test-restore cover PVE-owned guests too.
+- `guests --json` has `owner` (`pve|pbo|none`) and `owner_job`; `status --json`
+  has `integration`. Doctor reports the mode and, with the integration on, flags
+  an unowned guest in `integrated` (FAIL), `pbo-skip` on a PVE-owned guest, a
+  guest in two pbo jobs and unknown ownership (WARN). A manual backup of a
+  PVE-owned guest warns that it is an extra backup.
+- New config keys for the integration (see etc/config.example); a janitor refuses
+  any mode but `standalone`.
+- `pbo catalog refresh|show|materialize <archive>|release [--all]` (lib/catalog.sh,
+  ADR 0006 Phase 1). `refresh` reads both repo tiers with `--no-lock` and writes
+  the index the PVE storage plugin will read (`PBO_CATALOG`) atomically, merged
+  by vmid and timestamp, with the snapshot id per tier and an `offsite_only`
+  flag; an unreadable tier fails the refresh and keeps the old index.
+  `materialize` stages one archive in `PVE_STAGING_DIR` with `restic dump
+  --no-lock` (cache first, offsite for offsite-only archives), or with
+  by default as a symlink into `pbo-mount.service` (restic mount of the cache
+  repo, layout verified in spike A of ADR 0006; `PVE_CATALOG_MOUNT=false` for dump only).
+  From a GUI request (`--background`) a cache archive is linked through the
+  mount inline, waiting at most `CATALOG_MOUNT_BG_WAIT` (10 s), so Show
+  Configuration answers on the first click. `release` removes staged
+  archives older than `PVE_STAGING_TTL` and stops an idle mount. With the
+  integration on, run-schedule and prune refresh the index at the end (a failure
+  is a warning). prune and verify stop an active `pbo-mount.service` before they
+  take exclusive repo locks. New units `pbo-catalog.service`/`.timer` (every
+  15 minutes) and `pbo-mount.service`, not installed yet and left out of the
+  `pbo` package.
+- The Proxmox VE storage plugin `pve-plugin/PboPlugin.pm` (type `pbo`, ADR 0006):
+  lists the catalogue's archives (and, when the storage has a `path`, archives a
+  PVE job wrote to `<path>/dump` that are not ingested yet) as ordinary vzdump
+  backups with a note per tier, and stages one for a restore or Show
+  Configuration with `pbo catalog materialize`. `status`, `activate_storage`,
+  `list_volumes` and `path` only read the index and stat the spool: no fork, no
+  network, no FUSE. `list_volumes` dies with "run: pbo catalog refresh" on a
+  missing index. Remove, real prune and protection changes are refused;
+  `protected` is always 1 and notes are accepted and dropped. The options are
+  `path` (optional, not fixed), `nodes`, `disable` and `content`; no
+  `prune-backups`. A restore warns in the task log when pve-manager,
+  libpve-storage-perl, qemu-server or pve-container is newer than the tested set.
+- The index has `spool_dir` (informational; the plugin uses the storage's
+  `path`).
+- Third package `pbo-pve-storage_<version>_all.deb`: the plugin and the
+  catalogue/mount units. Depends on `pbo (= version)`, `libpve-storage-perl
+  (>= 9.1.18)` and `pve-manager (>= 9.2.29)`, activates the `pve-api-updates`
+  trigger, never edits storage.cfg or vzdump.conf, and its prerm refuses removal
+  while storage.cfg has a `pbo:` storage or vzdump.conf runs the pbo hook.
+- `pbo ingest --vmid V --archive P` (lib/ingest.sh, ADR 0006 Phase 2): uploads an
+  archive a PVE backup job wrote to the pbo spool (`PVE_SPOOL_DIR/dump`). The
+  archive must lie in the spool itself, be a regular file (no symlink) and be
+  named `vzdump-<lxc|qemu>-V-<ts>.<tar|vma>`. Ingest takes only the guest's lock
+  (busy: exit 75 at once, never `pbo.global`), renames the archive into
+  `$CACHE_DIR/V` (same filesystem, so the snapshot path is the same as for pbo's
+  own backups), writes the `.conf` sidecar, backs it up to the cache and copies it
+  offsite synchronously, and adds it to the catalogue. It sends no notification
+  (PVE notifies about its job) and logs into the PVE task log. When nothing
+  reached a repo the archive goes back to the spool; when only the offsite copy
+  failed it exits 69 and the cache keeps the snapshot.
+- `pbo ingest --pending`: ingests spool archives older than 10 minutes unless
+  vzdump runs (`VZDUMP_LOCK`), then runs an unfiltered, idempotent `restic copy`
+  cache → offsite. run-schedule runs it first when the integration is on (a
+  failure is a warning).
+- The vzdump hook `lib/vzdump-hook` (plain sh), shipped in `pbo-pve-storage` as
+  `/usr/lib/pbo/vzdump-hook`. It exits 0 without starting pbo unless `STOREID` is
+  a `pbo:` storage in storage.cfg (pbo's own `--dumpdir` runs have none), then
+  runs the hidden `pbo _vzdump-hook`: `backup-start` refuses a compressed target
+  and a guest pbo backs up in stop mode (fuse, `VZDUMP_STOP_VMIDS`, `pbo-stop`)
+  in a snapshot or suspend job; `backup-end` runs `pbo ingest`; `log-end` removes
+  the task log copy from the spool. The prerm guard checks for this path.
+- Metrics: `pbo_ingest_last_*` (time, success, duration of the last ingest).
+- `pbo integrate status|enable <both|integrated> [--catalog-only]|disable`
+  (lib/integrate.sh), the one switch for the Proxmox integration. All three are
+  idempotent, honour `--dry-run` (planned commands and the vzdump.conf diff) and
+  are audited; enable/disable need root and are refused on a janitor.
+  - `status [--json]`: mode, PVE versions against the minimums, plugin present
+    and loadable, the storage (read from storage.cfg), the hook, the spool, the
+    catalogue, the PVE jobs to pbo with their problems, guest ownership, ACLs,
+    and the exact storage.cfg stanza and vzdump.conf line for a recipe.
+  - `enable`: preflight first (versions, plugin, repos readable, spool and
+    staging on CACHE_DIR's filesystem, no storage id of another type, no foreign
+    `script:` in vzdump.conf unless `--catalog-only`), then a catalogue refresh,
+    the spool (0755) and staging (0700), `pvesm add pbo <id> --content backup
+    --nodes <node> [--path <spool>]` (or `pvesm set` to converge the path), the
+    hook line after a marker comment in vzdump.conf (atomic, mode and owner kept;
+    `--catalog-only` removes ours), `pbo-catalog.timer`, a warning for ACLs that
+    give others than root@pam Datastore.* on the storage, and `PBO_INTEGRATION`
+    written last.
+  - `disable`: refused while an enabled PVE job writes to a pbo storage (pbo
+    never edits jobs.cfg); `PBO_INTEGRATION=standalone` written first, then
+    `ingest --pending` (refused while spool archives remain), our hook line(s)
+    removed (vzdump.conf comes back byte for byte), the mount stopped and staging
+    emptied, `pvesm remove`, the timer disabled.
+- Doctor with the integration on: FAIL for PVE older than the minimum, a missing
+  or unloadable plugin, a missing storage or one of another type, a missing,
+  foreign or non-executable hook (backup target), a storage path that is not
+  `PVE_SPOOL_DIR`, a spool on another filesystem than the cache, spool archives
+  older than 24 h, and an enabled pbo job with its own `script`, compression,
+  `prune-backups`, `protected`, or a stop-mode guest in a job of another mode;
+  WARN for PVE newer than the tested set, an old or missing catalogue, a disabled
+  pbo job, `notification-mode none`, a job within an hour of pbo.timer, prune or
+  verify, ACLs for others than root, too little spool space and a disabled
+  `pbo-catalog.timer`. In standalone it warns (reading storage.cfg, no pvesh) when
+  a pbo storage is still configured.
+- `pbo timers` lists `pbo-catalog.timer` too when the integration is on.
+- `install.sh --integration standalone|both|integrated` (`--mode` is an alias;
+  refused with `--janitor` unless standalone). Without the flag it keeps
+  `PBO_INTEGRATION` from the existing config, asks on a terminal, and otherwise
+  installs standalone. For both/integrated it checks pve-manager >= 9.2.29 and
+  libpve-storage-perl >= 9.1.18 before copying any file, installs the plugin
+  (load-tested, removed again when it does not load; the PVE daemons are reloaded
+  only when the file changed), the hook in `/usr/local/lib/pbo/vzdump-hook` and
+  the catalogue/mount units (not enabled). It never creates the storage. An
+  explicit `--integration standalone` on a host whose config says both or
+  integrated runs `pbo integrate disable` first and then removes the plugin
+  (never while storage.cfg still has a pbo storage). install.sh is now a set of
+  functions with a guarded main.
+- `pbo setup` has a "Proxmox integration" step between the guests and the
+  timers: it shows `pbo --dry-run integrate enable <mode>` and applies it after a
+  yes (without the plugin it says how to install it and stays standalone).
+- Test mocks: `dpkg-query`, `pveum`; `pvesm add|set|remove` edit
+  `$MOCK_STORAGE_CFG`; `systemctl enable|disable|is-enabled`. New suites
+  `tests/integrate.sh` and `tests/install.sh`.
+- Tests: `tests/perl.sh` (Test::More against stubbed PVE modules, in
+  `tests/all.sh` and CI) and the opt-in `tests/integration/pve-storage.sh`
+  (`--load-only` loads the plugin against the installed PVE libraries without
+  installing it; `--full` adds a temporary storage and only runs with
+  `PBO_IT_PVE_STORAGE_FULL=1`). CI checks the third package's trigger and prerm.
+
+Changed
+- The upload half of a backup (restic backup of `$CACHE_DIR/<vmid>`, copy
+  offsite, drop the loose archive) is one function, `_upload_dumpdir`, shared by
+  `backup`, `run-schedule --batch` and `ingest`.
+- A PVE backup job in stop mode uploads at `job-end` instead of `backup-end`
+  (ADR 0006, amendment 14): vzdump restarts a stopped guest only after
+  `backup-end`, so the guest stayed down until the offsite copy was done.
+  `backup-end` now checks the archive and records it; a failed upload at
+  `job-end` fails the job. Snapshot and suspend mode are unchanged.
+- In a synchronous PVE API request (Show Configuration, the Restore dialog, a
+  QEMU restore before its worker starts) the storage plugin no longer stages an
+  archive inline: it runs `pbo catalog materialize --background` with a 20 s
+  timeout, which returns a staged archive at once or starts a detached staging
+  and fails the request with "retry in a few minutes". LXC restores (a worker)
+  and the CLI still wait.
+- `pbo-catalog.service` runs `pbo catalog release` before each refresh, and
+  release also removes staged archives the catalogue no longer lists (pruned).
+- prune, verify and `catalog release` do not stop `pbo-mount.service` while a
+  process reads through it: prune and verify wait up to
+  `CATALOG_MOUNT_BUSY_WAIT` seconds (900), then exit 75. In standalone they no
+  longer look at the mount (no systemctl call).
+- `pbo setup` offers the configured sftp repo (its path and host label) as the
+  default on a re-run, so accepting the default never starts a new, empty repo.
+  A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
+  every run; the host label is only a name, the ssh command says where to
+  connect).
+
+Fixed
+- CACHE_DIR (pbo's own dump directories and the Proxmox spool) was 0755, so a
+  local user could read a plaintext vzdump archive while a backup ran. pbo now
+  closes it to other users before every backup. vzdump's tar of an unprivileged
+  CT runs as the CT's mapped root and has to reach its tmpdir under CACHE_DIR,
+  so that uid gets an ACL entry (`u:<uid>:--x`) first; without `setfacl` (package
+  acl) the directory stays open. Doctor warns while it is open and fails when it
+  is closed without the entry for a local unprivileged CT.
+- A staged symlink into the mount kept `pbo-mount.service`, and its lock on the
+  cache repo, up for the whole `PVE_STAGING_TTL` (6 h). Mount links now go after
+  `PVE_STAGING_LINK_TTL` (15 min) while nothing reads through the mount, and the
+  idle mount stops. Help text of `ingest --pending` and `catalog release` updated;
+  RUNBOOK has a section on running the integration.
+- `tests/integration/pve-storage.sh --load-only` failed on a host where the plugin
+  is installed (it loaded the checkout's copy over the registered one). It now
+  checks that the installed file is the checkout's and tests that one, so it can
+  run after every Proxmox upgrade as the RUNBOOK says.
+- A GUI restore of an **unprivileged** container through the mount failed with
+  "tar: -: Cannot open: Permission denied": Proxmox hands the archive's open fd to
+  `lxc-usernsexec tar` (the CT's mapped root, e.g. uid 100000), and FUSE refuses
+  every request from another uid without `allow_other`. `pbo-mount.service` now
+  runs `restic mount --allow-other` (file modes still apply) and refuses a mount
+  point whose parent is not root-only.
+- Lines pbo writes into a Proxmox task log (the vzdump hook) are ASCII: the PVE API
+  hands task logs out as latin1, so "→" showed up as "â" in the GUI.
+- A stop-mode Proxmox job now keeps vzdump's `.log` in the snapshot: `log-end`
+  leaves it in the spool for the job-end ingest. (Snapshot mode uploads at
+  backup-end, before vzdump writes the log; it stays in the Proxmox task history.)
+- Doctor warns when a stop-mode job's guests together (their newest archives)
+  need more spool space than is free; until now it compared only the largest
+  single archive.
+- The question `integrate enable --catalog-only` asks now says what happens to
+  `/etc/vzdump.conf`: untouched, or (when downgrading from a full enable) pbo's
+  hook line removed. It used to list the file as if the hook were being added.
+- The audit test suite (now tests/audit.sh) used the default LOCK_DIR, so run as
+  root it shared the system's `/run/pbo/pbo.global` and left lock files there;
+  it now uses its own lock directory like the other suites.
+- `ingest --pending` ran an unfiltered `restic copy` cache → offsite, which also
+  re-uploaded cache snapshots that offsite retention had removed (for example
+  old snapshots of a deleted guest). An ingest whose offsite
+  copy fails now records `<vmid>_<ts>` under `STATE_DIR/ingest-copy`, and
+  `--pending` copies exactly those (`--tag vmid=,ts=`, like the upload) and
+  drops each record once copied. Doctor fails when a record is older than 24 h.
+- `pbo restore` and `pbo test-restore` restored a **privileged** container as an
+  unprivileged one. Proxmox leaves the `unprivileged:` line out of a privileged
+  CT's config, and pbo read a missing line as "unprivileged", so the copy got
+  shifted uids (files owned by 100000+) and `--restricted` (pbo-web without
+  Sys.Modify) did not refuse it. A missing line now means privileged; with no
+  config sidecar pbo reads the `pct.conf` vzdump puts in the archive. In place
+  since the restic engine was added.
+- `pbo --dry-run run-schedule` took real backups (and stopped stop-mode guests):
+  each guest's `backup --queue` child never saw `--dry-run`. It now only logs
+  and returns `would_backup` without starting anything (also with `--batch`).
+- Doctor and `integrate status` flagged a PVE job with "Keep all backups" as a
+  `prune-backups` problem: the API returns `prune-backups` as an object, which is
+  now normalised (`keep-all=1` alone is fine).
+- `run-schedule --batch` held no per-guest lock between dump and upload, and
+  uploaded `$CACHE_DIR/<vmid>` without checking the archive was still there: an
+  ingest of the same guest in between could leave an empty snapshot counted as
+  OK. Batch now holds each guest's lock from dump to upload (a busy guest fails)
+  and a vanished dump fails the guest.
+- The prune, verify, restic, append-only and audit test suites ran the host's
+  real `systemctl`; they use the mock now.
+- A restic backup or copy that failed for another reason than a repo lock ended
+  `backup` and `backup-host` with exit 1 and "stopped unexpectedly" instead of
+  their own message and exit code (70, or 69 for the offsite copy): the lock
+  check's empty result tripped errexit.
+- The guest metadata cache split `pvesh` fields on tabs, and `read` merges empty
+  tab-separated fields: a guest without a name had its tags read as its name, so a
+  `pbo-skip` or `pbo-keep-*` tag on it was ignored.
+
+Docs
+- ADR 0006 accepted, with amendments (optional integration, a step-by-step bring-up,
+  libpve-storage-perl >= 9.1.18, `pbo ingest --pending` instead of `pbo sync`).
+- ADR 0007: install modes `standalone|both|integrated` (`PBO_INTEGRATION`) and one
+  owner per guest. Nothing is built yet; `standalone` stays the default.
+
+## 0.4.1 (2026-11-22)
+
+The first packaged 0.4 release: CI failed for the v0.4.0 tag, so v0.4.0 has no
+.deb. 0.4.1 is 0.4.0 plus the fixes below.
+
+Fixed
+- `restore` without `--storage` ended silently (exit 127, or pvesm's own exit
+  code) when `pvesm` was missing or failed, e.g. without quorum. It now says that no
+  storage was found and asks for `--storage`.
+- Tests are hermetic: a `pvesm` mock, and the schedule tests no longer ask the
+  real host's pvesh/pct. CI had been red because restore tests reached
+  for a real `pvesm`. Root-only checks are skipped when the suite runs unprivileged.
+- CI: the .deb job inspected both packages in one `dpkg-deb --info` call (it takes
+  one archive) and failed as soon as pbo-web was packaged. Failing tests are now
+  reported as annotations.
+
+Docs
+- ADR 0006 (proposed): pbo as a native Proxmox VE storage. PVE lists and restores
+  pbo's snapshots from the GUI first. Datacenter -> Backup jobs come later, and a
+  Backup Provider plugin only if needed.
+
+## 0.4.0 (2026-11-22)
+
+Changed (behaviour)
+- **A restore is isolated by default** (CLI, menu and web): every NIC
+  `link_down=1`, autostart off, and under the test-restore allowlist everything
+  that reaches into the host is removed (bind/device mount points, `devN`,
+  hookscripts, raw `lxc.mount`/`lxc.hook` lines, passthrough, unknown keys,
+  `features` beyond nesting/keyctl/fuse, `lxc.cgroup2.devices.*`,
+  `lxc.apparmor.profile`). It runs under a config lock, so the copy cannot be
+  started halfway; if isolation fails the new copy is destroyed and the restore
+  fails. Before, a CLI restore kept `onboot: 1`, the original's MAC/IP and its
+  bind mounts, so it autostarted next to the original at the next reboot.
+  `--keep-network` restores the copy exactly as the original (disaster recovery)
+  and is refused while the original still exists in the cluster. `--isolate` is
+  accepted (the default). `--restricted` (passed by the web UI for users without
+  Sys.Modify) refuses privileged containers.
+- `verify` fails when a repo tier cannot be opened (unreachable or wrong
+  password); it used to skip it and report OK, so the rotating deep read silently
+  passed over offsite. It also queues on the schedule lock and uses `--retry-lock`.
+- Locks live in `/run/pbo` (root only; `STATE_DIR/lock` when not root) instead of
+  the world-writable `/var/lock`; `doctor` warns about a world-writable `LOCK_DIR`.
+- A per-guest retention tag never keeps fewer than `KEEP_OVERRIDE_MIN_LAST` (3)
+  snapshots; `doctor` warns about guests below the default retention and about
+  skipped (`pbo-skip`) guests.
+- test-restore locks its throwaway vmid (free cluster-wide), no longer the source
+  guest (whose nightly backup it used to block), uses its own temp directory, and
+  clears `protection` before destroying the throwaway. The record says how the
+  answer was proven (`respond_check`: exec, agent, or running for a VM without
+  an agent). Privileged containers need Sys.Modify from the web UI.
+- The janitor unit runs prune, verify and doctor even when one fails; on a
+  janitor a guest with no new snapshot within `DOCTOR_MAX_AGE` is a problem and
+  an alert (its host stopped sending).
+
+Changed (breaking for `--json` consumers)
+- The `--json` output is a versioned contract: every object carries
+  `schema: 1`, there is exactly one object per command on stdout, and errors are
+  JSON too (`status: "error"`, `exit`, `error`). Counters are numbers
+  (`run-schedule` `backups_ok`/`backups_failed`/`duration_s`), `prune`
+  `failed_tiers` is an array, `status` reports `locks.global` / `locks.schedule`
+  as objects instead of `global_lock`/`lock_state` strings, and `doctor` lists its
+  findings (`findings: [{level, message, vmid}]`).
+
+Added
+- Web UI (ADR 0005): `pbo-web`, an optional HTTPS UI on port 8008.
+  Sign in with a Proxmox VE account (TFA included); permissions come from
+  Proxmox. Dashboard, guests, snapshots, restore wizard, restore-test evidence,
+  jobs with a live log, maintenance (verify, a prune plan, the real prune behind a
+  typed confirmation, unlock, run the schedule, test notification), per-guest
+  policy. Not yet: config editing, timers, DR key export, an audit-log page.
+  At most 256 connections in all and 32 per source address.
+  An unprivileged, systemd-sandboxed web process talks to a root helper on a Unix
+  socket that re-checks every request against PVE and runs only allowlisted pbo
+  commands. Separate `pbo-web` .deb (amd64); `install.sh` installs it when built.
+- Jobs: `pbo job start <command> [args]` runs an action in the background
+  and prints its id at once; `job list|show|log [--from N] [--follow]|cancel`.
+  With systemd each job is a transient unit `pbo-job-<id>` (survives the caller,
+  cancel stops its cgroup), otherwise its own session (`JOB_RUNNER=direct`).
+  Each job keeps meta, log and result (exit code + the command's JSON result) in
+  `STATE_DIR/runs/<id>/`; `JOB_KEEP` (200) finished jobs are kept. backup and
+  prune jobs queue behind a running backup and show as `queued`. `status --json`
+  lists the active jobs (`jobs_active`). Only actions can be jobs; arguments are
+  passed as argv, never through a shell. Admission: one active prune / verify /
+  run-schedule / test-restore at a time (per dry run), no duplicate job for the
+  same command and guest, at most `JOB_MAX_ACTIVE` (20) active jobs and
+  `JOB_MAX_PER_USER` (5) per user.
+- Audit: `PBO_AUDIT_USER` (set by the job runner and the web UI) names who asked
+  for an action; each `audit.jsonl` line also has `via`, the `client` address (web)
+  and the `job` id, and the text `audit.log` names the same user.
+- `pbo policy get|set <vmid>`: read and change a guest's policy (skip,
+  stop mode, own retention) without editing Proxmox tags by hand. `set` rewrites
+  only the `pbo-*` tags, keeps every other tag in order, validates `--keep`
+  (d/w/m/y each at most once), supports `--dry-run` and is audited.
+- `restore --start` boots the restored guest; see "Changed" for the
+  isolation every restore now gets. The JSON result says `started`, `network`
+  and `stripped`.
+- `list --json` archives carry `ts` (the value `restore` takes), `type`, the full
+  snapshot `id` and a real `age_seconds` (it was always 0).
+- `NOTIFY_LEVEL=fail|warn|all`: failures only (default), plus warnings,
+  plus every successful run, for ntfy and Proxmox notifications alike. Warnings
+  are now actually sent at `warn`: a test-restore throwaway left behind, an old
+  key still valid on an append-only offsite after `rotate-key`. `notify-test`
+  reports the level. `NTFY_ON_SUCCESS=true` still works (means `all`); `doctor`
+  suggests the new key and flags an unknown level.
+- Read views for scripts and the web UI: `pbo guests` (policy, newest snapshot,
+  staleness, last restore test per guest), `pbo timers`, `pbo config` (effective
+  config, secrets never shown, URL credentials masked), `pbo version`.
+  `config` prints values only for known keys that cannot carry a credential;
+  tokens, topics, the ntfy URL, the SFTP command and any key pbo does not know
+  are reported as set/unset only.
+- Scheduled restore tests: `test-restore --scheduled` and the weekly
+  `pbo-test-restore.timer` (Sat 10:00) rotate through the backup set (`TR_PER_RUN`):
+  a guest whose latest test failed first (at most one per run), then
+  never-tested guests, then the oldest-tested.
+- Restore-test evidence: every test appends a record (snapshot, repo tier, stages
+  with durations, result) to `STATE_DIR/restore-tests.jsonl`, and
+  `restore-report.{json,txt}` is rewritten with history and per-guest coverage.
+  `pbo restore-report [--days N]`, also in the maintenance menu.
+- `doctor`: a guest whose latest restore test failed is a problem; warns when the
+  last test is older than `TR_MAX_AGE` (21 days) and on leftover throwaway guests.
+- Metrics: per-guest restore-test time, result and duration, and the last
+  `test_restore` run.
+
+Fixed (from an audit)
+- `rotate-key` could leave the cache repo opening only with a new key it never
+  saved (a failed `key list` ended it silently after the cache was rotated; the
+  menu then shredded the new key). Now: add and verify the new key on every repo
+  first (undone on any failure), then install the new password file (the old one
+  kept until its keys are gone), then remove the old keys. The menu never discards
+  the new key on a failure.
+- `setup` overwrote an existing DR key; it now keeps it.
+- Batch mode dropped the per-guest `keep=` tag (the next prune used the defaults)
+  and did not count phase-1 failures.
+- `restore-host` extracts only into a new or empty directory, never into `/` or
+  system paths.
+- Jobs (and so every web action) ignored the cluster config `/etc/pve/pbo/config`.
+- `list --json` printed nothing above ~460 snapshots (argv limit); the same limit
+  is gone from `guests` and `metrics`. `list` with an unreadable repo is an error,
+  not an empty list. `unlock` exits non-zero when a repo could not be unlocked; a
+  failed space reclaim after prune is an error and an alert.
+- `backup-host` stored private keys in the repo (`/etc/pve/priv`, node TLS keys,
+  rest password, pbo-web's key); they are excluded now.
+- Logs were 0644; they are 0600 (logrotate creates them 0600). URL credentials
+  are masked in every log line, job log, alert and JSON string. The ntfy token is
+  passed to curl on stdin, not on its command line. The metrics temp file is no
+  longer predictable, and a metrics directory not owned by root is refused.
+- The config is refused when owned by anyone but root (or the janitor user).
+- A command that failed without a message (an errexit deep in a function) now
+  logs and alerts, and in JSON mode prints the error object; an error raised
+  inside `$(...)` no longer disappears into the captured output.
+- `run_stream` wrote vzdump/restic progress nowhere but the per-run log; it goes
+  to stderr (and so into web job logs) too. Children no longer inherit pbo's lock
+  file descriptors (a qemu started by a restore kept the lock).
+- `list --reasons` on a janitor no longer moves the prune baseline.
+- `--json metrics` and `--json help` print one JSON object; `test-restore
+  --scheduled` prints one summary object (also when there is nothing to test).
+- `_cfg_set` (setup/menu) creates the config when missing (a .deb install had
+  none) and escapes `&`, `|` and `\` in values.
+
+Fixed
+- A restore-test record reported `cleanup_ok: true` even when the throwaway
+  could not be destroyed (jq `false // true`).
+- `backup` tried to clear stale locks on the offsite repo even with
+  `OFFSITE_ENABLED=false` (and hung when that repo was unreachable).
+- `init --json` let restic's own message onto stdout, so the output was not JSON.
+- test-restore booted its throwaway copy with the source guest's host bindings:
+  as root, `pct restore` keeps bind and device mount points and raw
+  `lxc.mount.entry`/`lxc.hook.*` lines, so the copy could write into a host
+  directory the running original also uses. Isolation is now an allowlist:
+  every config key of the throwaway must be known-safe (disks, mount points and
+  unused entries only as volumes owned by the throwaway, an ISO only as cdrom; any
+  config section, e.g. pending changes applied at start, refuses the boot);
+  everything else is removed before boot and recorded
+  as `stripped`. If anything unsafe remains, or network/autostart is still on,
+  the test fails at the new `isolate` stage without booting.
+- test-restore could destroy a guest it did not create: the throwaway vmid is
+  picked before the (slow) fetch, and cleanup ran `destroy --purge` on that id
+  even when the restore had failed. Cleanup now runs only after this run's own
+  restore succeeded, and only for the restored guest type.
+
+Changed
+- The throwaway guest gets `onboot 0` and the tag `pbo-throwaway` before it boots.
+- A failed restore test now runs and records its cleanup stage; a missing storage
+  is recorded as a failed test instead of aborting before the record.
+
+## 0.3.1 (2026-11-22)
+
+Added
+- Prometheus metrics as a node_exporter textfile (`METRICS_FILE`), rewritten after
+  run-schedule/verify/prune/manual backup; per-guest values come from the snapshot
+  summaries. `pbo metrics`.
+- JSON audit log (`AUDIT_JSON`, `audit.jsonl`): every command with user, args,
+  exit code, duration and a read-only flag, plus restore events. logrotate config.
+
+Fixed (janitor, from a security review)
+- The forget is bound to the checked snapshot set: the janitor asks restic for
+  the plan first, refuses if it contains a snapshot that arrived after the
+  checks, and then forgets exactly the planned ids.
+- A malformed or unreadable baseline blocks prune and fails `doctor` instead of
+  being treated as "nothing suspicious". Unparsable snapshot times count as
+  suspicious.
+- The baseline is written only after every forget succeeded, stamped with the
+  time of the check.
+
+## 0.3.0 (2026-11-21)
+
+Added
+- Per-guest policy from Proxmox tags: `pbo-skip`, `pbo-stop`,
+  `pbo-keep-{daily,weekly,monthly,yearly}-N`. Keep overrides travel in the
+  snapshot (`keep=` tag), so prune and the janitor apply them without Proxmox.
+  `KEEP_OFFSITE_YEARLY`.
+- Notifications through Proxmox's notification system (`NOTIFY_PVE`, default
+  `auto` = when no ntfy is configured), fields `type=pbo`/`hostname`, templates in
+  `/etc/pve/notification-templates/default/`. `pbo notify-test`. `doctor` warns
+  when nothing would alert.
+- Janitor hardening: keep tags may only raise retention there; prune is refused
+  while snapshots are dated in the future (`FUTURE_SKEW`), and `doctor` fails on
+  them; a new snapshot claiming a time before the janitor's last run (a backdated
+  insert) blocks prune too; retention fails closed when the snapshot list can't be
+  read.
+
+## 0.2.0 (2026-11-21)
+
+Added
+- Append-only offsite: a restic rest-server in `--append-only` mode as the offsite
+  repo (`OFFSITE_APPEND_ONLY`, `RESTIC_REST_USERNAME`, `RESTIC_REST_PASSWORD_FILE`,
+  `RESTIC_CACERT`). `doctor` proves the server refuses deletes. ADR 0004.
+- Janitor role (`PBO_ROLE=janitor`, `install.sh --janitor`, `pbo-janitor.timer`):
+  retention and verify on the storage side, freshness check of every guest in the
+  repo. Drops root and re-execs as `JANITOR_USER`.
+- `verify --scheduled`: reads the next 1/`VERIFY_ROTATE` of the data per run, all of
+  it every `VERIFY_ROTATE` runs. `pbo-verify.timer` (weekly). `doctor` reports the
+  last verify and fails if it failed.
+- `doctor` warns about config keys pbo doesn't know (typos) and about a config
+  written for a newer pbo (`PBO_CONFIG_VERSION`).
+- `.deb` package (`packaging/build-deb.sh`), built in CI.
+- `SECURITY.md` with a threat model. Integration test against a real Proxmox host
+  (`tests/integration/pve.sh`).
+
+Changed
+- sftp options are passed to sftp repos only, `--cacert` to rest repos only.
+- A `PBO_CONFIG` that points at a missing file is an error (exit 78). It used to run
+  on built-in defaults, against a different repo.
+
+## 0.1.0 (2026-11-16)
+
+First release: restic engine (vzdump archive stored in restic,
+cache tier + offsite copy over native SFTP), LXC and QEMU, cluster-aware
+(`BACKUP_ORDER=auto`, `PRUNE_OWNER`), `menu`/`setup`, `doctor`, `test-restore`,
+`rotate-key`, `backup-host`/`restore-host`, scheduled prune with a schedule lock
+so prune and backup never overlap.

@@ -1,0 +1,49 @@
+#!/bin/sh
+# lib/vzdump-hook: the vzdump hook script of the pbo storage (ADR 0006, amendment 8).
+# Copyright (C) 2026  TubalQ
+# License: AGPL-3.0-or-later (see LICENSE).
+#
+# Installed as /usr/lib/pbo/vzdump-hook (package pbo-pve-storage) or
+# /usr/local/lib/pbo/vzdump-hook (install.sh), and named by the `script:` line
+# that `pbo integrate enable` adds to /etc/vzdump.conf.
+#
+# vzdump runs it for EVERY backup on the node, pbo's own runs and other storages
+# included. PVE::VZDump::run_hook_script (VZDump.pm:787-815, pve-manager 9.2.32):
+#   argv  <phase>                  job phases: job-init, job-start, job-end, job-abort
+#         <phase> <mode> <vmid>    guest phases: backup-start, pre-stop, pre-restart,
+#                                  post-restart, backup-end, backup-abort, log-end
+#         (mode is the effective one: a guest that is not running gets "stop")
+#   env   `local %ENV` first, so ONLY these are set (no PATH, no HOME):
+#         STOREID  the run's storage, only when it has one (:807)
+#         DUMPDIR  that storage's dump directory (:808; not yet at job-init)
+#         VMTYPE, HOSTNAME, TARGET, LOGFILE  per guest (:810-812); TARGET is the
+#                  archive path, extension included, from backup-start on
+# A non-zero exit fails the guest (guest phases) or the job (job phases).
+#
+# This wrapper starts no pbo code unless STOREID names a storage of type pbo:
+# pbo's own runs use --dumpdir and get no STOREID (get_storage_param, VZDump.pm:73-78,
+# applied at :637-639), and other storages are not ours. Only then does it run
+# `pbo _vzdump-hook <args>` (lib/ingest.sh).
+#
+# Test hooks: PBO_PVE_STORAGE_CFG replaces /etc/pve/storage.cfg, PBO_HOOK_BIN
+# replaces the pbo binary (and is then the ONLY binary tried).
+
+[ -n "${STOREID:-}" ] || exit 0
+grep -qxF "pbo: $STOREID" "${PBO_PVE_STORAGE_CFG:-/etc/pve/storage.cfg}" 2>/dev/null || exit 0
+
+# vzdump gives the hook an empty environment: pbo needs restic, pct, qm, jq, ...
+[ -n "${PATH:-}" ] || PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# our output goes into the Proxmox task log: keep it ASCII (lib/common.sh _log)
+PBO_ASCII_LOG=1
+export PATH PBO_ASCII_LOG
+
+if [ -n "${PBO_HOOK_BIN:-}" ]; then
+    exec "$PBO_HOOK_BIN" _vzdump-hook "$@"
+fi
+for bin in /usr/sbin/pbo /usr/local/sbin/pbo; do
+    if [ -x "$bin" ]; then
+        exec "$bin" _vzdump-hook "$@"
+    fi
+done
+echo "pbo vzdump hook: '$STOREID' is a pbo storage, but pbo is not installed (/usr/sbin/pbo, /usr/local/sbin/pbo)" >&2
+exit 1

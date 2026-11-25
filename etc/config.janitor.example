@@ -1,0 +1,49 @@
+# pbo janitor config (/etc/pbo/config on the storage host). See ADR 0004.
+#
+# The janitor owns offsite retention for an append-only rest-server. It reads
+# the repo straight from disk, so it never goes through the server and is not
+# bound by --append-only. It is the only machine that can delete.
+#
+# This file: owned by root, readable by the janitor user only
+# (chown root:restic /etc/pbo/config; chmod 0640). pbo refuses a config that is
+# group- or world-writable or owned by anyone but root or the janitor user.
+
+# Config schema this file is written for (pbo warns if it is newer than it knows).
+PBO_CONFIG_VERSION=1
+PBO_ROLE=janitor
+# pbo drops to this user when started as root (it must never write here as root).
+JANITOR_USER=restic
+LOCAL_REPO=false
+OFFSITE_ENABLED=true
+# With rest-server --private-repos the repo for user <u> lives under <path>/<u>/.
+RESTIC_OFFSITE_REPO=/srv/restic/pve1/pbo
+# Same repo password as the hosts that write to it (the DR key). Readable by
+# the janitor user only: chown restic:restic, chmod 0400.
+RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass
+STATE_DIR=/var/lib/pbo
+LOG_DIR=/var/log/pbo
+CACHE_DIR=/var/cache/pbo
+RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache
+
+# Retention, same meaning as on a host.
+KEEP_OFFSITE_DAILY=7
+KEEP_OFFSITE_WEEKLY=4
+KEEP_OFFSITE_MONTHLY=6
+KEEP_OFFSITE_YEARLY=0
+# A host's own pbo-keep-* tag may raise retention here, never lower it; and
+# never below this many snapshots.
+#KEEP_OVERRIDE_MIN_LAST=3
+# Snapshots dated further than this into the future block prune (a writer that
+# backdates or postdates snapshots to game retention).
+#FUTURE_SKEW=3600
+
+# Each daily run reads the next 1/30 of the data, so all of it is read about
+# once a month. Cheap here: it's local disk.
+VERIFY_ROTATE=30
+# A guest whose newest snapshot is older than this (seconds) is a problem and an
+# alert: its host stopped sending.
+DOCTOR_MAX_AGE=172800
+
+#NTFY_URL=
+#NTFY_TOPIC=
+#NTFY_TOKEN=

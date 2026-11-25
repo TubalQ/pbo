@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+# pbo: offsite backup of Proxmox guests (LXC + QEMU) to any SFTP target (e.g.
+# Hetzner Storage Box), using restic as the backup engine.
+# Copyright (C) 2026  TubalQ
+# License: AGPL-3.0-or-later (see LICENSE).
+#
+# Dispatcher: sources lib/*.sh, parses global flags, dispatches subcommands.
+# Two-level locking (global + per-vmid), --dry-run/--json global flags.
+#
+# Run on the Proxmox HOST (requires pct/vzdump). See README.md for the big picture.
+
+set -Eeuo pipefail
+
+# Resolve our own directory so lib/ works both from the repo and when installed
+# (follow the symlink /usr/local/sbin/pbo → /usr/local/lib/pbo/pbo).
+SELF_DIR="$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SELF_DIR}/lib/common.sh"
+# shellcheck source=lib/json.sh
+source "${SELF_DIR}/lib/json.sh"
+# shellcheck source=lib/guest.sh
+source "${SELF_DIR}/lib/guest.sh"
+# shellcheck source=lib/cluster.sh
+source "${SELF_DIR}/lib/cluster.sh"
+# shellcheck source=lib/notify.sh
+source "${SELF_DIR}/lib/notify.sh"
+# shellcheck source=lib/lock.sh
+source "${SELF_DIR}/lib/lock.sh"
+# shellcheck source=lib/preflight.sh
+source "${SELF_DIR}/lib/preflight.sh"
+# shellcheck source=lib/backup.sh
+source "${SELF_DIR}/lib/backup.sh"
+# shellcheck source=lib/list.sh
+source "${SELF_DIR}/lib/list.sh"
+# shellcheck source=lib/restore.sh
+source "${SELF_DIR}/lib/restore.sh"
+# shellcheck source=lib/prune.sh
+source "${SELF_DIR}/lib/prune.sh"
+# shellcheck source=lib/testrestore.sh
+source "${SELF_DIR}/lib/testrestore.sh"
+# shellcheck source=lib/views.sh
+source "${SELF_DIR}/lib/views.sh"
+# shellcheck source=lib/jobs.sh
+source "${SELF_DIR}/lib/jobs.sh"
+# shellcheck source=lib/schedule.sh
+source "${SELF_DIR}/lib/schedule.sh"
+# shellcheck source=lib/restic.sh
+source "${SELF_DIR}/lib/restic.sh"
+# shellcheck source=lib/host.sh
+source "${SELF_DIR}/lib/host.sh"
+# shellcheck source=lib/policy.sh
+source "${SELF_DIR}/lib/policy.sh"
+# shellcheck source=lib/ownership.sh
+source "${SELF_DIR}/lib/ownership.sh"
+# shellcheck source=lib/catalog.sh
+source "${SELF_DIR}/lib/catalog.sh"
+# shellcheck source=lib/ingest.sh
+source "${SELF_DIR}/lib/ingest.sh"
+# shellcheck source=lib/integrate.sh
+source "${SELF_DIR}/lib/integrate.sh"
+# shellcheck source=lib/appendonly.sh
+source "${SELF_DIR}/lib/appendonly.sh"
+# shellcheck source=lib/metrics.sh
+source "${SELF_DIR}/lib/metrics.sh"
+# shellcheck source=lib/menu.sh
+source "${SELF_DIR}/lib/menu.sh"
+
+readonly VERSION="0.5.0-rc1"
+
+# ---------------------------------------------------------------------------
+# Global flags (before the subcommand). --json and --dry-run are global and
+# must be available from the start, machine-readable output uses --json only.
+# ---------------------------------------------------------------------------
+JSON_OUTPUT=0
+DRY_RUN=0
+PBO_COMMAND=""
+
+usage() {
+    cat <<'EOF'
+pbo: offsite backup of Proxmox guests (LXC + QEMU) via restic, to SFTP or an append-only rest-server.
+
+Usage:
+  pbo [global flags] <command> [arguments]
+
+Global flags:
+  --json              machine-readable output on stdout
+  --dry-run           show what would be done, change nothing
+  -h, --help          this help
+  -V, --version       version number
+
+Commands:
+  setup                       interactive setup wizard (cache/sftp/password/mode/ntfy → init)
+  menu                        interactive prompt-CLI, guests/backup/restore/status
+  init                        create/verify the repo(s)
+  backup <vmid>               dump → restic backup → copy offsite (global lock)
+  preflight <vmid>            run the preflight checks only (exists/space/cache/repo)
+  run-schedule [--stream|--batch]  back up this node's guests → the SAME repo
+                              --stream: dump→upload one at a time (low disk, default)
+                              --batch:  dump all to cache→upload (if there is room)
+  status                      running jobs, queue length, who holds the global lock
+  metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
+  notify-test                 send a test alert through ntfy and/or Proxmox notifications
+  doctor                      health check (repo, timer, key perms, per-guest age)
+  guests                      every guest: policy, newest snapshot, staleness, last restore test
+  job start <command> [args]  run an action in the background (backup, restore, verify, prune,
+                              test-restore, ...); prints the job id at once
+  job list | show <id> | log <id> [--from N] [--follow] | cancel <id>
+  policy get <vmid>           the guest's pbo policy (skip, stop mode, own retention)
+  policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
+                              change it (writes the guest's pbo-* Proxmox tags, others untouched)
+  timers                      the pbo timers: enabled, next and last run, last result
+  config [show]               the effective configuration (secrets never shown)
+  version                     pbo, restic and contract versions
+  list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
+  usage                       repo size, dedup ratio, snapshot count
+  fetch <vmid> <ts>           extract+verify one snapshot into the cache (no global lock)
+  restore <vmid> <ts> --to N [--storage S] [--yes] [--start] [--keep-network]
+                              restore to a new vmid (no global lock). The copy is isolated:
+                              NICs link_down, no autostart, no bind/device mounts, hooks or
+                              raw lxc lines. --start boots it. --keep-network restores it
+                              exactly as the original was (disaster recovery): refused while
+                              the original still exists anywhere in the cluster
+  verify [--scheduled]        verify repo integrity (restic check); --scheduled reads the
+                              next 1/VERIFY_ROTATE slice of the data (all of it over N runs)
+  prune [--if-owner] [--queue] apply retention (cache keep-last, offsite GFS)
+  unlock                      remove a stale restic repo lock (after a killed run)
+  rotate-key <file>           rotate the repo password (DR key) to the value in <file>
+  test-restore <vmid>         full restore to a throwaway vmid, boot, destroy (recorded as evidence)
+  test-restore --scheduled    test the guest(s) that went longest without a test (TR_PER_RUN)
+  restore-report [--days N]   restore-test evidence: every test, its stages, coverage per guest
+  backup-host                 back up THIS host's config + rebuild metadata (SSH/DR keys excluded)
+  restore-host <node> <ts> --to <dir> [--path <p>]
+                              extract a host snapshot's files to <dir> (copy back by hand)
+  catalog refresh [--out <file>]  write the index the Proxmox storage plugin reads (both tiers,
+                              read without locks; an unreadable tier keeps the old index)
+  catalog show                the index
+  catalog materialize [--background] <archive>
+                              stage one vzdump archive in PVE_STAGING_DIR (for a PVE restore);
+                              --background: start it detached and exit 75 unless already staged
+  catalog release [--all]     remove staged archives older than PVE_STAGING_TTL (mount links:
+                              PVE_STAGING_LINK_TTL) or no longer in the catalogue (or all);
+                              pbo-catalog.service runs it
+  ingest --vmid <vmid> --archive <path>
+                              upload an archive a PVE backup job wrote to the pbo spool (the
+                              vzdump hook runs this; guest lock only, cache and offsite)
+  ingest --pending            ingest spool archives older than 10 min (unless vzdump runs) and
+                              copy offsite the ingested snapshots whose copy failed
+  integrate status            the Proxmox integration: mode, PVE versions, plugin, storage, hook,
+                              spool, catalogue, PVE jobs to pbo, the storage.cfg/vzdump.conf recipe
+  integrate enable <both|integrated> [--catalog-only] [--yes]
+                              add the pbo storage to PVE (and, unless --catalog-only, the spool
+                              path and the vzdump hook), start pbo-catalog.timer, set the mode
+  integrate disable [--yes]   back to standalone: mode first, then hook, storage and timer go
+                              (refused while an enabled PVE job writes to pbo)
+
+Exit codes: 0 ok, 64 usage, 65 bad data, 69 unavailable (doctor: problems found), 70 internal error,
+            73 cannot create, 75 busy (lock held or queued), 78 config error.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Parse global flags up to the first non-flag argument (the command).
+# ---------------------------------------------------------------------------
+parse_global_flags() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)     JSON_OUTPUT=1; shift ;;
+            --dry-run)  DRY_RUN=1; shift ;;
+            -h|--help)  usage; exit "$EX_OK" ;;
+            -V|--version) printf 'pbo %s\n' "$VERSION"; exit "$EX_OK" ;;
+            --) shift; break ;;
+            -*) printf 'unknown global flag: %s\n' "$1" >&2; usage >&2; exit "$EX_USAGE" ;;
+            *)  break ;;
+        esac
+    done
+    REMAINING_ARGS=("$@")
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand handlers. Each acquires the locks it needs, then calls the
+# operation in the relevant lib file.
+# ---------------------------------------------------------------------------
+
+# backup [--queue] <vmid>
+# Manual (default): "now" mode, exits immediately if the global lock is busy.
+# --queue: scheduled mode, queues on the global lock (used internally by run-schedule).
+cmd_backup() {
+    local mode="now"
+    while [[ "${1:-}" == -* ]]; do
+        case "$1" in
+            --queue) mode="queue"; shift ;;
+            --now)   mode="now"; shift ;;
+            *) die "$EX_USAGE" "unknown backup flag: $1" ;;
+        esac
+    done
+    require_vmid "${1:-}"
+    local vmid="$1"
+    acquire_vmid_lock "$vmid"
+    acquire_global_lock "$mode" "backup" "$vmid"
+
+    # Preflight. FAIL → abort before any dump.
+    local rc=0
+    run_preflight "$vmid" || rc=$?
+    if (( rc != 0 )); then
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
+        die "$EX_UNAVAILABLE" "preflight failed for vmid $vmid, backup aborted."
+    fi
+
+    # dump + local verify + meta + upload.
+    do_backup "$vmid"
+}
+
+# preflight <vmid>, run the preflight checks only (also an internal part of backup).
+cmd_preflight() {
+    require_vmid "${1:-}"
+    local vmid="$1" rc=0
+    run_preflight "$vmid" || rc=$?
+    [[ "${JSON_OUTPUT:-0}" == 1 ]] && emit_preflight_json "$vmid" "$rc"
+    return "$rc"
+}
+
+# run-schedule, scheduled backup of everything in BACKUP_ORDER. --stream (one-by-one,
+# default) or --batch (dump all→upload), always to the SAME repo.
+cmd_run_schedule() {
+    case "${1:-}" in
+        --batch)  BACKUP_MODE="batch" ;;
+        --stream) BACKUP_MODE="stream" ;;
+        "" ) : ;;
+        *) die "$EX_USAGE" "unknown run-schedule flag: $1 (use --stream|--batch)" ;;
+    esac
+    # Held for the whole run so prune can't land between two guests.
+    acquire_schedule_lock "queue" "run-schedule"
+    do_run_schedule
+}
+
+# status, read operation, no lock.
+cmd_status() { do_status; }
+
+# fetch/restore, NEVER take the global lock (they do not write from the pool).
+cmd_fetch() {
+    require_vmid "${1:-}"
+    [[ -n "${2:-}" ]] || die "$EX_USAGE" "fetch requires <vmid> <timestamp>"
+    acquire_vmid_lock "$1"
+    do_fetch "$1" "$2"
+}
+
+# restore <vmid> <ts> --to <new-vmid> [--storage <pool>] [--yes]
+cmd_restore() {
+    require_vmid "${1:-}"
+    local src="$1" ts="${2:-}"
+    [[ -n "$ts" ]] || die "$EX_USAGE" "restore requires <vmid> <ts> --to <new-vmid>"
+    shift 2 || true
+    local newid="" storage="" yes=0
+    RESTORE_START=0 RESTORE_KEEP_NET=0 RESTORE_ISOLATE=0 RESTORE_RESTRICTED=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --to)      newid="$2"; shift 2 ;;
+            --storage) storage="$2"; shift 2 ;;
+            --yes)     yes=1; shift ;;
+            --start)   RESTORE_START=1; shift ;;
+            --keep-network) RESTORE_KEEP_NET=1; shift ;;
+            --isolate) RESTORE_ISOLATE=1; shift ;;      # the default; kept for scripts
+            --restricted) RESTORE_RESTRICTED=1; shift ;; # set by the web helper for users without Sys.Modify
+            *) die "$EX_USAGE" "unknown restore flag: $1" ;;
+        esac
+    done
+    is_vmid "$newid" || die "$EX_USAGE" "restore requires --to <new-vmid> (a valid vmid)"
+    (( RESTORE_KEEP_NET == 0 || RESTORE_ISOLATE == 0 )) || die "$EX_USAGE" "--isolate and --keep-network contradict each other"
+    (( RESTORE_KEEP_NET == 0 || RESTORE_RESTRICTED == 0 )) || die "$EX_USAGE" "--keep-network is not available in restricted mode"
+    # isolated unless the operator asks for the original's config (disaster recovery)
+    (( RESTORE_KEEP_NET == 1 )) || RESTORE_ISOLATE=1
+    acquire_vmid_lock "$newid"
+    do_restore "$src" "$ts" "$newid" "$storage" "$yes"
+}
+
+cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; }
+cmd_menu()         { menu_main; }
+cmd_setup()        { run_setup_wizard; }
+cmd_doctor()       { rdo_doctor; }
+cmd_list() {
+    local reasons=0 vmid=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --reasons) reasons=1; shift ;;
+            *) vmid="$1"; shift ;;
+        esac
+    done
+    LIST_WITH_REASONS="$reasons" do_list "$vmid"
+}
+cmd_usage()        { rdo_usage; }
+cmd_verify() {
+    case "${1:-}" in ""|--scheduled) ;; *) die "$EX_USAGE" "unknown verify flag: $1 (use --scheduled)" ;; esac
+    # restic check locks the repo exclusively: queue behind run-schedule/prune
+    # instead of making them (or itself) fail on the lock
+    [[ "${DRY_RUN:-0}" == 1 ]] || { acquire_schedule_lock queue verify; _catalog_mount_stop verify; }
+    rdo_verify "${1:-}"
+}
+cmd_unlock()       { rdo_unlock; }
+cmd_rotate_key()   { [[ -n "${1:-}" ]] || die "$EX_USAGE" "rotate-key requires a file with the new password"; rdo_rotate_key "$1"; }
+# prune [--if-owner] [--queue]
+#   --if-owner: skip silently unless this node is the prune owner (cluster-safe
+#               scheduled prune; see lib/cluster.sh _is_prune_owner).
+#   --queue:    wait for a running backup/run-schedule instead of exiting (the
+#               timer uses this). Manual prune exits at once if something runs.
+# Prune takes an exclusive restic lock, so it must never overlap a backup.
+cmd_prune() {
+    local if_owner=0 mode="now"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --if-owner) if_owner=1; shift ;;
+            --queue)    mode="queue"; shift ;;
+            *) die "$EX_USAGE" "unknown prune flag: $1" ;;
+        esac
+    done
+    if (( if_owner )) && ! _is_prune_owner; then
+        log_info "prune: node '$(_local_node)' is not the prune owner (PRUNE_OWNER=${PRUNE_OWNER:-}), skipping."
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "skipped" "true" "reason" "not_prune_owner"
+        return "$EX_OK"
+    fi
+    # A dry-run only reads (restic forget --dry-run) and needs no serialization.
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        acquire_schedule_lock "$mode" "prune"
+        acquire_global_lock "$mode" "prune"
+        _catalog_mount_stop prune   # restic mount holds a lock on the cache repo
+    fi
+    do_prune
+}
+cmd_test_restore() {
+    if [[ "${1:-}" == --scheduled ]]; then
+        [[ $# -eq 1 ]] || die "$EX_USAGE" "test-restore --scheduled takes no other arguments"
+        rdo_test_restore_scheduled; return
+    fi
+    require_vmid "${1:-}"
+    local v="$1"; shift
+    TR_RESTRICTED=0
+    case "${1:-}" in "") ;; --restricted) TR_RESTRICTED=1 ;; *) die "$EX_USAGE" "unknown test-restore flag: $1" ;; esac
+    # the throwaway's vmid is locked inside; the source is only read from the repo,
+    # so its own backup is not blocked by a test
+    do_test_restore "$v"
+}
+
+# backup-host, back up the HOST itself (config + rebuild metadata). Manual only;
+# takes the global lock like a guest backup (it writes to the same repo).
+cmd_backup_host() {
+    acquire_global_lock "now" "backup-host" "$(_local_node)"
+    rdo_backup_host
+}
+
+# restore-host <node> <ts> --to <dir> [--path <p>], extract host files to a dir
+# (never overwrites live host paths). No global lock (read-only on the repo).
+cmd_restore_host() {
+    local who="${1:-}" ts="${2:-}"; shift 2 2>/dev/null || true
+    [[ -n "$who" && -n "$ts" ]] || die "$EX_USAGE" "restore-host requires <node> <ts> --to <dir> [--path <p>]"
+    local target="" path=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --to)   target="$2"; shift 2 ;;
+            --path) path="$2";   shift 2 ;;
+            *) die "$EX_USAGE" "unknown restore-host flag: $1" ;;
+        esac
+    done
+    [[ -n "$target" ]] || die "$EX_USAGE" "restore-host requires --to <dir>"
+    rdo_restore_host "$who" "$ts" "$target" "$path"
+}
+
+# On exit: release locks first, then record what happened (metrics, audit).
+# A trap, so it also covers commands that end in die().
+_pbo_on_exit() {
+    local rc="$1"
+    cleanup_locks
+    # a command that failed without saying why (an errexit deep in a function):
+    # never silent: a log line (and alert), and the JSON error object
+    if (( rc != 0 )); then
+        [[ "${PBO_ERROR_LOGGED:-0}" == 1 || "$rc" == "$EX_TEMPFAIL" || "$rc" == "$EX_USAGE" || "$PBO_COMMAND" == doctor ]] || log_error "$PBO_COMMAND: stopped unexpectedly (exit $rc); see the log above"
+        json_error "$rc" "$PBO_COMMAND failed (exit $rc)"
+    fi
+    json_close
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        local ev="" dur=$(( $(date +%s) - ${AUDIT_T0:-$(date +%s)} ))
+        case "$PBO_COMMAND" in
+            run-schedule) ev=run_schedule ;;
+            verify|prune) ev="$PBO_COMMAND" ;;
+            test-restore) ev=test_restore ;;
+            ingest) ev=ingest ;;
+        esac
+        if [[ -n "$ev" ]]; then
+            _metrics_event "$ev" time "$(date +%s)" ok "$( ((rc==0)) && echo 1 || echo 0 )" duration "$dur" \
+                ${RS_FAILED:+failed "$RS_FAILED"} ${TR_FAILED:+failed "$TR_FAILED"}
+        fi
+        # backup --queue is one guest inside run-schedule; that writes once at the end
+        # backup --queue inside run-schedule: run-schedule writes once at the end; a job's backup writes itself
+        # ingest runs inside a PVE backup job: record the event, leave the textfile
+        # (a render reads the repo) to the next run-schedule or `pbo metrics`
+        if [[ ( -n "$ev" && "$ev" != ingest ) || ( "$PBO_COMMAND" == backup && ( " ${PBO_ORIG_ARGS[*]} " != *" --queue "* || -n "${PBO_JOB_ID:-}" ) ) ]]; then
+            _metrics_write
+        fi
+    fi
+    audit_command_end "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Main.
+# ---------------------------------------------------------------------------
+main() {
+    PBO_ORIG_ARGS=("$@")   # the janitor re-execs itself unprivileged with these
+    parse_global_flags "$@"
+    set -- "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+
+    PBO_COMMAND="${1:-}"
+    [[ -n "$PBO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
+    shift || true
+
+    load_config
+    json_open
+    audit_command_start
+    trap '_pbo_on_exit $?' EXIT
+    _role_check "$PBO_COMMAND"
+
+    case "$PBO_COMMAND" in
+        init)          cmd_init "$@" ;;
+        setup)         cmd_setup "$@" ;;
+        menu)          cmd_menu "$@" ;;
+        backup)        cmd_backup "$@" ;;
+        preflight)     cmd_preflight "$@" ;;
+        run-schedule)  cmd_run_schedule "$@" ;;
+        status)        cmd_status "$@" ;;
+        doctor)        cmd_doctor "$@" ;;
+        guests)        rdo_guests "$@" ;;
+        job)           rdo_job "$@" ;;
+        _job-run)      rdo_job_run "$@" ;;
+        policy)        case "${1:-}" in get) shift; rdo_policy_get "$@" ;; set) shift; rdo_policy_set "$@" ;;
+                           *) die "$EX_USAGE" "policy get <vmid> | policy set <vmid> [--skip on|off] [--stop on|off] [--keep <spec>|default]" ;; esac ;;
+        timers)        rdo_timers "$@" ;;
+        config)        rdo_config "$@" ;;
+        version)       rdo_version "$@" ;;
+        list)          cmd_list "$@" ;;
+        usage)         cmd_usage "$@" ;;
+        fetch)         cmd_fetch "$@" ;;
+        restore)       cmd_restore "$@" ;;
+        verify)        cmd_verify "$@" ;;
+        prune)         cmd_prune "$@" ;;
+        unlock)        cmd_unlock "$@" ;;
+        rotate-key)    cmd_rotate_key "$@" ;;
+        test-restore)  cmd_test_restore "$@" ;;
+        restore-report) rdo_restore_report "$@" ;;
+        backup-host)   cmd_backup_host "$@" ;;
+        restore-host)  cmd_restore_host "$@" ;;
+        catalog)       rdo_catalog "$@" ;;
+        ingest)        rdo_ingest "$@" ;;
+        _vzdump-hook)  rdo_vzdump_hook "$@" ;;
+        integrate)     rdo_integrate "$@" ;;
+        notify-test)   rdo_notify_test ;;
+        metrics)       rdo_metrics "$@" ;;
+        help)          if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$(jq -cn --arg u "$(usage)" '{status:"ok", ok:true, usage:$u}')"; else usage; fi ;;
+        *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; json_error "$EX_USAGE" "unknown command: $PBO_COMMAND"; exit "$EX_USAGE" ;;
+    esac
+}
+
+main "$@"

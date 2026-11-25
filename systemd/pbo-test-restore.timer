@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly pbo restore test (rotates through the guests)
+Documentation=https://github.com/TubalQ/PBO
+
+[Timer]
+# Saturdays 10:00: away from the nightly backup, the Sunday prune and the
+# Wednesday verify. One guest per run (TR_PER_RUN), oldest-tested first.
+OnCalendar=Sat *-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

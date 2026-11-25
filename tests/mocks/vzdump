@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# mock: vzdump <vmid...> --mode M --compress C (--dumpdir DIR | --storage S)
+# Honors --compress: 0/none → a REAL plain .tar (what the restic engine uses),
+# otherwise a .tar.zst. Restic stores the uncompressed .tar and dedups it.
+#
+# --storage S writes into $MOCK_SPOOL/dump (the storage's dump dir), as a PVE
+# backup job to the pbo storage does.
+# MOCK_VZDUMP_HOOK=1 also runs the hook script $MOCK_VZDUMP_SCRIPT the way
+# PVE::VZDump does (pve-manager 9.2.32, VZDump.pm): phases in vzdump's order
+#   job-init, job-start,
+#   per guest  snapshot/suspend: backup-start pre-stop pre-restart post-restart <archive> backup-end
+#              stop:             backup-start pre-stop <archive> backup-end pre-restart post-restart
+#              a failed phase:   (pre-restart post-restart if stopped) backup-abort
+#              then the task log is copied to LOGFILE and log-end runs,
+#   job-end (a failure there fails the job: job-abort, exit 1)
+# with argv <phase> [<mode> <vmid>] and an environment that holds ONLY STOREID,
+# DUMPDIR (not at job-init), VMTYPE, HOSTNAME, TARGET, LOGFILE (vzdump's
+# `local %ENV`), plus PATH and the test plumbing named in MOCK_VZDUMP_HOOK_ENV.
+# A guest in $MOCK_VZDUMP_STOPPED (not running) gets mode stop. A failed guest
+# makes vzdump exit 1; the other guests still run.
+vmids=(); dumpdir=""; storage=""; compress="zstd"; mode="snapshot"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dumpdir)  dumpdir="$2"; shift 2 ;;
+        --storage)  storage="$2"; shift 2 ;;
+        --compress) compress="$2"; shift 2 ;;
+        --mode)     mode="$2"; shift 2 ;;
+        [0-9]*)     vmids+=("$1"); shift ;;
+        *)          shift ;;
+    esac
+done
+if [[ -n "$storage" ]]; then
+    [[ -n "${MOCK_SPOOL:-}" ]] || { echo "mock vzdump: --storage needs MOCK_SPOOL" >&2; exit 2; }
+    dumpdir="$MOCK_SPOOL/dump"
+fi
+: "${dumpdir:=.}"; mkdir -p "$dumpdir"
+
+# make_archive <vmid> [<path>]: the archive (at <path>, or named by the time)
+make_archive() {
+    local vmid="$1" arch="${2:-}" ts tmp
+    ts="$(date +%Y_%m_%d-%H_%M_%S)"
+    tmp="$(mktemp -d)"; echo "content for $vmid" > "$tmp/data.txt"; mkdir -p "$tmp/etc"; echo "k=v" > "$tmp/etc/conf"
+    if [[ "$compress" == "0" || "$compress" == "none" ]]; then
+        [[ -n "$arch" ]] || arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar"
+        tar -cf "$arch" -C "$tmp" .
+    else
+        [[ -n "$arch" ]] || arch="$dumpdir/vzdump-lxc-${vmid}-${ts}.tar.zst"
+        tar --zstd -cf "$arch" -C "$tmp" .
+    fi
+    rm -rf "$tmp"
+    echo "INFO: starting new backup job"
+    echo "INFO: creating vzdump archive '$arch'"
+    echo "INFO: Total bytes written: $(stat -c %s "$arch")"
+    echo "INFO: Finished Backup of VM $vmid"
+}
+
+if [[ "${MOCK_VZDUMP_HOOK:-0}" != 1 ]]; then
+    for v in "${vmids[@]}"; do make_archive "$v"; done
+    exit 0
+fi
+
+# --- hook mode ---
+script="${MOCK_VZDUMP_SCRIPT:?mock vzdump: MOCK_VZDUMP_HOOK=1 needs MOCK_VZDUMP_SCRIPT}"
+passenv=()
+for k in PATH ${MOCK_VZDUMP_HOOK_ENV:-PBO_CONFIG PBO_HOOK_BIN PBO_PVE_STORAGE_CFG PBO_NO_NOTIFY MOCK_CONF_DIR MOCK_LOG MOCK_QM_VMIDS MOCK_PVESH_JSON}; do
+    [[ -n "${!k+x}" ]] && passenv+=("$k=${!k}")
+done
+# hook <phase> [<mode> <vmid>]: run_hook_script; the task's fields come from T_*
+hook() {
+    local env=("${passenv[@]}")
+    [[ -n "$storage" ]] && env+=("STOREID=$storage")
+    [[ "$1" != job-init ]] && env+=("DUMPDIR=$dumpdir")
+    if [[ $# -gt 1 ]]; then
+        env+=("VMTYPE=lxc")
+        [[ -n "${T_HOSTNAME:-}" ]] && env+=("HOSTNAME=$T_HOSTNAME")
+        env+=("TARGET=$T_TARGET" "LOGFILE=$T_LOGFILE")
+    fi
+    echo "INFO: hook $*" >> "${MOCK_VZDUMP_HOOK_LOG:-/dev/null}"
+    env -i "${env[@]}" "$script" "$@"
+}
+
+hook job-init || { echo "ERROR: hook job-init failed" >&2; exit 1; }
+hook job-start || { echo "ERROR: hook job-start failed" >&2; hook job-abort; exit 1; }
+errors=0
+for v in "${vmids[@]}"; do
+    ext=.tar; [[ "$compress" == "0" || "$compress" == "none" ]] || ext=.tar.zst
+    ts="$(date +%Y_%m_%d-%H_%M_%S)"; base="vzdump-lxc-${v}-${ts}"
+    T_TARGET="$dumpdir/$base$ext" T_LOGFILE="$dumpdir/$base.log"
+    T_HOSTNAME="$(sed -n 's/^hostname: //p' "${MOCK_CONF_DIR:-/nonexistent}/$v.conf" 2>/dev/null | head -1)"
+    m="$mode"; case " ${MOCK_VZDUMP_STOPPED:-} " in *" $v "*) m=stop ;; esac
+    tasklog="$(mktemp)"; state=ok; stopped=0
+    {
+        echo "INFO: Starting Backup of VM $v (lxc)"
+        echo "INFO: backup mode: $m"
+        if [[ "$m" == stop ]]; then
+            hook backup-start "$m" "$v" && { case " ${MOCK_VZDUMP_STOPPED:-} " in *" $v "*) : ;; *) stopped=1; hook pre-stop "$m" "$v" ;; esac; } \
+                && make_archive "$v" "$T_TARGET" && hook backup-end "$m" "$v"
+        else
+            hook backup-start "$m" "$v" && hook pre-stop "$m" "$v" && hook pre-restart "$m" "$v" && hook post-restart "$m" "$v" \
+                && make_archive "$v" "$T_TARGET" && hook backup-end "$m" "$v"
+        fi
+    } > "$tasklog" 2>&1 || state=err
+    cat "$tasklog"
+    if (( stopped )); then hook pre-restart "$m" "$v"; hook post-restart "$m" "$v"; fi
+    if [[ "$state" == err ]]; then
+        echo "ERROR: Backup of VM $v failed" | tee -a "$tasklog"
+        hook backup-abort "$m" "$v"
+        errors=$((errors+1))
+    else
+        echo "INFO: Finished Backup of VM $v" | tee -a "$tasklog"
+    fi
+    cp "$tasklog" "$T_LOGFILE"; rm -f "$tasklog"
+    hook log-end "$m" "$v"
+    # vzdump numbers archives by the second: two guests in one second would collide
+    (( ${#vmids[@]} > 1 )) && sleep 1
+done
+# job-end runs inside the job's eval: its failure fails the job and runs job-abort
+hook job-end || { echo "ERROR: Backup job failed - hook job-end failed" >&2; hook job-abort; exit 1; }
+(( errors == 0 )) || exit 1
+exit 0

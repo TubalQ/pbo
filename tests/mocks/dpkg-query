@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# mock dpkg-query: `dpkg-query -W [-f=FORMAT|-f FORMAT|--showformat=FORMAT] <package...>`
+# answers from $MOCK_DPKG_VERSIONS ("pkg=version pkg=version", default: the PVE
+# set the pbo storage plugin was tested with). ${Package} and ${Version} in the
+# format are expanded, as are \n and \t. A package not listed: "no packages
+# found" on stderr and exit 1 (as dpkg-query does). Logs to $MOCK_LOG.
+[ -n "${MOCK_LOG:-}" ] && echo "dpkg-query $*" >> "$MOCK_LOG"
+vers="${MOCK_DPKG_VERSIONS-pve-manager=9.2.32 libpve-storage-perl=9.1.18 qemu-server=9.2.20 pve-container=6.1.24}"
+fmt='${Package}\t${Version}\n'; pkgs=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -W|--show) shift ;;
+        -f|--showformat) fmt="$2"; shift 2 ;;
+        -f*) fmt="${1#-f}"; fmt="${fmt#=}"; shift ;;
+        --showformat=*) fmt="${1#--showformat=}"; shift ;;
+        -*) shift ;;
+        *) pkgs+=("$1"); shift ;;
+    esac
+done
+rc=0
+for p in "${pkgs[@]}"; do
+    v=""
+    for kv in $vers; do [[ "${kv%%=*}" == "$p" ]] && v="${kv#*=}"; done
+    if [[ -z "$v" ]]; then echo "dpkg-query: no packages found matching $p" >&2; rc=1; continue; fi
+    out="${fmt//\$\{Package\}/$p}"; out="${out//\$\{Version\}/$v}"
+    printf '%b' "$out"
+done
+exit "$rc"

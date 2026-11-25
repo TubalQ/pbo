@@ -1,0 +1,21 @@
+[Unit]
+Description=pbo: release expired staged archives and refresh the catalogue the Proxmox storage plugin reads
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 1. Remove staged archives (PVE restores, Show Configuration) older than
+#    PVE_STAGING_TTL or no longer in the index, and stop an idle pbo-mount.service.
+#    A failure here never skips the refresh ("-").
+ExecStart=-/usr/local/lib/pbo/pbo catalog release
+# 2. Read the snapshot list of both repo tiers with --no-lock and rewrite
+#    /var/lib/pbo/catalog/index.json atomically. An unreadable tier fails the run
+#    and keeps the old index (never an empty one). Also refreshed at the end of
+#    run-schedule and prune; this timer catches what the janitor prunes offsite.
+ExecStart=/usr/local/lib/pbo/pbo catalog refresh
+# A hung offsite listing must not hold the unit for long; the next timer run retries.
+TimeoutStartSec=10min
+Nice=10
+IOSchedulingClass=idle

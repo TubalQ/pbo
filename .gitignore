@@ -1,0 +1,27 @@
+# Dev runtime (the isolated config.dev writes here), never in git.
+/run/
+run/
+run-*/
+
+# Secrets, the restic password lives in the password file, never in the repo.
+etc/config
+etc/restic-pass
+*.env
+id_ed25519*
+id_rsa*
+*.key
+
+# Junk
+*.log
+*.tmp
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor and OS cruft
+*.orig
+*.bak
+*.swp
+.DS_Store
+dist/

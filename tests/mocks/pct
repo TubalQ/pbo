@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# mock pct: config/restore/set/start/exec/stop/destroy. Logs to $MOCK_LOG.
+# restore writes $MOCK_CONF_DIR/<id>.conf (from $MOCK_RESTORE_CONF if set, like the
+# config PVE takes from the archive), set edits it, destroy removes it.
+[ -n "${MOCK_LOG:-}" ] && echo "pct $*" >> "$MOCK_LOG"
+case "${1:-}" in
+  config)  f="$MOCK_CONF_DIR/${2}.conf"; [ -f "$f" ] && cat "$f" || exit 1 ;;
+  restore) [ "${MOCK_RESTORE_OK:-1}" = 1 ] || exit 1
+           if [ -n "${MOCK_RESTORE_CONF:-}" ]; then cp "$MOCK_RESTORE_CONF" "$MOCK_CONF_DIR/${2}.conf"
+           else printf 'arch: amd64\nhostname: restored\nunprivileged: 1\n' > "$MOCK_CONF_DIR/${2}.conf"; fi ;;
+  set)     id="$2"; shift 2; f="$MOCK_CONF_DIR/${id}.conf"
+           [ -f "$f" ] || exit 1
+           while [ $# -gt 0 ]; do
+             case "$1" in
+               --delete) case " ${MOCK_SET_FAIL:-} " in *" $2 "*) exit 1 ;; esac
+                         sed -i "/^$2:/d" "$f"; shift 2 ;;
+               --*) k="${1#--}"; case " ${MOCK_SET_FAIL:-} " in *" $k "*) exit 1 ;; esac
+                    sed -i "/^$k:/d" "$f"; echo "$k: $2" >> "$f"; shift 2 ;;
+               *) shift ;;
+             esac
+           done ;;
+  unlock)  [ "${MOCK_UNLOCK_OK:-1}" = 1 ] || exit 1; sed -i '/^lock:/d' "$MOCK_CONF_DIR/${2}.conf"; exit 0 ;;
+  start)   [ "${MOCK_START_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  exec)    [ "${MOCK_EXEC_OK:-1}" = 1 ] && exit 0 || exit 1 ;;
+  stop)    exit 0 ;;
+  destroy) [ "${MOCK_DESTROY_FAIL:-0}" = 1 ] && exit 1
+           [ "${2:-}" -ge 9000 ] 2>/dev/null && [ "${2:-}" -le 9399 ] && rm -f "$MOCK_CONF_DIR/${2}.conf"; exit 0 ;;
+  *) exit 0 ;;
+esac

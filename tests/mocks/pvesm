@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# mock pvesm: `pvesm status` lists one active storage, "teststore", for every
+# content type ($MOCK_PVESM_EMPTY=1: none), so tests never ask the real host.
+# With $MOCK_STORAGE_CFG (a storage.cfg-format file) it also edits that file:
+#   pvesm add <type> <id> [--key value]...   append a stanza (exit 255 when <id> exists)
+#   pvesm set <id> [--key value]... [--delete k1,k2]   change the stanza
+#   pvesm remove <id>                        drop the stanza
+# and `pvesm status` lists its pbo storages as active too.
+# MOCK_PVESM_FAIL="<verb> [<verb>...]": those verbs exit 1. Logs to $MOCK_LOG.
+[ -n "${MOCK_LOG:-}" ] && echo "pvesm $*" >> "$MOCK_LOG"
+verb="${1:-}"
+[[ " ${MOCK_PVESM_FAIL:-} " == *" $verb "* ]] && { echo "mock pvesm: $verb failed" >&2; exit 1; }
+cfg="${MOCK_STORAGE_CFG:-}"
+
+# _stanza_has <id>: the cfg has a section for <id>
+_stanza_has() { [[ -f "$cfg" ]] && grep -qE "^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]+$1[[:space:]]*$" "$cfg"; }
+# _rewrite <id> <awk program on the stanza body>: print cfg with the stanza of <id> changed
+_drop() {  # <id>: cfg without the stanza (and the blank line before it)
+    awk -v id="$1" '
+        /^[A-Za-z][A-Za-z0-9_-]*:[ \t]+[^ \t]+[ \t]*$/ { on = ($2 == id) }
+        on && /^[ \t]*$/ { on = 0; next }
+        !on { buf[++n] = $0 }
+        END { while (n > 0 && buf[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print buf[i] }' "$cfg"
+}
+
+case "$verb" in
+    status)
+        echo "Name             Type     Status           Total            Used       Available        %"
+        [[ "${MOCK_PVESM_EMPTY:-0}" == 1 ]] || echo "teststore         dir     active        100000000         1000000        99000000    1.00%"
+        if [[ -f "$cfg" ]]; then
+            sed -nE 's/^pbo:[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1/p' "$cfg" | while read -r s; do
+                printf '%-17s pbo     active        100000000         1000000        99000000    1.00%%\n' "$s"
+            done
+        fi ;;
+    add)
+        [[ -n "$cfg" ]] || exit 0
+        type="${2:-}" id="${3:-}"; shift 3 || exit 2
+        _stanza_has "$id" && { echo "create storage failed: storage ID '$id' already defined" >&2; exit 255; }
+        { [[ -s "$cfg" ]] && printf '\n'; printf '%s: %s\n' "$type" "$id"
+          while [[ $# -ge 2 ]]; do printf '\t%s %s\n' "${1#--}" "$2"; shift 2; done; } >> "$cfg" ;;
+    set)
+        [[ -n "$cfg" ]] || exit 0
+        id="${2:-}"; shift 2 || exit 2
+        _stanza_has "$id" || { echo "update storage failed: storage '$id' does not exist" >&2; exit 255; }
+        del=""; sets=()
+        while [[ $# -ge 2 ]]; do
+            if [[ "$1" == --delete ]]; then del+="${del:+,}$2"; else sets+=("${1#--}" "$2"); fi
+            shift 2
+        done
+        tmp="$(mktemp)"
+        awk -v id="$id" -v del=",$del," -v sets="$(printf '%s\n' "${sets[@]+"${sets[@]}"}")" '
+            BEGIN { n = split(sets, s, "\n"); for (i = 1; i + 1 <= n; i += 2) { val[s[i]] = s[i+1]; order[++k] = s[i] } }
+            function flush() { for (j = 1; j <= k; j++) if (!(order[j] in done)) printf "\t%s %s\n", order[j], val[order[j]]; split("", done) }
+            /^[A-Za-z][A-Za-z0-9_-]*:[ \t]+[^ \t]+[ \t]*$/ { if (on) flush(); on = ($2 == id); print; next }
+            on && /^[ \t]+[^ \t]/ { key = $1
+                if (index(del, "," key ",")) next
+                if (key in val) { printf "\t%s %s\n", key, val[key]; done[key] = 1; next }
+                print; next }
+            on { flush(); on = 0 }
+            { print }
+            END { if (on) flush() }' "$cfg" > "$tmp" && cat "$tmp" > "$cfg"; rm -f "$tmp" ;;
+    remove)
+        [[ -n "$cfg" ]] || exit 0
+        id="${2:-}"
+        _stanza_has "$id" || { echo "delete storage failed: storage '$id' does not exist" >&2; exit 255; }
+        tmp="$(mktemp)"; _drop "$id" > "$tmp" && cat "$tmp" > "$cfg"; rm -f "$tmp" ;;
+    *) exit 0 ;;
+esac

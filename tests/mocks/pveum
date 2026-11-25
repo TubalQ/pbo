@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# mock pveum: `pveum acl list --output-format json` prints $MOCK_PVEUM_ACL_JSON
+# (a file, default []), `pveum role list --output-format json` $MOCK_PVEUM_ROLE_JSON
+# (default []). Logs to $MOCK_LOG.
+[ -n "${MOCK_LOG:-}" ] && echo "pveum $*" >> "$MOCK_LOG"
+case "${1:-} ${2:-}" in
+    "acl list")  if [ -n "${MOCK_PVEUM_ACL_JSON:-}" ]; then cat "$MOCK_PVEUM_ACL_JSON"; else echo '[]'; fi ;;
+    "role list") if [ -n "${MOCK_PVEUM_ROLE_JSON:-}" ]; then cat "$MOCK_PVEUM_ROLE_JSON"; else echo '[]'; fi ;;
+    *) exit 0 ;;
+esac

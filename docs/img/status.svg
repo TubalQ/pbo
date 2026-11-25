@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="818" height="461" viewBox="0 0 818 461" role="img" aria-label="pbo status summary, both tiers (demo data)">
+<title>pbo status summary, both tiers (demo data)</title>
+<rect width="100%" height="100%" rx="8" fill="#16191d"/>
+<rect width="100%" height="30" rx="8" fill="#23272e"/><rect y="22" width="100%" height="8" fill="#23272e"/>
+<circle cx="18" cy="15" r="6" fill="#ff5f56"/>
+<circle cx="38" cy="15" r="6" fill="#ffbd2e"/>
+<circle cx="58" cy="15" r="6" fill="#27c93f"/>
+<g font-family="DejaVu Sans Mono, Menlo, Consolas, Liberation Mono, monospace" font-size="14" fill="#d8dee9">
+<text y="60" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">┌─ </tspan><tspan x="43.2" fill="#4fc1d6" font-weight="bold">PBO</tspan><tspan x="68.4" fill="#4fc1d6"> · Proxmox Backup Offsite ────────────────────────┐</tspan></text>
+<text y="79" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">│</tspan><tspan x="26.4" > engine </tspan><tspan x="93.6" font-weight="bold">restic</tspan><tspan x="144.0" > · offsite </tspan><tspan x="236.4" fill="#4fc1d6">sftp:storagebox:pbo</tspan><tspan x="396.0" > · protected </tspan><tspan x="505.2" font-weight="bold">4</tspan></text>
+<text y="98" xml:space="preserve"><tspan x="18.0" fill="#4fc1d6">└───────────────────────────────────────────────────────────┘</tspan></text>
+<text y="117" xml:space="preserve"><tspan x="18.0" font-weight="bold"> Status — summary</tspan></text>
+<text y="136" xml:space="preserve"></text>
+<text y="155" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" fill="#7f8794">Reading both tiers…</tspan></text>
+<text y="174" xml:space="preserve"></text>
+<text y="193" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">Local  (cache: /var/cache/pbo)</tspan></text>
+<text y="212" xml:space="preserve"><tspan x="18.0" >    guests:    4</tspan></text>
+<text y="231" xml:space="preserve"><tspan x="18.0" >    snapshots: 12</tspan></text>
+<text y="250" xml:space="preserve"><tspan x="18.0" >    size:      0.1 GB physical, 0.7 GB logical (5.7× total: dedup 2.6× · compress 2.1×)</tspan></text>
+<text y="269" xml:space="preserve"><tspan x="18.0" >    newest:    2026-01-15 05:08:12Z</tspan></text>
+<text y="288" xml:space="preserve"></text>
+<text y="307" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">Offsite (sftp:storagebox:pbo)</tspan></text>
+<text y="326" xml:space="preserve"><tspan x="18.0" >    guests:    4</tspan></text>
+<text y="345" xml:space="preserve"><tspan x="18.0" >    snapshots: 32</tspan></text>
+<text y="364" xml:space="preserve"><tspan x="18.0" >    size:      0.1 GB physical, 1.8 GB logical (14.1× total: dedup 5.6× · compress 2.4×)</tspan></text>
+<text y="383" xml:space="preserve"><tspan x="18.0" >    newest:    2026-01-15 05:08:12Z</tspan></text>
+<text y="402" xml:space="preserve"></text>
+<text y="421" xml:space="preserve"><tspan x="18.0" >  </tspan><tspan x="34.8" font-weight="bold">next scheduled run:</tspan></text>
+<text y="440" xml:space="preserve"><tspan x="18.0" >    Fri 2026-01-16 05:00:00 UTC  19h Thu 2026-01-15 05:00:00 UTC 4h ago pbo.timer pbo.service</tspan></text>
+</g></svg>

@@ -1,0 +1,17 @@
+[Unit]
+Description=pbo: offsite backup of this node's guests (run-schedule)
+Documentation=https://github.com/TubalQ/PBO
+After=network-online.target pve-cluster.service pveproxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/pbo/pbo run-schedule
+# Backup + upload (restic over sftp) can take a long time, let it finish.
+TimeoutStartSec=infinity
+# Be gentle to running containers (I/O).
+Nice=10
+IOSchedulingClass=idle
+# run-schedule alerts on its own (ntfy and/or Proxmox notifications); a crash
+# that stops it from saying why is logged and alerted by pbo's exit handler.
+# OnFailure can point at a notify unit if needed.

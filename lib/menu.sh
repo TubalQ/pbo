@@ -1,0 +1,787 @@
+# shellcheck shell=bash
+# lib/menu.sh: interactive prompt-CLI (rclone config style). Pure bash, zero
+# dependencies, no alternate-screen → behaves identically over SSH/serial/tmux.
+# Launched with `pbo menu`. This is the primary interactive interface.
+#
+# No business logic lives here; the menu shells out to `$PBO_BIN` (or reads
+# --json). Config changes (BACKUP_ORDER) are written atomically, mode 0600.
+
+PBO_BIN="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
+
+# --- colors (off when not a tty) ---
+if [[ -t 1 ]]; then
+    C_B=$'\033[1m'; C_D=$'\033[2m'; C_G=$'\033[32m'; C_C=$'\033[36m'
+    C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+else
+    C_B=""; C_D=""; C_G=""; C_C=""; C_Y=""; C_R=""; C_0=""
+fi
+
+_ask()   { local p="$1" d="${2:-}" a; read -r -p "$p${d:+ [$d]}: " a; printf '%s' "${a:-$d}"; }
+_askpw() { local p="$1" a; read -r -s -p "$p: " a; echo >&2; printf '%s' "$a"; }
+_pause() { read -r -p "${C_D}press Enter to continue${C_0} " _; }
+_yn()    { local a; a="$(_ask "$1 (y/n)" "${2:-n}")"; [[ "$a" == [yYjJ]* ]]; }
+
+# _pick_index <prompt> <default-num> <label...>: print a numbered list of labels,
+# read a choice, echo ONLY the chosen 1-based index on stdout. Fails (non-zero, no
+# output) on an empty/invalid/out-of-range answer so callers can abort. The list is
+# printed to stderr so callers can capture the index with $(...) without swallowing it.
+_pick_index() {
+    local prompt="$1" def="$2"; shift 2
+    local i=1 lbl
+    for lbl in "$@"; do printf '    %s[%d]%s %s\n' "$C_B" "$i" "$C_0" "$lbl" >&2; ((i++)); done
+    local n; n="$(_ask "$prompt" "$def")"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= $# )) && { printf '%s' "$n"; return 0; }
+    return 1
+}
+
+# _ago <iso-time|epoch> <now-epoch>: coarse relative age, e.g. "5m ago", "8h ago".
+_ago() {
+    local t="$1" now="$2" s
+    [[ "$t" =~ ^[0-9]+$ ]] && s="$t" || s="$(date -d "$t" +%s 2>/dev/null || echo 0)"
+    local d=$(( now - s )); (( d < 0 )) && d=0
+    (( d < 3600  )) && { printf '%dm ago' $(( d/60 ));   return; }
+    (( d < 86400 )) && { printf '%dh ago' $(( d/3600 )); return; }
+    printf '%dd ago' $(( d/86400 ))
+}
+
+# _hsize <bytes>: human-readable size, falls back to raw bytes without numfmt.
+_hsize() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${1:-0}"; }
+
+# Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
+_cfg_set() {
+    local k="$1" v="$2" cfg="${PBO_CONFIG_LOADED:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
+    # a fresh install (e.g. the .deb) has no config yet: create it, root only
+    if [[ ! -f "$cfg" ]]; then
+        install -d -m 0700 "$(dirname "$cfg")" && ( umask 077; printf '# pbo config, written by pbo setup\nPBO_CONFIG_VERSION=%s\n' "${PBO_CONFIG_SCHEMA:-1}" > "$cfg" ) \
+            || { printf 'cannot create config: %s\n' "$cfg" >&2; return 1; }
+    fi
+    tmp="$(mktemp)"
+    # sed replacement: escape \ & and the delimiter
+    local ve; ve="$(printf '%s' "$v" | sed -e 's/[\\&|]/\\&/g')"
+    if grep -qE "^${k}=" "$cfg"; then sed "s|^${k}=.*|${k}=${ve}|" "$cfg" > "$tmp"
+    else { cat "$cfg"; printf '%s=%s\n' "$k" "$v"; } > "$tmp"; fi
+    chmod 600 "$tmp"; mv "$tmp" "$cfg"
+    if [[ "$k" == "BACKUP_ORDER" ]]; then BACKUP_ORDER="$v"; fi
+    return 0
+}
+
+# Cluster guests as TSV: vmid \t name \t type \t node \t status
+_menu_guests_tsv() {
+    pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
+        | jq -r 'sort_by(.vmid)[] | "\(.vmid)\t\(.name // "-")\t\(.type)\t\(.node)\t\(.status)"' 2>/dev/null
+}
+_is_protected() { local v="$1"; [[ ",${BACKUP_ORDER//[[:space:]]/}," == *",$v,"* ]]; }
+
+# --- header ---
+_menu_header() {
+    clear 2>/dev/null || printf '\n'
+    local repo="${RESTIC_OFFSITE_REPO:-none}"
+    local prot; prot="$(tr ',' ' ' <<<"${BACKUP_ORDER:-}" | wc -w)"
+    printf '%s┌─ %sPBO%s%s · Proxmox Backup Offsite ────────────────────────┐%s\n' "$C_C" "$C_B" "$C_0$C_C" "" "$C_0"
+    printf '%s│%s engine %srestic%s · offsite %s%s%s · protected %s%s%s\n' \
+        "$C_C" "$C_0" "$C_B" "$C_0" "$C_C" "$repo" "$C_0" "$C_B" "$prot" "$C_0"
+    printf '%s└───────────────────────────────────────────────────────────┘%s\n' "$C_C" "$C_0"
+}
+
+# --- 2. GUESTS: scan / add / delete (manage BACKUP_ORDER) ---
+menu_guests() {
+    while true; do
+        _menu_header
+        printf '%s Guests, scan the cluster, add/remove from backup%s\n\n' "$C_B" "$C_0"
+        printf '  %-6s %-22s %-5s %-9s %-9s %s\n' "VMID" "NAME" "TYPE" "NODE" "STATUS" "PROTECTED"
+        printf '  %s\n' "-------------------------------------------------------------------"
+        local v n t nd st mark new
+        while IFS=$'\t' read -r v n t nd st; do
+            [[ -n "$v" ]] || continue
+            if _is_protected "$v"; then mark="${C_G}✓ yes${C_0}"; new=""
+            else mark="${C_D}-${C_0}"; new=" ${C_Y}(new)${C_0}"; fi
+            printf '  %-6s %-22s %-5s %-9s %-9s %b%b\n' "$v" "${n:0:22}" "$t" "$nd" "$st" "$mark" "$new"
+        done < <(_menu_guests_tsv)
+        printf '\n  %s[a]%s protect (add)   %s[d]%s remove from backup   %s[r]%s refresh   %s[0]%s back\n' \
+            "$C_B" "$C_0" "$C_B" "$C_0" "$C_B" "$C_0" "$C_B" "$C_0"
+        local c; c="$(_ask "Choice" )"
+        case "$c" in
+            a) local id; id="$(_ask "VMID to protect")"
+               if [[ "$id" =~ ^[0-9]+$ ]] && _menu_guests_tsv | grep -q "^$id	"; then
+                   _is_protected "$id" && { echo "  already protected."; } || {
+                       local order; order="$(tr ',' ' ' <<<"$BACKUP_ORDER") $id"
+                       _cfg_set BACKUP_ORDER "$(echo $order | tr ' ' ',' | sed 's/^,//')"
+                       echo "  ${C_G}protected: $id${C_0}"; }
+               else echo "  ${C_R}unknown vmid $id${C_0}"; fi; _pause ;;
+            d) local id; id="$(_ask "VMID to remove from backup")"
+               local order=(); local x
+               for x in $(tr ',' ' ' <<<"$BACKUP_ORDER"); do [[ "$x" == "$id" ]] || order+=("$x"); done
+               _cfg_set BACKUP_ORDER "$(IFS=,; echo "${order[*]}")"
+               echo "  ${C_Y}removed from backup: $id${C_0}"; _pause ;;
+            r) : ;;
+            0|"") return ;;
+            *) : ;;
+        esac
+    done
+}
+
+# --- 3. BACKUP ---
+menu_backup() {
+    _menu_header
+    printf '%s Back up%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s All protected, one by one (stream)\n' "$C_B" "$C_0"
+    printf '  %s[2]%s All protected, all at once (batch)\n' "$C_B" "$C_0"
+    printf '  %s[3]%s Pick a single guest\n' "$C_B" "$C_0"
+    printf '  %s[4]%s This host (config + rebuild metadata)\n' "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "Choice")"
+    case "$c" in
+        1) _yn "Back up all protected guests (stream)?" y && { "$PBO_BIN" run-schedule --stream; _pause; } ;;
+        2) _yn "Back up all protected guests (batch)?" y && { "$PBO_BIN" run-schedule --batch; _pause; } ;;
+        3) local id; id="$(_ask "VMID to back up")"
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Back up $id now?" y && { "$PBO_BIN" backup "$id"; _pause; } ;;
+        4) printf '  %sSSH keys and the DR key are excluded for security — keep your own\n' "$C_Y"
+           printf '  offline copy; they will NOT be in this backup.%s\n' "$C_0"
+           _yn "Back up this host now?" y && { "$PBO_BIN" backup-host; _pause; } ;;
+        *) : ;;
+    esac
+}
+
+# --- 5. STATUS ---
+# Render one restic tier (cache|offsite): guests, snapshots, size, newest. Reads
+# via the PBO_REPO override so `list`/`usage` target that exact repo. On an
+# unreachable repo (e.g. Storage Box offline) it says so instead of failing.
+_menu_status_tier() {           # <label> <cache|offsite>
+    local label="$1" which="$2" ls
+    printf '  %s%s%s\n' "$C_B" "$label" "$C_0"
+    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list 2>/dev/null)"
+    if [[ -z "$ls" ]] || ! printf '%s' "$ls" | jq -e '.archives' >/dev/null 2>&1; then
+        printf '    %s(unreachable)%s\n\n' "$C_R" "$C_0"; return
+    fi
+    printf '%s' "$ls" | jq -r '
+        .archives as $a
+        | "    guests:    \($a|map(.vmid)|unique|length)\n    snapshots: \($a|length)"' 2>/dev/null
+    PBO_REPO="$which" "$PBO_BIN" --json usage 2>/dev/null | jq -r '
+        (.physical_bytes // 0) as $p | (.logical_bytes // 0) as $l | (.uncompressed_bytes // 0) as $u
+        | ($p/1e9*10|floor/10) as $pg | ($l/1e9*10|floor/10) as $lg
+        | (if $p>0 then ($l/$p*10|floor/10) else 0 end) as $tot
+        | (if $u>0 then ($l/$u*10|floor/10) else 0 end) as $dd
+        | ((.compression_ratio // 0)*10|floor/10) as $cc
+        | "    size:      \($pg) GB physical, \($lg) GB logical (\($tot)× total: dedup \($dd)× · compress \($cc)×)"' 2>/dev/null
+    printf '%s' "$ls" | jq -r '
+        (.archives | map(.modtime) | max) as $m
+        | if $m then "    newest:    \($m | sub("\\..*";"") | sub("T";" "))" else empty end' 2>/dev/null
+    printf '\n'
+}
+
+# One tier, DETAILED: every snapshot listed individually, grouped by guest
+# (newest first within each guest). Reads the tier via the PBO_REPO override.
+_menu_status_detail_tier() {    # <label> <cache|offsite>
+    local label="$1" which="$2" ls
+    printf '  %s%s%s\n' "$C_B" "$label" "$C_0"
+    ls="$(PBO_REPO="$which" "$PBO_BIN" --json list --reasons 2>/dev/null)"
+    if [[ -z "$ls" ]] || ! printf '%s' "$ls" | jq -e '.archives' >/dev/null 2>&1; then
+        printf '    %s(unreachable)%s\n\n' "$C_R" "$C_0"; return
+    fi
+    if ! printf '%s' "$ls" | jq -e '.archives|length>0' >/dev/null 2>&1; then
+        printf '    %s(no snapshots)%s\n\n' "$C_D" "$C_0"; return
+    fi
+    local now; now="$(date +%s)"
+    local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
+    local vmid nsnap nm modt size snap code keep
+    while IFS=$'\t' read -r vmid nsnap; do
+        [[ -n "$vmid" ]] || continue
+        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
+        [[ "$vmid" == host-* ]] && nm="host config"
+        printf '    %s%-14s%s %-18s %s(%s)%s\n' "$C_C" "$vmid" "$C_0" "${nm:-–}" "$C_D" "$nsnap" "$C_0"
+        while IFS=$'\t' read -r modt size snap code keep; do
+            [[ -n "$modt" ]] || continue
+            local tag; tag="[${code:-?}]"
+            local row; row="$(printf '        %-19s  %-8s  %8s  %-6s %s' \
+                "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$tag" "${snap:0:8}")"
+            if [[ "$keep" == "false" ]]; then
+                printf '%s%s%s %s(prunes next)%s\n' "$C_D" "$row" "$C_0" "$C_Y" "$C_0"
+            else
+                printf '%s\n' "$row"
+            fi
+        done < <(printf '%s' "$ls" | jq -r --arg v "$vmid" '
+            .archives[]|select(.vmid==$v)
+            | (.reasons // []) as $r
+            | ( [ (if any($r[];test("daily"))   then "d" else empty end),
+                  (if any($r[];test("weekly"))  then "w" else empty end),
+                  (if any($r[];test("monthly")) then "m" else empty end),
+                  (if any($r[];test("yearly"))  then "y" else empty end),
+                  (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
+            | [.modtime,.size_bytes,.snapshot,$code,(.keep//true)]|@tsv' | sort -r)
+    done < <(printf '%s' "$ls" | jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' | sort)
+    printf '\n'
+}
+
+# Run over the enabled tiers with a per-tier renderer (summary or detail).
+_menu_status_tiers() {          # <renderer-fn>
+    local render="$1"
+    if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
+        "$render" "Local  (cache: ${CACHE_DIR:-?})" cache
+    else
+        printf '  %sLocal%s\n    %s(offsite-only mode, no local cache repo)%s\n\n' "$C_B" "$C_0" "$C_D" "$C_0"
+    fi
+    if [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
+        "$render" "Offsite (${RESTIC_OFFSITE_REPO})" offsite
+    fi
+    printf '  %snext scheduled run:%s\n' "$C_B" "$C_0"
+    systemctl list-timers pbo.timer --no-pager 2>/dev/null | sed -n '2p' | sed 's/^/    /'
+    echo
+}
+
+_menu_status_summary() {
+    _menu_header
+    printf '%s Status — summary%s\n\n' "$C_B" "$C_0"
+    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+    _menu_status_tiers _menu_status_tier
+    _pause
+}
+
+_menu_status_detailed() {
+    _menu_header
+    printf '%s Status — every snapshot%s\n\n' "$C_B" "$C_0"
+    printf '  %sretention: d=daily w=weekly m=monthly y=yearly L=last · %sdimmed = prunes next run%s\n' "$C_D" "$C_Y" "$C_0"
+    printf '  %sReading both tiers…%s\n\n' "$C_D" "$C_0"
+    _menu_status_tiers _menu_status_detail_tier
+    _pause
+}
+
+menu_status() {
+    _menu_header
+    printf '%s Status%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s Summary (sizes, dedup, newest)\n' "$C_B" "$C_0"
+    printf '  %s[2]%s Detailed (every snapshot, both tiers)\n' "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "View" "1")"
+    case "$c" in
+        2)     _menu_status_detailed ;;
+        1|"")  _menu_status_summary ;;
+        *)     : ;;
+    esac
+}
+
+# --- SETUP WIZARD helpers (pure, unit-tested in tests/menu.sh) ---
+
+# Build the ssh command restic uses as its sftp.command. When <khfile> is given
+# the host key is pinned (StrictHostKeyChecking=yes); otherwise it is trust-on-
+# first-use (accept-new). Emitted WITHOUT the outer quotes _cfg_set adds.
+_pbo_sftp_command() {   # <user> <host> <port> <key> [khfile]
+    local user="$1" host="$2" port="$3" key="$4" kh="${5:-}"
+    if [[ -n "$kh" ]]; then
+        printf 'ssh %s@%s -p %s -i %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -s sftp' \
+            "$user" "$host" "$port" "$key" "$kh"
+    else
+        printf 'ssh %s@%s -p %s -i %s -o StrictHostKeyChecking=accept-new -s sftp' \
+            "$user" "$host" "$port" "$key"
+    fi
+}
+
+# Probe the SFTP target with the sftp client, using the same key and known_hosts
+# restic will use. Returns 0 on a successful login. Pure network I/O, no writes.
+_pbo_sftp_probe() {     # <user> <host> <port> <key> [khfile]
+    local user="$1" host="$2" port="$3" key="$4" kh="${5:-}"
+    local opts=(-P "$port" -i "$key" -o BatchMode=yes -o ConnectTimeout=15)
+    if [[ -n "$kh" ]]; then opts+=(-o "UserKnownHostsFile=$kh" -o StrictHostKeyChecking=yes)
+    else opts+=(-o StrictHostKeyChecking=accept-new); fi
+    printf 'bye\n' | sftp "${opts[@]}" "${user}@${host}" >/dev/null 2>&1
+}
+
+# --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
+# One pass sets up EVERYTHING needed to back up: cache tier, an SSH key that
+# works against the target, a pinned host key, a tested SFTP connection, the
+# repo + DR key, retention, ntfy, the guest set, the Proxmox integration, and
+# (offered) the timers.
+run_setup_wizard() {
+    set +e +u
+    printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n' "$C_B" "$C_0"
+    printf '%sWalks through everything: SSH key, SFTP target, repo, retention, schedule.%s\n' "$C_D" "$C_0"
+
+    # --- 1. cache tier ---
+    printf '\n%s— Cache tier —%s\n' "$C_B" "$C_0"
+    printf '%sCache = a local restic repo for fast local restores (needs disk space).\n%s' "$C_D" "$C_0"
+    local cdir
+    if _yn "Do you have local cache space you want to use?" n; then
+        cdir="$(_ask "Where should the cache live? (path)" "/var/cache/pbo")"
+        mkdir -p "$cdir" 2>/dev/null
+        _cfg_set LOCAL_REPO true
+        _cfg_set CACHE_DIR "$cdir"
+        _cfg_set RESTIC_CACHE_REPO "$cdir/repo"
+        echo "  Cached mode: local repo at $cdir/repo + copy to offsite."
+    else
+        cdir="$(_ask "Path for temporary dump staging" "/var/cache/pbo")"
+        mkdir -p "$cdir" 2>/dev/null
+        _cfg_set LOCAL_REPO false
+        _cfg_set CACHE_DIR "$cdir"
+        echo "  Offsite-only mode: minimal local disk."
+    fi
+
+    # --- 2. SFTP target ---
+    printf '\n%s— SFTP target —%s\n' "$C_B" "$C_0"
+    local host user port key repo
+    host="$(_ask "SFTP host (e.g. uXXXXX-subN.your-storagebox.de)")"
+    [[ -n "$host" ]] || { echo "  ${C_R}SFTP host required, aborting setup.${C_0}"; return 1; }
+    user="$(_ask "SFTP user" "$host")"
+    port="$(_ask "SFTP port" "23")"
+    key="$(_ask "SSH key file on this host" "/root/.ssh/id_ed25519")"
+
+    # --- 3. SSH key: generate if missing, then show how to install it ---
+    printf '\n%s— SSH key —%s\n' "$C_B" "$C_0"
+    if [[ ! -f "$key" ]]; then
+        local ktype=ed25519; case "$key" in *rsa*) ktype=rsa ;; *ed25519*) ktype=ed25519 ;; esac
+        if _yn "No key at $key. Generate a new ${ktype} keypair now?" y; then
+            mkdir -p "$(dirname "$key")" 2>/dev/null; chmod 700 "$(dirname "$key")" 2>/dev/null
+            ssh-keygen -q -t "$ktype" -N '' -C "pbo@$(hostname -s 2>/dev/null || echo host)" -f "$key" \
+                && echo "  ${C_G}created $key (+ ${key}.pub)${C_0}" \
+                || { echo "  ${C_R}ssh-keygen failed, aborting.${C_0}"; return 1; }
+        else
+            echo "  ${C_Y}Point the wizard at an existing key, or generate one and re-run setup.${C_0}"
+            return 1
+        fi
+    else
+        echo "  Using existing key $key."
+    fi
+
+    if [[ -f "${key}.pub" ]]; then
+        printf '\n  %sInstall this public key on the target so PBO can log in without a password:%s\n\n' "$C_B" "$C_0"
+        printf '  %s%s%s\n\n' "$C_C" "$(cat "${key}.pub")" "$C_0"
+        printf '  %sHetzner Storage Box%s (asks for the box password once):\n' "$C_D" "$C_0"
+        printf '      ssh-copy-id -s -p %s -i %s.pub %s@%s\n' "$port" "$key" "$user" "$host"
+        printf '  %sor pipe it to the box:%s  cat %s.pub | ssh -p%s %s@%s install-ssh-key\n' "$C_D" "$C_0" "$key" "$port" "$user" "$host"
+        printf '  %sAny other SFTP server:%s append the line above to ~/.ssh/authorized_keys there.\n' "$C_D" "$C_0"
+        _pause
+    fi
+
+    # --- 4. pin the host key (known_hosts), so the connection is not TOFU ---
+    printf '\n%s— Host key —%s\n' "$C_B" "$C_0"
+    local khfile=""
+    if _yn "Pin the target's host key (recommended, avoids trust-on-first-use)?" y; then
+        khfile="${PBO_KNOWN_HOSTS:-/etc/pbo/known_hosts}"
+        local scan; scan="$(ssh-keyscan -p "$port" -H "$host" 2>/dev/null)"
+        if [[ -n "$scan" ]]; then
+            ( umask 022; printf '%s\n' "$scan" >> "$khfile" )
+            # de-dupe in case setup is re-run
+            sort -u "$khfile" -o "$khfile" 2>/dev/null
+            echo "  ${C_G}pinned $host → $khfile${C_0}"
+        else
+            echo "  ${C_Y}ssh-keyscan returned nothing (host unreachable?), staying on accept-new.${C_0}"
+            khfile=""
+        fi
+    fi
+
+    # --- 5. test the connection BEFORE writing the repo config ---
+    printf '\n%s— Connection test —%s\n' "$C_B" "$C_0"
+    while true; do
+        printf '  probing sftp://%s@%s:%s … ' "$user" "$host" "$port"
+        if _pbo_sftp_probe "$user" "$host" "$port" "$key" "$khfile"; then
+            echo "${C_G}OK${C_0}"; break
+        fi
+        echo "${C_R}FAILED${C_0}"
+        echo "  The key is not accepted yet, or host/port/key is wrong."
+        _yn "Retry the connection?" y || { echo "  ${C_Y}Continuing without a verified connection — fix it before the first backup.${C_0}"; break; }
+    done
+
+    # --- 6. repo path + assemble the sftp command ---
+    printf '\n%s— Repo —%s\n' "$C_B" "$C_0"
+    # A re-run keeps the configured repo as the default (a new path would start
+    # an empty repo next to the old one); the host label is only a name, the
+    # sftp command below says where to connect.
+    local repo_label=storagebox repo_def=pbo
+    if [[ "${RESTIC_OFFSITE_REPO:-}" =~ ^sftp:([^:/@]+):(.+)$ ]]; then
+        repo_label="${BASH_REMATCH[1]}"; repo_def="${BASH_REMATCH[2]}"
+    fi
+    repo="$(_ask "Repo path (RELATIVE, Storage Box is chrooted)" "$repo_def")"
+    _cfg_set OFFSITE_ENABLED true
+    _cfg_set RESTIC_OFFSITE_REPO "sftp:${repo_label}:${repo}"
+    _cfg_set RESTIC_SFTP_COMMAND "\"$(_pbo_sftp_command "$user" "$host" "$port" "$key" "$khfile")\""
+
+    # --- 7. restic password (DR key) ---
+    printf '\n%s— DR key (repo password) —%s\n' "$C_B" "$C_0"
+    local pass passfile="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
+    # an existing DR key is never overwritten here: the repos it opens would be
+    # lost without it. Rotate it with menu → Rotate DR key instead.
+    if [[ -s "$passfile" ]]; then
+        echo "  ${C_G}Keeping the existing DR key in $passfile${C_0} (to change it: menu → Rotate DR key)."
+        _cfg_set RESTIC_PASSWORD_FILE "$passfile"
+    elif _yn "Generate a random repo password (recommended)?" y; then
+        pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
+        echo "  Generated, export it afterwards (menu → Export DR key) and store it safely."
+    else
+        pass="$(_askpw "Enter restic repo password (this IS your DR key)")"
+    fi
+    if [[ -n "${pass:-}" ]]; then
+        ( umask 077; printf '%s\n' "$pass" > "$passfile" )
+        _cfg_set RESTIC_PASSWORD_FILE "$passfile"
+    fi
+
+    # --- 8. backup mode ---
+    printf '\n%s— Backup mode —%s\n' "$C_B" "$C_0"
+    local mode; mode="$(_ask "Back up all: one-by-one (stream) or all-at-once (batch)?" "stream")"
+    if [[ "$mode" == "batch" ]]; then _cfg_set BACKUP_MODE batch; else _cfg_set BACKUP_MODE stream; fi
+
+    # --- 9. retention ---
+    printf '\n%s— Retention —%s (how many snapshots the weekly prune keeps)\n' "$C_B" "$C_0"
+    if _yn "Set retention now (else keep defaults 2 local / 7d·4w·6m offsite)?" n; then
+        _cfg_set KEEP_LOCAL          "$(_ask "Local cache: keep last N"      "${KEEP_LOCAL:-2}")"
+        _cfg_set KEEP_OFFSITE_DAILY  "$(_ask "Offsite: keep N daily"         "${KEEP_OFFSITE_DAILY:-7}")"
+        _cfg_set KEEP_OFFSITE_WEEKLY "$(_ask "Offsite: keep N weekly"        "${KEEP_OFFSITE_WEEKLY:-4}")"
+        _cfg_set KEEP_OFFSITE_MONTHLY "$(_ask "Offsite: keep N monthly"      "${KEEP_OFFSITE_MONTHLY:-6}")"
+    else
+        echo "  Keeping defaults."
+    fi
+
+    # --- 10. ntfy ---
+    printf '\n%s— Notifications —%s\n' "$C_B" "$C_0"
+    if _yn "Enable ntfy notifications (alert on failure)?" n; then
+        local nurl ntopic
+        nurl="$(_ask "ntfy base URL (e.g. https://ntfy.example.com)")"
+        ntopic="$(_ask "ntfy topic" "pbo")"
+        _cfg_set NTFY_URL "$nurl"
+        _cfg_set NTFY_TOPIC "$ntopic"
+        echo "  ntfy enabled (add a token to NTFY_CREDS_FILE if your server needs auth)."
+    else
+        _cfg_set NTFY_URL ""
+        echo "  ntfy disabled."
+    fi
+
+    # --- 11. create the repo ---
+    printf '\n%s— Repo init —%s\n' "$C_B" "$C_0"
+    printf '  Creating/verifying the restic repo…\n'
+    "$PBO_BIN" init || { echo "  ${C_R}init failed — fix the connection above and re-run setup.${C_0}"; return 1; }
+
+    # --- 12. confirm the guest set (BACKUP_ORDER) ---
+    printf '\n%s— Guests —%s (this node backs up its own guests into the shared repo)\n' "$C_B" "$C_0"
+    local ln; ln="$(_local_node 2>/dev/null)"
+    printf '  Discovered on %s:\n' "${ln:-this node}"
+    _menu_guests_tsv | awk -F'\t' -v n="$ln" 'n=="" || $4==n {printf "    %-6s %-22s %-4s %s\n",$1,$2,$3,$5}'
+    if _yn "Back up ALL of this node's guests automatically (BACKUP_ORDER=auto)?" y; then
+        _cfg_set BACKUP_ORDER auto
+        echo "  ${C_G}BACKUP_ORDER=auto${C_0} (new guests are picked up automatically)."
+    else
+        local order; order="$(_ask "Explicit vmid list (comma-separated, critical first)" "${BACKUP_ORDER:-auto}")"
+        _cfg_set BACKUP_ORDER "$order"
+        echo "  BACKUP_ORDER=$order"
+    fi
+
+    # --- 13. Proxmox integration (ADR 0007) ---
+    _setup_integration_step
+
+    # --- 14. offer to enable the timers ---
+    printf '\n%s— Schedule —%s\n' "$C_B" "$C_0"
+    local tq="Enable the nightly backup timer (pbo.timer, 05:00)?"
+    if [[ "$(_integration_mode)" == integrated ]]; then
+        printf '  %sIntegrated mode: PVE backup jobs back up the guests. pbo.timer backs up nothing itself;
+  it only retries spool leftovers (ingest --pending) and refreshes the catalogue.%s\n' "$C_D" "$C_0"
+        tq="Enable pbo.timer (05:00: spool leftovers and the catalogue, no backups of its own)?"
+    elif [[ "$(_integration_mode)" == both ]]; then
+        printf '  %sBoth: pbo.timer backs up the guests no PVE backup job to pbo selects.%s\n' "$C_D" "$C_0"
+    fi
+    if _yn "$tq" y; then
+        systemctl enable --now pbo.timer 2>/dev/null \
+            && echo "  ${C_G}pbo.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo.timer (enable it by hand).${C_0}"
+    fi
+    if _yn "Enable the weekly prune timer (pbo-prune.timer, Sun 06:30)?" y; then
+        systemctl enable --now pbo-prune.timer 2>/dev/null \
+            && echo "  ${C_G}pbo-prune.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-prune.timer (enable it by hand).${C_0}"
+    fi
+    if _yn "Enable the weekly integrity check (pbo-verify.timer, Wed 10:00, reads 1/${VERIFY_ROTATE:-12} of the data per run)?" y; then
+        systemctl enable --now pbo-verify.timer 2>/dev/null \
+            && echo "  ${C_G}pbo-verify.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-verify.timer (enable it by hand).${C_0}"
+    fi
+    if _yn "Enable the weekly restore test (pbo-test-restore.timer, Sat 10:00, restores+boots one guest per run)?" y; then
+        systemctl enable --now pbo-test-restore.timer 2>/dev/null \
+            && echo "  ${C_G}pbo-test-restore.timer enabled${C_0}" || echo "  ${C_Y}could not enable pbo-test-restore.timer (enable it by hand).${C_0}"
+    fi
+
+    printf '\n%s  Setup complete.%s Recommended next step:\n' "$C_G" "$C_0"
+    printf '    %sExport your DR key%s → password manager (menu → Export DR key).\n' "$C_B" "$C_0"
+    printf '    Without it, a restore on a new host is impossible.\n'
+    return 0
+}
+
+# _setup_integration_step: the wizard's "Proxmox integration" step. Choose
+# standalone | both | integrated (default: the current mode, or the one install.sh
+# was given, PBO_SETUP_INTEGRATION). Without the storage plugin it says how to
+# install it and stays standalone. Otherwise it shows the dry run of
+# `pbo integrate enable|disable` and applies it after a yes.
+_setup_integration_step() {
+    printf '\n%s— Proxmox integration —%s\n' "$C_B" "$C_0"
+    printf '%sstandalone: pbo.timer backs up every guest (as before).\n' "$C_D"
+    printf 'both:       a PVE backup job (Datacenter -> Backup) to the pbo storage owns the guests it selects, pbo.timer backs up the rest.\n'
+    printf 'integrated: only PVE backup jobs back up guests; pbo still prunes, verifies and tests restores.%s\n' "$C_0"
+    local cur want def=1 pi m
+    cur="$(_integration_mode)"; want="${PBO_SETUP_INTEGRATION:-$cur}"
+    case "$want" in both) def=2 ;; integrated) def=3 ;; esac
+    if ! pi="$(_pick_index "Mode" "$def" "standalone$([[ $cur == standalone ]] && echo ' (current)')" \
+            "both$([[ $cur == both ]] && echo ' (current)')" "integrated$([[ $cur == integrated ]] && echo ' (current)')")"; then
+        echo "  ${C_Y}No such choice, keeping $cur.${C_0}"; return 0
+    fi
+    m="$(case "$pi" in 1) echo standalone ;; 2) echo both ;; 3) echo integrated ;; esac)"
+    if [[ "$m" == standalone ]]; then
+        if [[ "$cur" == standalone ]]; then echo "  Standalone: pbo.timer backs up every guest."; return 0; fi
+        "$PBO_BIN" --dry-run integrate disable
+        if _yn "Turn the Proxmox integration off (as shown above)?" n; then
+            "$PBO_BIN" integrate disable --yes && { PBO_INTEGRATION=standalone; echo "  ${C_G}Standalone.${C_0}"; } \
+                || echo "  ${C_Y}'pbo integrate disable' did not finish, still $cur (see above).${C_0}"
+        fi
+        return 0
+    fi
+    if [[ ! -f "$(_integ_plugin_path)" ]]; then
+        echo "  ${C_Y}The pbo storage plugin is not installed ($(_integ_plugin_path)), staying $cur.${C_0}"
+        echo "  Install it, then run 'pbo setup' or 'pbo integrate enable $m':"
+        echo "    ./install.sh --integration $m        (from the pbo source tree)"
+        echo "    apt install pbo-pve-storage            (package hosts)"
+        return 0
+    fi
+    "$PBO_BIN" --dry-run integrate enable "$m"
+    if _yn "Apply this (adds the pbo storage to PVE, the hook to /etc/vzdump.conf, pbo-catalog.timer)?" y; then
+        if "$PBO_BIN" integrate enable "$m" --yes; then
+            PBO_INTEGRATION="$m"
+            echo "  ${C_G}Proxmox integration: $m.${C_0} Add backup jobs to the storage '${PVE_STORAGE_ID:-pbo}' in Datacenter -> Backup (compression none)."
+        else
+            echo "  ${C_Y}'pbo integrate enable $m' did not finish, still $cur (see above).${C_0}"
+        fi
+    else
+        echo "  Not applied, still $cur."
+    fi
+    return 0
+}
+
+# Menu choice 1 → same wizard (+ pause)
+menu_setup() { run_setup_wizard; _pause; }
+
+# --- 4. EXPORT DR KEY ---
+menu_export() {
+    _menu_header
+    printf '%s Export DR key%s\n\n' "$C_B" "$C_0"
+    _yn "This shows SECRETS (repo password on screen). Continue?" n || return
+    local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}" pw
+    pw="$(cat "$pf" 2>/dev/null || echo '<no password file>')"
+    echo; echo "  ${C_Y}# PBO DR key, SECRET. On a new host: install PBO, paste this, then list→restore${C_0}"
+    echo "  RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO:-<not set>}"
+    echo "  RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND:-<not set>}"
+    local rest_lines=()
+    if [[ -n "${RESTIC_REST_USERNAME:-}" ]]; then
+        rest_lines+=("RESTIC_REST_USERNAME=${RESTIC_REST_USERNAME}" "RESTIC_REST_PASSWORD=$(_rest_password)")
+        [[ -n "${RESTIC_CACERT:-}" ]] && rest_lines+=("# RESTIC_CACERT: the server's cert, also on the janitor at /etc/rest-server/tls/cert.pem")
+    fi
+    local l; for l in "${rest_lines[@]}"; do echo "  $l"; done
+    echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"
+    echo
+    if _yn "Save a copy to /root/pbo-dr-key.txt (0600)?" n; then
+        ( umask 077; { echo "RESTIC_OFFSITE_REPO=${RESTIC_OFFSITE_REPO}";
+          echo "RESTIC_SFTP_COMMAND=${RESTIC_SFTP_COMMAND}"; printf '%s\n' "${rest_lines[@]}"; echo "RESTIC_PASSWORD=${pw}"; } > /root/pbo-dr-key.txt )
+        echo "  ${C_G}saved: /root/pbo-dr-key.txt${C_0}, move it offline and delete it from this host."
+    fi
+    _pause
+}
+
+# --- 6. RESTORE ---
+menu_restore() {
+    _menu_header
+    printf '%s Restore%s\n\n' "$C_B" "$C_0"
+    echo "  Fetching offsite archives…"
+    local listing; listing="$("$PBO_BIN" --json list --reasons 2>/dev/null)"
+    jq -e '.archives|length>0' <<<"$listing" >/dev/null 2>&1 \
+        || { echo "  ${C_R}No offsite archives.${C_0}"; _pause; return; }
+
+    local now; now="$(date +%s)"
+    local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
+
+    # --- STEP 1: pick a guest (vmid · name · #snapshots · newest age) ---
+    local gv=() glabel=() vmid nsnap newest nm
+    while IFS=$'\t' read -r vmid nsnap newest; do
+        [[ -n "$vmid" ]] || continue
+        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
+        [[ "$vmid" == host-* ]] && nm="host config"
+        gv+=("$vmid")
+        glabel+=("$(printf '%-14s %-18s %2d snapshots · newest %s' \
+            "$vmid" "${nm:-–}" "$nsnap" "$(_ago "$newest" "$now")")")
+    done < <(jq -r '.archives | group_by(.vmid)[]
+        | [ .[0].vmid, length, ([.[].modtime]|max) ] | @tsv' <<<"$listing")
+
+    printf '\n  %sGuests with backups:%s\n' "$C_B" "$C_0"
+    local gi; gi="$(_pick_index "Guest" 1 "${glabel[@]}")" || { _pause; return; }
+    local src="${gv[gi-1]}"
+
+    # --- STEP 2: pick a snapshot of that guest (newest first) ---
+    # The [code] shows which retention bucket keeps it: d/w/m/y=daily/weekly/
+    # monthly/yearly, L=keep-last. Empty = the next prune would drop it.
+    local sv=() slabel=() ts size modt snap code
+    while IFS=$'\t' read -r ts size modt snap code; do
+        [[ -n "$ts" ]] || continue
+        sv+=("$ts")
+        slabel+=("$(printf '%-9s · %7s · %s · %s' \
+            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "[${code:-–}]")")
+    done < <(jq -r --arg v "$src" '.archives[] | select(.vmid==$v)
+        | (.reasons // []) as $r
+        | ( [ (if any($r[];test("daily"))   then "d" else empty end),
+              (if any($r[];test("weekly"))  then "w" else empty end),
+              (if any($r[];test("monthly")) then "m" else empty end),
+              (if any($r[];test("yearly"))  then "y" else empty end),
+              (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
+        | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
+            .size_bytes, .modtime, .snapshot, $code ] | @tsv' <<<"$listing" | sort -rk3)
+    [[ ${#sv[@]} -gt 0 ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
+
+    printf '\n  %sSnapshots of %s · %s (newest first):%s\n' \
+        "$C_B" "$src" "$(awk -F'\t' -v v="$src" '$1==v{print $2}' <<<"$names")" "$C_0"
+    local si; si="$(_pick_index "Snapshot" 1 "${slabel[@]}")" || { _pause; return; }
+    local ts="${sv[si-1]}"
+
+    # Host snapshots restore to a directory (file restore), never pct/qmrestore.
+    if [[ "$src" == host-* ]]; then
+        local dir; dir="$(_ask "Extract to directory" "/var/tmp/pbo-restore-${src}-${ts}")"
+        local onefile; onefile="$(_ask "Single path to restore (blank = everything)" "")"
+        _yn "Restore host snapshot $src ($ts) → files under $dir?" y || return
+        if [[ -n "$onefile" ]]; then
+            "$PBO_BIN" restore-host "$src" "$ts" --to "$dir" --path "$onefile"
+        else
+            "$PBO_BIN" restore-host "$src" "$ts" --to "$dir"
+        fi
+        _pause; return
+    fi
+
+    local used free=9100
+    used="$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[].vmid')"
+    while grep -qx "$free" <<<"$used"; do free=$((free+1)); done
+    local newid; newid="$(_ask "New VMID (never overwrites)" "$free")"
+    # Storage must match the guest type: a VM needs images, a container needs rootdir.
+    local arch content; arch="$(jq -r --arg v "$src" --arg t "$ts" '.archives[]|select(.vmid==$v and (.archive|test($t)))|.archive' <<<"$listing" | head -1)"
+    case "$arch" in *qemu*) content=images ;; *) content=rootdir ;; esac
+    local stores; stores="$(pvesh get /storage --output-format json 2>/dev/null | jq -r --arg c "$content" '.[]|select((.content//"")|test($c))|.storage')"
+    echo "  Storage: ${C_C}$(echo $stores | tr '\n' ' ')${C_0}"
+    local storage; storage="$(_ask "Storage" "$(echo "$stores" | head -1)")"
+    _yn "Restore $src ($ts) → NEW vmid $newid on $storage?" y || return
+    "$PBO_BIN" restore "$src" "$ts" --to "$newid" --storage "$storage" --yes
+    _pause
+}
+
+# --- 7. MAINTENANCE ---
+menu_maint() {
+    _menu_header
+    printf '%s Maintenance%s\n\n' "$C_B" "$C_0"
+    printf '  %s[1]%s Prune (dry run)          %s[2]%s Prune (for real)\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[3]%s Verify (restic check)    %s[4]%s Test-restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[5]%s Health check (doctor)    %s[6]%s Rotate DR key\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[7]%s Unlock repo (stale lock) %s[8]%s Restore-test report\n' "$C_B" "$C_0" "$C_B" "$C_0"
+    printf '  %s[0]%s back\n\n' "$C_B" "$C_0"
+    local c; c="$(_ask "Choice")"
+    case "$c" in
+        1) "$PBO_BIN" --dry-run prune; _pause ;;
+        2) _yn "Run a REAL prune (deletes snapshots outside the policy)?" n && { "$PBO_BIN" prune; _pause; } ;;
+        3) echo "  Verifying (this can take a while)…"; "$PBO_BIN" verify; _pause ;;
+        4) local id; id="$(_ask "VMID to test-restore")"
+           [[ "$id" =~ ^[0-9]+$ ]] && _yn "Test-restore $id (fetch→boot→destroy a throwaway copy)?" y && { "$PBO_BIN" test-restore "$id"; _pause; } ;;
+        5) "$PBO_BIN" doctor; _pause ;;
+        6) menu_rotate_key ;;
+        7) _yn "Remove stale restic locks (only if no backup is running)?" n && { "$PBO_BIN" unlock; _pause; } ;;
+        8) "$PBO_BIN" restore-report; _pause ;;
+        *) : ;;
+    esac
+}
+
+# Rotate the repo password (DR key): generate or type a new one, rotate every
+# repo, then offer to export the new key. The old key stops working afterwards.
+menu_rotate_key() {
+    _menu_header
+    printf '%s Rotate DR key%s\n\n' "$C_B" "$C_0"
+    echo "  This changes the repo password on ALL repos. restic re-encrypts nothing"
+    echo "  (keys wrap the master key), but the OLD key stops working afterwards."
+    echo "  ${C_Y}Export the new key and update your password manager immediately.${C_0}"
+    echo
+    _yn "Rotate the DR key now?" n || return
+    local newpass tmp
+    if _yn "Generate a random new password (recommended)?" y; then
+        newpass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
+    else
+        newpass="$(_askpw "Enter the NEW repo password")"
+        [[ -n "$newpass" ]] || { echo "  ${C_R}empty password, aborted.${C_0}"; _pause; return; }
+    fi
+    tmp="$(mktemp)"; ( umask 077; printf '%s\n' "$newpass" > "$tmp" )
+    if "$PBO_BIN" rotate-key "$tmp"; then
+        echo "  ${C_G}rotation complete.${C_0} The new DR key:"
+        echo "    ${C_B}RESTIC_PASSWORD=${newpass}${C_0}"
+        echo "  Store it now, then export via menu → Export DR key."
+        shred -u "$tmp" 2>/dev/null || rm -f "$tmp"
+    else
+        # never throw the new key away on a failure: if a rollback did not complete,
+        # a repo may accept it. The log says which.
+        echo "  ${C_R}rotation failed.${C_0} Normally nothing changed and the OLD key is still the one in use."
+        echo "  The new key was NOT discarded, in case the log reports a failed rollback:"
+        echo "    ${C_B}RESTIC_PASSWORD=${newpass}${C_0}   (also in $tmp, root only)"
+        echo "  Check the log, then delete $tmp."
+    fi
+    _pause
+}
+
+# --- HELP: what every menu action does ---
+menu_help() {
+    _menu_header
+    printf '%s Help — what each action does%s\n\n' "$C_B" "$C_0"
+    local B="$C_B" D="$C_D" Z="$C_0"
+    printf '  %sConcepts%s\n' "$B" "$Z"
+    printf '    %sTiers%s     Local = a cache repo on fast local disk; Offsite = the remote\n' "$D" "$Z"
+    printf '              restic repo over SFTP. Cached mode backs up locally, then copies offsite.\n'
+    printf '    %sDR key%s    The restic repo password (%s/etc/pbo/restic-pass%s). It is the ONLY\n' "$D" "$Z" "$D" "$Z"
+    printf '              thing that can decrypt the offsite data. Lose it and the backup is gone.\n'
+    printf '    %sSnapshot%s  One backup of one guest at one time, tagged by vmid. Restores never\n' "$D" "$Z"
+    printf '              overwrite: a guest is always restored to a NEW vmid.\n\n'
+
+    printf '  %sMain menu%s\n' "$B" "$Z"
+    printf '    %s1 Setup%s        Guided wizard: cache, SFTP target, repo password, mode, ntfy,\n' "$B" "$Z"
+    printf '                  then creates the repo. Run once to onboard, or to reconfigure.\n'
+    printf '    %s2 Guests%s       Scan the cluster and choose which guests are backed up\n' "$B" "$Z"
+    printf '                  (writes BACKUP_ORDER). "protected" = included in the nightly run.\n'
+    printf '    %s3 Back up%s      Run a backup now: all protected guests (stream/batch), a single\n' "$B" "$Z"
+    printf '                  guest, or THIS host (its config + rebuild metadata).\n'
+    printf '    %s4 Export DR key%s Show/save the repo password so you can store it offline. Do this\n' "$B" "$Z"
+    printf '                  once after setup; without it a restore on a new host is impossible.\n'
+    printf '    %s5 Status%s       Both tiers at a glance: guests, snapshots, size, dedup, newest\n' "$B" "$Z"
+    printf '                  backup, and the next scheduled run.\n'
+    printf '    %s6 Restore%s      Pick a guest, then a snapshot (newest first), then a new vmid and\n' "$B" "$Z"
+    printf '                  storage. A host snapshot instead extracts its files to a directory.\n'
+    printf '    %s7 Maintenance%s  See below.\n\n' "$B" "$Z"
+
+    printf '  %sMaintenance%s\n' "$B" "$Z"
+    printf '    %sPrune%s         Apply retention (KEEP_* policy). Dry run shows what would go.\n' "$B" "$Z"
+    printf '    %sVerify%s        restic check on both tiers: proves the repo is intact.\n' "$B" "$Z"
+    printf '    %sTest-restore%s  Restore a guest to a throwaway copy, boot it, destroy it — proves\n' "$B" "$Z"
+    printf '                  a restore actually works.\n'
+    printf '    %sDoctor%s        Health check: repo reachable, DR key perms, timer, provider\n' "$B" "$Z"
+    printf '                  snapshots, and per-guest snapshot age (catches a silently missed guest).\n'
+    printf '    %sRotate DR key%s Change the repo password (old one stops working). Export it after.\n' "$B" "$Z"
+    printf '    %sUnlock%s        Clear a stale repo lock left by a killed run.\n\n' "$B" "$Z"
+
+    printf '  %sHost backup%s excludes SSH keys and the DR key on purpose — keep your own\n' "$B" "$Z"
+    printf '  offline copy. Everything here is also a CLI command: run %spbo help%s.\n\n' "$D" "$Z"
+    _pause
+}
+
+# --- main menu ---
+menu_main() {
+    # Interactive: read/grep/[[ ]] often return !=0, the dispatcher's set -Eeuo
+    # must NOT kill the menu. (CLI actions run as their own subprocesses with their own set -e.)
+    set +e +u
+    command -v jq >/dev/null 2>&1 || { printf 'jq is required for the menu (apt install jq)\n' >&2; return 1; }
+    while true; do
+        _menu_header
+        printf '\n'
+        printf '  %s[1]%s Setup / onboarding        %s[4]%s Export DR key\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[2]%s Guests (scan/add/delete)  %s[5]%s Status\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[3]%s Back up                    %s[6]%s Restore\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[7]%s Maintenance (prune/verify) %s[8]%s Help\n' "$C_B" "$C_0" "$C_B" "$C_0"
+        printf '  %s[0]%s Quit\n\n' "$C_B" "$C_0"
+        local c; c="$(_ask "Choice")"
+        case "$c" in
+            1) menu_setup ;;
+            2) menu_guests ;;
+            3) menu_backup ;;
+            4) menu_export ;;
+            5) menu_status ;;
+            6) menu_restore ;;
+            7) menu_maint ;;
+            8|h|H|help|\?) menu_help ;;
+            0|q|"") clear 2>/dev/null || true; return "$EX_OK" ;;
+            *) : ;;
+        esac
+    done
+}
