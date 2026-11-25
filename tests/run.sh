@@ -89,7 +89,7 @@ flock -u "$V"; exec {V}>&-
 exec {H}>"$GLOBAL_LOCK"; flock -n "$H"
 # fetch does not take the global lock → it runs past the lock and fails on archive
 # lookup (the dev mock remote has no archive) with EX_DATAERR, not EX_TEMPFAIL(lock).
-$BIN fetch 9005 2026_09_04-00_00_00 >/dev/null 2>&1; got=$?
+$BIN fetch 9005 2026_01_04-00_00_00 >/dev/null 2>&1; got=$?
 [[ "$got" == 65 ]] && ok "fetch ignores the global lock (runs on, fails on lookup)" || bad "fetch global lock ($got)"
 flock -u "$H"; exec {H}>&-
 
