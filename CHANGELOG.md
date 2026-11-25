@@ -3,7 +3,7 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-11-25)
 
 The config becomes data with a schema (ADR 0009): pbo reads `/etc/pbo/config`
 with a strict `KEY=VALUE` reader instead of running it as shell code, every key
