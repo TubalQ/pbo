@@ -482,7 +482,8 @@ out="$(PBO_CONFIG="$RUN/vars.cfg" bash -c 'set -euo pipefail; SELF_DIR="$PWD"; s
 { base; printf 'PATH=/nonexistent\nIFS=x\nBASH_ENV=%s/benv\nEX_CONFIG=1\nVERSION=9\nKEEP_LOCAL=4\n' "$RUN"; } > "$RUN/evil.cfg"; chmod 600 "$RUN/evil.cfg"
 out="$(PBO_CONFIG="$RUN/evil.cfg" $BIN --json config get KEEP_LOCAL 2>/dev/null | jq -r .value)"; rc=$?
 out2="$(PBO_CONFIG="$RUN/evil.cfg" $BIN version 2>&1)"
-[[ "$out" == 4 && "$out2" == "pbo 0.6.0-dev "* ]] && ok "PATH, IFS, BASH_ENV and pbo's readonly names in the config change nothing (unknown keys)" || bad "evil: [$out] [$out2]"
+ver="$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' pbo)"
+[[ -n "$ver" && "$out" == 4 && "$out2" == "pbo $ver "* ]] && ok "PATH, IFS, BASH_ENV and pbo's readonly names in the config change nothing (unknown keys)" || bad "evil: [$out] [$out2]"
 fails=''
 for c in "5||5|env" "5|KEEP_LOCAL=3|3|config" "5|KEEP_LOCAL=|2|config" "||2|default" "|KEEP_LOCAL=6|6|config"; do
     IFS='|' read -r e line want wsrc <<<"$c"
