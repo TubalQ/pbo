@@ -188,7 +188,8 @@ variables; nothing the config says can run, export or overwrite anything else.
   or `PBO_CONFIG`), whether it exists or not: the only file pbo writes. 0.5's
   `_cfg_set` (setup, menu) and `_integ_set_mode` (integrate) wrote to
   `PBO_CONFIG_LOADED`, which names the shared file when no local file exists
-  yet; they write `PBO_CONFIG_LOCAL` now (the full writer is M4).
+  yet; they write `PBO_CONFIG_LOCAL` now, through the writer since M4 (see
+  "Writer").
   `PBO_CONFIG_FILES` lists the files read. `PBO_CONFIG_LOADED` (the last file
   read) and `PBO_CONFIG_SHARED_LOADED` stay for readers; a writer must not use
   them.
@@ -251,6 +252,150 @@ variables; nothing the config says can run, export or overwrite anything else.
   time goes mostly to `restic version` and jq) and `load_config` alone are no
   slower than before the schema. A config with every key set costs more to
   read; tests/config.sh keeps a budget for it.
+
+### Writer (M4)
+
+0.5 wrote the config with `sed` (`_cfg_set`, the wizard and the menu): values
+unquoted (`KEY=a b` runs `b`), comments of a replaced line dropped, a temp
+file in `/tmp` renamed across filesystems (not atomic), mode forced to 0600
+(a janitor's 0640 root:<user> config became unreadable for the janitor), and
+when no local file existed it wrote the cluster-shared one.
+
+**Decision.** One writer, `_cfg_write` (lib/config.sh), for `pbo config
+set|unset`, `_cfg_set` (wizard, menu) and `_integ_set_mode` (`pbo integrate`).
+A call is one transaction of any number of sets and unsets:
+
+- **Lock.** `LOCK_DIR/pbo.config`, taken with `flock -n`: a second writer gets
+  exit 75 at once (a config change takes a second; waiting would hide a stuck
+  one). A symlink there is refused (root opens it). A dry run takes no lock.
+  On a janitor run as root the lock is a read fd on the config's own
+  directory (root's, not group- or world-writable, else refused): LOCK_DIR
+  there belongs to the janitor user, who could swap the lock file for a
+  symlink or a FIFO between any check and root's open. Only root takes this
+  lock on a janitor (`config set|unset` stay root).
+- **Target.** The local file (`PBO_CONFIG_LOCAL`), or with `--shared` the
+  cluster-shared one; with `PBO_CONFIG` set there is no shared file and
+  `--shared` is a usage error. `--shared` also needs the cluster filesystem:
+  it is refused on a janitor (64: no Proxmox, the "shared" file would be a
+  stray layer of that host alone) and when the shared file is not below a
+  mounted pmxcfs (`/etc/pve` with `.members` or `.version`; 69: with
+  pve-cluster stopped the file would land under the mount point, hidden once
+  it mounts). A symlinked target is refused (the rename would replace the
+  link). The lock is per node, the shared file is not: right before the
+  rename the shared file is read again, and when another node changed it
+  since it was read, nothing is changed (75, try again).
+- **Editing**, line by line on the file as it is (the strict reader accepted it,
+  so every non-comment line is one assignment): the key's last active line gets
+  the new value in place, its prefix (`export`, blanks) and end-of-line comment
+  kept at their column; earlier active lines of the key, which never counted, go.
+  Without an active line a commented template line `#KEY=...` becomes it, in
+  place, with its description; else the line goes under the schema section's
+  `# --- <title> ---` header, else at the end (a proxy variable as `export`).
+  Unset removes every active line of the key (an earlier one would count once
+  the last is gone) and leaves comments and template lines. A new file starts
+  with a header comment and `PBO_CONFIG_VERSION`.
+- **Quoting.** Bare when every character is in `[A-Za-z0-9_./:,@%+=-]`, else in
+  double quotes with `\ " $ \`` escaped. So nothing in a value is expanded,
+  split or refused, and a `$` stays a `$` (a value given on the command line is
+  the value meant, unlike the template's `${KEY}` defaults). Control characters
+  other than a tab are refused: a value is one line.
+- **Read back before the replace.** The candidate goes to a temp file in the
+  target's directory (a dry run: in `TMPDIR`), with the old file's owner, group
+  and mode (copied, never forced; pmxcfs keeps its own), or for a new local
+  file what the permission table says (host 0600 root:root in a 0700
+  directory, janitor 0640 root:<JANITOR_USER> in 0750). Then the files are read
+  as load_config reads them, once as they are and once with the candidate in
+  place of the target (`_cfg_verify`, in a subshell): the strict reader must
+  accept it, every set key must read as the value given and come from the
+  candidate, every unset key must no longer be set there, every other key must
+  read as before, and bash, sourcing the files up to the candidate in a clean
+  subshell (`_cfg_compare_bash`, the shadow comparison of M2), must agree with
+  the reader on every key the change gives and on every key whose bash
+  reading the change alters. Any such difference refuses the change (78) and
+  names the first key. A difference the files had before (a CRLF line, which
+  load_config only warns about, in the target or the shared file) is left as
+  it is and named in a warning: it must not block every write, `pbo integrate`
+  and the wizard included. An extended ACL of the old file (a reader the admin
+  added) is copied to the new one (`getfacl`/`setfacl`, so the group bits are
+  the mask again); one that cannot be copied refuses the change rather than
+  dropping it. Only then: `fsync` of the temp file, `rename`, `fsync` of the
+  directory. The file is valid bash after every write, so pbo 0.5 still reads it.
+  A temp file left by a killed writer is removed by pbo's exit trap.
+- **Results** for the caller: per key the value in the file before and after,
+  the effective value before and after (the same subshell computes them, so a
+  key that follows another, `RESTIC_CACHE_REPO` under `CACHE_DIR`, shows up
+  too), a later file that overrides a set key, and the masked diff.
+
+**`pbo config set KEY VALUE... [--shared] [--yes] [--force]`, `pbo config
+unset KEY... [--shared] [--yes]`.** Flags are read where a key may stand
+(`--` ends them), so a value may start with `--`. Before anything is locked:
+each value is checked against the schema type (78 with `_cs_validate`'s
+reason; a `path` or `dir` must be absolute); a key flagged `managed=<cmd>` is
+refused with the command that changes it (64: `PBO_INTEGRATION` → `pbo
+integrate enable|disable`, `PBO_ROLE` → install.sh); a key the schema does not
+know is refused unless `--force` (64), an environment switch and names bash or
+the loader would act on after a downgrade (`PATH`, `IFS`, `BASH_ENV`, `LD_*`,
+readonly names) even with it; a key the role does not use (the roles column) is
+refused (78), so a janitor takes no host-only key; `--shared` refuses `secret`,
+`exec` and `local-only` keys (78), and `CACHE_DIR` and the keys that follow it
+(78, set and unset alike): the move-cache check sees only this node's cache,
+and pmxcfs copies the shared file to every node, where no check runs. Unset
+needs none of the other checks but the managed one: removing a typo or a
+secret is always allowed. `KEY=VALUE` typed as one argument where a key
+belongs is refused (64) naming the key only: what follows the `=` may be a
+secret, so it reaches neither the message (which is logged and notified) nor
+the audit record (`KEY=<secret>` there). A global
+`--dry-run` (also after the command) runs everything but the replace and the
+hooks' changes and prints the unified diff, with the values of secret and
+unknown keys shown as `<hidden>`. `--json`: `{action, file, shared, changed,
+written, created, changes: [{key, action, secret, before, after, file_before,
+file_after, note, overridden_by}], effective: [...], hooks: [...], diff}`,
+secrets as `<set>`/`<unset>`. `audit_log` records the change (`KEY=<secret>`
+for a secret or unknown key) and the command record in audit.jsonl gets the
+arguments with those values masked (`AUDIT_ARGS`). `config` left
+`AUDIT_READONLY`: set and unset are recorded `read_only: false`, show, list,
+get, template and check stay read-only.
+
+**Keys that follow.** A key flagged `follows=<BASE>` is not pinned at the
+value it derives: `config set RESTIC_CACHE_REPO <CACHE_DIR>/repo` (or the
+wizard's `_cfg_set`) removes the line instead, and when BASE changes, a line
+the file has at the default derived from the old BASE is removed in the same
+transaction, so the key moves along. Both only when no other config file and
+not the environment sets the key: removing the line would hand the key to
+that value, not to the derived default. Then the set is written (it pins the
+override), and a line at the old default is rewritten to the new one.
+
+**on_change hooks** (schema flag), for each key whose effective value
+changes, each hook once:
+
+- `confirm-repo` (`RESTIC_OFFSITE_REPO`, `RESTIC_CACHE_REPO`), for the keys
+  given only, before the lock: pbo will use another repo and moves no data;
+  needs `--yes` or a yes on a terminal (64 otherwise).
+- `move-cache` (`CACHE_DIR`), under the lock before the replace: M4 handles an
+  empty cache. The old directory must not exist or hold only directories (no
+  repo config, nothing in spool or staging, no dump: any file counts, a
+  directory pbo cannot read counts), the new one must not be a system
+  directory, a symlink or a non-empty directory (`lost+found` and the
+  snapshot directories `.zfs` and `.snapshot` of a ZFS dataset or an NFS
+  export are allowed; in the old cache those two are not counted as data
+  either), and with the Proxmox integration on the spool must not follow
+  (storage.cfg names it for the whole cluster). Then the directory is created
+  0755 and the permission table's CACHE_DIR rules are applied to it (the ACL
+  entries for unprivileged CTs, then the mode; the parents are checked), and
+  the config is written. A cache with data is refused with 69, nothing
+  changed; `_cfg_hook_move_cache` is the one function the cache move (M7,
+  lib/cachemove.sh) replaces. The same directory written another way (a
+  trailing slash) is no move.
+- `restart-mount` (`PVE_CATALOG_MOUNT`, `PVE_CATALOG_MOUNT_DIR`), after the
+  write: pbo-mount.service is restarted only when it is active and no restore
+  reads through it.
+
+`PBO_INTEGRATION` has no hook: it is managed, written only by `pbo integrate`,
+which converges PVE's side itself, and `config set` refuses it.
+
+A failing after-write hook leaves the written config and exits 69. On a
+janitor `config set|unset` run as root stay root (`_role_check`, M3): root
+writes the 0640 root:<user> file the janitor user only reads.
 
 ### Retention per guest (M5)
 

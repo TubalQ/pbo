@@ -124,6 +124,17 @@ Commands:
   config list [--all]         the keys for this role: value, source, type (--all: test hooks and
                               the other role's keys too)
   config get <KEY>            one key's effective value (a secret: <set> or <unset>)
+  config set <KEY> <VALUE> [<KEY> <VALUE>...] [--shared] [--yes] [--force]
+                              change keys in the local config in one step: checked against the
+                              schema, written atomically (quoted, comments, owner and mode kept) and
+                              read back before it replaces the file; --dry-run shows the diff.
+                              --shared writes the cluster-shared /etc/pve/pbo/config (no secret,
+                              exec or per-node key); --yes confirms a new repo (no data is moved);
+                              --force writes a key the schema does not know. Keys managed by another
+                              command (PBO_INTEGRATION: pbo integrate) are refused. CACHE_DIR: an
+                              empty cache only (the new directory is created with its permissions)
+  config unset <KEY>... [--shared] [--yes]
+                              remove keys from the file: the default (or the shared file) applies
   config template [--role host|janitor]
                               the example config generated from the schema (etc/config.example)
   config check [--file F] [--role host|janitor] [--compare-bash]
@@ -400,6 +411,8 @@ cmd_restore_host() {
 _pbo_on_exit() {
     local rc="$1"
     cleanup_locks
+    # a config change stopped between its temp file and the rename (_cfg_write)
+    [[ -z "${CFGW_TMP:-}" ]] || rm -f -- "$CFGW_TMP"
     # a command that failed without saying why (an errexit deep in a function):
     # never silent: a log line (and alert), and the JSON error object
     if (( rc != 0 )); then

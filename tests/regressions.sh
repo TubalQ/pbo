@@ -201,10 +201,16 @@ mv "$RUN/bin/pvesm" "$RUN/pvesm.away"; printf '#!/bin/sh\nexit 127\n' > "$RUN/bi
 $BIN restore 8002 "$ts" --to 9403 --yes >/dev/null 2>&1; rc=$?; mv -f "$RUN/pvesm.away" "$RUN/bin/pvesm"
 [[ $rc == 64 ]] && ok "restore with pvesm missing: usage error, not exit 127" || bad "pvesm missing rc=$rc"
 
-# --- setup / menu: _cfg_set creates the config, escapes values ---
-bash -c 'source lib/common.sh; source lib/menu.sh 2>/dev/null; PBO_CONFIG_LOCAL='"$RUN"'/new/config; _cfg_set A "x&y|z" && _cfg_set A "p&q|r"' 2>/dev/null
-[[ "$(stat -c '%a' "$RUN/new/config" 2>/dev/null)" == 600 ]] && grep -qx 'A=p&q|r' "$RUN/new/config" \
-    && ok "_cfg_set creates a missing config (0600) and keeps & | in values" || bad "_cfg_set: $(cat "$RUN/new/config" 2>/dev/null)"
+# --- setup / menu: _cfg_set creates the config, quotes values ---
+# (0.5 wrote A=p&q|r unquoted: bash runs that as commands; the file list is
+# this run's, the cluster-shared entry a file that does not exist)
+env -u PBO_CONFIG LOCAL="$RUN/new/config" CACHE_DIR="$RUN/cache" LOG_DIR="$RUN/log" STATE_DIR="$RUN/state" LOCK_DIR="$RUN/lock" bash -c 'SELF_DIR="$PWD"
+    source lib/common.sh; source lib/config_parse.sh; source lib/menu.sh 2>/dev/null
+    _cfg_config_files() { _CFG_FPATH=("$LOCAL.absent-shared" "$LOCAL"); _CFG_FORIGIN=(shared local); }
+    load_config; _cfg_set PRUNE_OWNER "x&y|z" && _cfg_set PRUNE_OWNER "p&q|r"' >/dev/null 2>&1
+[[ "$(stat -c '%a' "$RUN/new/config" 2>/dev/null)" == 600 ]] && grep -qx 'PRUNE_OWNER="p&q|r"' "$RUN/new/config" \
+    && [[ "$(env -i bash -c 'source "$1" >/dev/null 2>&1; printf %s "$PRUNE_OWNER"' _ "$RUN/new/config")" == 'p&q|r' ]] \
+    && ok "_cfg_set creates a missing config (0600) and quotes & | in values (bash reads them back)" || bad "_cfg_set: $(cat "$RUN/new/config" 2>/dev/null)"
 
 # --- rotate-key: a failure on the second repo undoes the first ---
 printf 'otherpass\n' > "$RUN/otherpass"; chmod 600 "$RUN/otherpass"

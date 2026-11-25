@@ -537,18 +537,23 @@ _integ_write_file() {
 }
 
 # _integ_set_mode <mode>: PBO_INTEGRATION in the local config file (and in
-# memory). The local file, as _cfg_set writes it (PBO_CONFIG_LOCAL): the mode is
-# per node, and the cluster-shared file is never written.
+# memory), through the config writer (_cfg_write, lib/config.sh): the key is
+# managed by this command, so it is written here and `pbo config set` refuses
+# it. The local file (PBO_CONFIG_LOCAL): the mode is per node, and the
+# cluster-shared file is never written.
 _integ_set_mode() {
-    local m="$1" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" cur
-    cur="$( [[ -r "$cfg" ]] && sed -nE 's/^PBO_INTEGRATION=["'"'"']?([a-z]*)["'"'"']?[[:space:]]*$/\1/p' "$cfg" | tail -1 )"
+    local m="$1" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" cur rc=0
+    _cfg_write_ensure
+    # the value the local file sets, as the strict reader reads it
+    cur="$(_cfg_file_value "$cfg" PBO_INTEGRATION)"
     # already so (a config without the key is standalone)
     if [[ "$cur" == "$m" ]] || [[ -z "$cur" && "$m" == standalone && "$(_integration_mode)" == standalone ]]; then
         PBO_INTEGRATION="$m"; return 0
     fi
     INTEG_STEPS+=("config: PBO_INTEGRATION=$m in $cfg")
     if [[ "${DRY_RUN:-0}" == 1 ]]; then log_info "[dry-run] would set PBO_INTEGRATION=$m in $cfg"; return 0; fi
-    _cfg_set PBO_INTEGRATION "$m" || die "$EX_CANTCREAT" "integrate: cannot write PBO_INTEGRATION=$m to $cfg"
+    _cfg_write set PBO_INTEGRATION "$m" || rc=$?
+    (( rc == 0 )) || die "$rc" "integrate: cannot write PBO_INTEGRATION=$m to $cfg: $CFGW_ERR"
     PBO_INTEGRATION="$m"
     log_info "integrate: PBO_INTEGRATION=$m written to $cfg"
 }

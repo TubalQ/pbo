@@ -130,8 +130,10 @@ _audit_json() {                       # <json-object>
 _audit_who() { printf '%s' "${PBO_AUDIT_USER:-${SUDO_USER:-$(id -un 2>/dev/null || echo "uid$(id -u)")}}"; }
 
 # Read-only commands are logged too (who looked at what is part of an audit),
-# flagged so a reader can filter them.
-readonly AUDIT_READONLY="status list usage doctor metrics help preflight restore-report guests timers config version"
+# flagged so a reader can filter them. `config` is not in the list: `config
+# set|unset` change the config; its read-only subcommands (show, list, get,
+# template, check) set AUDIT_RO_OVERRIDE (rdo_config, lib/config.sh).
+readonly AUDIT_READONLY="status list usage doctor metrics help preflight restore-report guests timers version"
 
 audit_command_start() {
     AUDIT_T0="$(date +%s)"
@@ -143,6 +145,9 @@ audit_command_end() {                 # <exit code>
     # a read-only command can change things with a flag (doctor --fix)
     [[ "${AUDIT_RW_OVERRIDE:-0}" == 1 ]] && ro=false
     [[ "${DRY_RUN:-0}" == 1 ]] && ro=true
+    # AUDIT_ARGS: the arguments with secret values masked (config set), when set
+    local -a _aud_args=("${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}")
+    declare -p AUDIT_ARGS >/dev/null 2>&1 && _aud_args=("${AUDIT_ARGS[@]+"${AUDIT_ARGS[@]}"}")
     _audit_json "$(jq -cn --arg time "$(date --iso-8601=seconds)" --arg user "$(_audit_who)" \
         --arg node "$(_local_node 2>/dev/null)" --arg role "${PBO_ROLE:-host}" --arg cmd "$PBO_COMMAND" \
         --arg ver "${VERSION:-}" --argjson rc "$1" --argjson dur "$(( $(date +%s) - AUDIT_T0 ))" \
@@ -153,5 +158,5 @@ audit_command_end() {                 # <exit code>
            args:$a, exit:$rc, ok:($rc==0), duration_s:$dur, read_only:$ro, dry_run:$dry, pid:$pid, version:$ver,
            via:$via, job:(if $job == "" then null else ($job | tonumber) end),
            client:(if $client == "" then null else $client end)}' \
-        --args -- "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}" 2>/dev/null)"
+        --args -- "${_aud_args[@]+"${_aud_args[@]}"}" 2>/dev/null)"
 }

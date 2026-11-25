@@ -157,7 +157,8 @@ allow=' AUDIT_FILE AUDIT_RO_OVERRIDE AUDIT_RW_OVERRIDE AUDIT_T0 BASH C_0 C_G C_R
     PBO_JOB_ID PBO_JSON_FD PBO_JSON_MARK
     PBO_SETUP_INTEGRATION RESTIC_LOCK_MSG RESTORE_ISOLATE RESTORE_KEEP_NET
     RESTORE_RESTRICTED RESTORE_START RX_TAR SCHED_LOCK_HELD SELF_DIR STAGE_LOCK_FD STOREID SUDO_USER TARGET
-    TR_ALLOW_LINKDOWN_NET TR_RESPOND_HOW TR_RESTRICTED TR_TRIGGER VERSION VMID_LOCK_HELD '
+    TR_ALLOW_LINKDOWN_NET TR_RESPOND_HOW TR_RESTRICTED TR_TRIGGER VERSION VMID_LOCK_HELD
+    CFGW_CREATED CFGW_TMP CFG_LOCK_FD CFG_LOCK_HELD PBO_MOUNT_UNIT '
 out="$(S '
     allow="$1"
     for k in $(grep -ohE "\\\$\\{[A-Z][A-Z0-9_]*:[-=]" pbo lib/*.sh lib/vzdump-hook | sed -E "s/^\\\$\\{//; s/:.\$//" | sort -u); do
@@ -175,7 +176,7 @@ out="$(S 'for k in $CS_ENV_SWITCHES; do _cs_has "$k" && printf "%s(schema) " "$k
 # keys the tests put in config files are in the schema too (a test hook is flagged internal)
 out="$(S '
     for k in $(cat tests/*.sh | sed -nE "s/^[[:space:]]*(echo \"|printf .)?([A-Z][A-Z0-9_]*)=.*/\2/p" | sort -u); do
-        case "$k" in IFS|KEEP_OFSITE_DAILY|PATH|RUN|ROOT|BIN|W|TS|D|H|I|S|P|V|A|BR|OUT|OUT2|LIST|USAGE|TPL|TAG|STO|STORE|SRC|MARK|HOOK|HID|SPOOL|SLOCK|VTS|VMARK|VLOCK|LOCKPID|LOCKDIR|ROOTOK|RE|REAL_PLUGIN|PLUGIN|OFFSITE|DEFER|GLOBAL_LOCK|FAKE_LOG|PATH_NOACL|MY_OWN_KEY_NOBODY_KNOWS|STOREID) continue ;; esac
+        case "$k" in IFS|KEEP_OFSITE_DAILY|PATH|RUN|ROOT|BIN|W|TS|D|H|I|S|P|V|A|BR|OUT|OUT2|LIST|USAGE|TPL|TAG|STO|STORE|SRC|MARK|HOOK|HID|SPOOL|SLOCK|VTS|VMARK|VLOCK|LOCKPID|LOCKDIR|ROOTOK|RE|REAL_PLUGIN|PLUGIN|OFFSITE|DEFER|GLOBAL_LOCK|FAKE_LOG|PATH_NOACL|MY_OWN_KEY_NOBODY_KNOWS|STOREID|CFG|CFGH|INTEG_STEPS|SH|TEST_PAUSE_DIR) continue ;; esac
         [[ "$k" == MOCK_* || "$k" == PBO_INSTALL_* || "$k" == PBO_AUDIT_* ]] && continue
         case "$k" in PBO_CONFIG|PBO_CONFIG_LOADED|PBO_CONFIG_SHARED_LOADED) continue ;; esac   # set by load_config, not keys
         _cs_env_switch "$k" && continue
@@ -420,9 +421,10 @@ grep -qx "unknown config key(s) in $RUN/config: KEEP_OFSITE_DAILY (typo? pbo ign
     && [[ "$(grep -c "KEEP_LOCAL='x' is not a whole number" "$RUN/config.cc")" == 1 && "$(grep -c 'unknown config key' "$RUN/config.cc-same")" == 1 ]] \
     && ok "cluster: doctor names the unknown keys of each file, checks the values once" || bad "cluster check: $(cat "$RUN/config.cc" "$RUN/config.cc-same" 2>&1)"
 
+# config set|unset: tests/config_write.sh; here only the usage error
 for sub in set unset; do
-    out="$($BIN config $sub X 1 2>&1)"; rc=$?
-    [[ $rc == 64 ]] && grep -q 'not yet' <<<"$out" && ok "config $sub: not yet (exit 64)" || bad "config $sub: rc=$rc $out"
+    out="$($BIN config $sub 2>&1)"; rc=$?
+    [[ $rc == 64 ]] && grep -q "config $sub KEY" <<<"$out" && ok "config $sub without a key: usage (exit 64)" || bad "config $sub: rc=$rc $out"
 done
 out="$($BIN config frobnicate 2>&1)"; rc=$?
 [[ $rc == 64 ]] && grep -q 'valid: show, list' <<<"$out" && ok "config <unknown>: exit 64 naming the valid subcommands" || bad "config bogus: rc=$rc $out"

@@ -379,6 +379,19 @@ _cache_dir_protect() {
     return 0
 }
 
+# _cfg_write_ensure: the config writer (_cfg_write, lib/config.sh) loaded with
+# what it needs; ./pbo sources them, a caller that sourced only some gets them here.
+_cfg_write_ensure() {
+    _cfg_parse_ensure
+    _cs_ensure
+    _perm_ensure
+    if ! declare -F _cfg_write >/dev/null; then
+        local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
+        # shellcheck source=lib/config.sh
+        source "$d/config.sh"
+    fi
+}
+
 # _perm_ensure: the permission engine (lib/perms.sh) loaded; ./pbo sources it,
 # a caller that sourced only this file gets it here.
 _perm_ensure() {
