@@ -68,10 +68,10 @@ our $DPKG_STATUS = '/var/lib/dpkg/status';
 # The package versions this plugin was last verified against (load-only and full
 # smoke tests). activate_volume warns in the task log when one installed is newer.
 our %TESTED = (
-    'pve-manager' => '9.2.32',
-    'libpve-storage-perl' => '9.1.18',
-    'qemu-server' => '9.2.20',
-    'pve-container' => '6.1.24',
+    'pve-manager' => '9.2.41',
+    'libpve-storage-perl' => '9.1.25',
+    'qemu-server' => '9.2.24',
+    'pve-container' => '6.1.28',
 );
 
 # pbo's archive names (lib/catalog.sh CATALOG_BASENAME_RE): uncompressed vzdump

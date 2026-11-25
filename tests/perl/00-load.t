@@ -34,7 +34,7 @@ ok(!exists($o->{'prune-backups'}), 'no prune-backups option');
 is($PVE::Storage::Custom::PboPlugin::CATALOG, '/var/lib/pbo/catalog/index.json', 'catalogue path');
 is_deeply(\@PVE::Storage::Custom::PboPlugin::PBO_BIN, ['/usr/sbin/pbo', '/usr/local/sbin/pbo'], 'pbo binary: .deb path first, then install.sh path');
 is_deeply(\%PVE::Storage::Custom::PboPlugin::TESTED,
-    { 'pve-manager' => '9.2.32', 'libpve-storage-perl' => '9.1.18', 'qemu-server' => '9.2.20', 'pve-container' => '6.1.24' },
+    { 'pve-manager' => '9.2.41', 'libpve-storage-perl' => '9.1.25', 'qemu-server' => '9.2.24', 'pve-container' => '6.1.28' },
     'tested version set');
 
 done_testing();

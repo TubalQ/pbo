@@ -411,6 +411,9 @@ Changed
   since `integrated --catalog-only` is refused) and leaves out on purpose the
   flags meant for internal callers (`backup --queue`/`--now`, `restore
   --isolate`/`--restricted`, `test-restore --restricted`).
+- The storage plugin is tested against pve-manager 9.2.41, libpve-storage-perl
+  9.1.25, qemu-server 9.2.24 and pve-container 6.1.28 (doctor and the plugin
+  warn about newer ones; the minimum versions are unchanged).
 
 Fixed
 - `pbo list` and `pbo metrics` took any word: a misspelt `--reasons` was read
