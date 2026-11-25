@@ -126,7 +126,7 @@ Commands:
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   job start <command> [args]  run an action in the background (backup, restore, verify, prune,
                               test-restore, ...); prints the job id at once
-  job list | show <id> | log <id> [--from N] [--follow] | cancel <id>
+  job list [--limit N] | show <id> | log <id> [--from N] [--follow] | cancel <id>
   policy get <vmid>           the guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
                               change it (writes the guest's pbo-* Proxmox tags, others untouched)
@@ -158,19 +158,21 @@ Commands:
                               follow, the old copy goes (--keep-old keeps it). An empty cache: the
                               directory is only created. --fix-parents lets unprivileged CTs pass the
                               directories above it; --force accepts a network filesystem
-  config set CACHE_DIR <dir> --resume | --abort
+  config set CACHE_DIR <dir> --resume|--abort
                               finish an interrupted move, or undo one that has not written the
                               config yet (a failure before that is undone at once)
   config unset <KEY>... [--shared] [--yes]
                               remove keys from the file: the default (or the shared file) applies
   config template [--role host|janitor]
                               the example config generated from the schema (etc/config.example)
-  config check [--file F] [--role host|janitor] [--compare-bash]
+  config check [--file F [--shared]] [--role host|janitor] [--compare-bash]
                               read the config the way pbo reads it (no shell code: KEY=VALUE,
                               quotes, ${KEY} references) and list errors and warnings by line;
-                              --file checks F alone. --compare-bash also sources it as pbo 0.5
-                              did (a clean subshell; it RUNS the file) and names every key bash
-                              reads differently. Exit 78 when pbo refuses or ignores a line
+                              --file checks F alone (--shared: as the cluster-shared file, whose
+                              exec and local-only keys pbo ignores). --compare-bash also sources
+                              it as pbo 0.5 did (a clean subshell; it RUNS the file) and names
+                              every key bash reads differently. Exit 78 when pbo refuses or
+                              ignores a line
   version                     pbo, restic and contract versions
   list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
   usage                       repo size, dedup ratio, snapshot count
@@ -183,7 +185,8 @@ Commands:
                               the original still exists anywhere in the cluster
   verify [--scheduled]        verify repo integrity (restic check); --scheduled reads the
                               next 1/VERIFY_ROTATE slice of the data (all of it over N runs)
-  prune [--if-owner] [--queue] apply retention (cache keep-last, offsite GFS)
+  prune [--if-owner] [--queue]  apply retention (cache keep-last, offsite GFS); --if-owner: only on
+                              the PRUNE_OWNER node, --queue: wait for a running backup
   unlock                      remove a stale restic repo lock (after a killed run)
   rotate-key <file>           rotate the repo password (DR key) to the value in <file>
   test-restore <vmid>         full restore to a throwaway vmid, boot, destroy (recorded as evidence)
@@ -204,18 +207,22 @@ Commands:
   ingest --vmid <vmid> --archive <path>
                               upload an archive a PVE backup job wrote to the pbo spool (the
                               vzdump hook runs this; guest lock only, cache and offsite)
-  ingest --pending            ingest spool archives older than INGEST_PENDING_MIN (10 min) unless vzdump runs, and
-                              copy offsite the ingested snapshots whose copy failed
+  ingest --pending            ingest spool archives older than INGEST_PENDING_MIN (10 min) unless
+                              vzdump runs, and copy offsite the ingested snapshots whose copy failed
   integrate status            the Proxmox integration: mode, PVE versions, plugin, storage, hook,
                               spool, catalogue, PVE jobs to pbo, the storage.cfg/vzdump.conf recipe
-  integrate enable <both|integrated> [--catalog-only] [--yes]
-                              add the pbo storage to PVE (and, unless --catalog-only, the spool
-                              path and the vzdump hook), start pbo-catalog.timer, set the mode.
-                              Its id is PVE_STORAGE_ID: pbo on a single node, pbo-<node> (--nodes
-                              <node>, pinned in the local config) in a cluster; an entry pbo
-                              already made for this node keeps its id
+  integrate enable <both|integrated> [--yes]
+                              add the pbo storage to PVE with the spool path, the vzdump hook,
+                              start pbo-catalog.timer, set the mode. Its id is PVE_STORAGE_ID: pbo
+                              on a single node, pbo-<node> (--nodes <node>, pinned in the local
+                              config) in a cluster; an entry pbo already made for this node keeps
+                              its id
+  integrate enable both --catalog-only [--yes]
+                              the storage for browsing and restores only: no spool path, no hook,
+                              no backup target (not with integrated: only PVE jobs back up there)
   integrate disable [--yes]   back to standalone: mode first, then hook, storage and timer go
                               (refused while an enabled PVE job writes to pbo)
+  help                        this list (also -h, --help; with --json: {usage})
 
 Exit codes: 0 ok, 64 usage, 65 bad data, 69 unavailable (doctor: problems found), 70 internal error,
             73 cannot create, 75 busy (lock held or queued), 78 config error.
@@ -355,15 +362,25 @@ cmd_doctor() {
     fi
     rdo_doctor
 }
+# list [--reasons] [vmid]: an unknown flag is a usage error, not a vmid (a
+# misspelt --reasons used to list nothing and exit 0)
 cmd_list() {
     local reasons=0 vmid=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --reasons) reasons=1; shift ;;
+            -*) die "$EX_USAGE" "unknown list flag: $1 (use --reasons)" ;;
             *) vmid="$1"; shift ;;
         esac
     done
     LIST_WITH_REASONS="$reasons" do_list "$vmid"
+}
+# metrics [--no-write]: anything else is a usage error, since every other
+# word used to mean "write METRICS_FILE" (a misspelt --no-write wrote it)
+cmd_metrics() {
+    case "${1:-}" in ""|--no-write) ;; *) die "$EX_USAGE" "unknown metrics flag: $1 (use --no-write)" ;; esac
+    (( $# <= 1 )) || die "$EX_USAGE" "metrics takes at most one flag (--no-write)"
+    rdo_metrics "$@"
 }
 cmd_usage()        { rdo_usage; }
 cmd_verify() {
@@ -551,7 +568,7 @@ main() {
         _vzdump-hook)  rdo_vzdump_hook "$@" ;;
         integrate)     rdo_integrate "$@" ;;
         notify-test)   rdo_notify_test ;;
-        metrics)       rdo_metrics "$@" ;;
+        metrics)       cmd_metrics "$@" ;;
         help)          if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$(jq -cn --arg u "$(usage)" '{status:"ok", ok:true, usage:$u}')"; else usage; fi ;;
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; json_error "$EX_USAGE" "unknown command: $PBO_COMMAND"; exit "$EX_USAGE" ;;
     esac

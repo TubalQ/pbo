@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1
 # tests/config_parse.sh: the strict config reader (lib/config_parse.sh, ADR 0009
-# "Config grammar", 0.6 M2). Every line it accepts must give exactly the value
+# "Reader", 0.6 M2). Every line it accepts must give exactly the value
 # bash gives when it sources the file; every line bash cannot parse it must
 # refuse; the fast paths and the character scanner must agree; the shipped
 # configs read cleanly; `pbo config check`, doctor's shadow comparison and the
@@ -578,8 +578,8 @@ out2="$(PBO_CONFIG="$RUN/role.cfg" $BIN --json config check 2>/dev/null)"
     && ! grep -q 'pbo ignores\|pbo refuses\|valid bash' <<<"$out" && jq -e '.errors == 1 and .files[0].valid_bash == false' >/dev/null <<<"$out2" \
     && ok "config check: a role error is one pbo stops on, no 'ignores' wording and no migration hint (valid_bash false)" || bad "role summary: rc=$rc $out $out2"
 
-out="$(PBO_CONFIG="$RUN/good.cfg" $BIN help 2>&1)"; [[ "$out" == *"config check [--file F] [--role host|janitor] [--compare-bash]"* ]] && ok "help lists config check" || bad "help"
-out="$(PBO_CONFIG="$RUN/good.cfg" $BIN config bogus 2>&1)"; [[ "$out" == *"check [--file F]"*"--compare-bash"* ]] && ok "config: the valid subcommands include check" || bad "subcommands: $out"
+out="$(PBO_CONFIG="$RUN/good.cfg" $BIN help 2>&1)"; [[ "$out" == *"config check [--file F [--shared]] [--role host|janitor] [--compare-bash]"* ]] && ok "help lists config check" || bad "help"
+out="$(PBO_CONFIG="$RUN/good.cfg" $BIN config bogus 2>&1)"; [[ "$out" == *"check [--file F [--shared]]"*"--compare-bash"* ]] && ok "config: the valid subcommands include check" || bad "subcommands: $out"
 
 # --- the cluster-shared file, through pbo itself ----------------------------------------------------------
 # load_config reads the fixed /etc/pve/pbo/config and /etc/pbo/config when

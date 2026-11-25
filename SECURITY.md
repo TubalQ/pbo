@@ -24,18 +24,141 @@ the offsite copy the thing that has to survive when the host doesn't.
 | SFTP key | `/root/.ssh/…` (the key in `RESTIC_SFTP_COMMAND`) | 0600 root | Read, write **and delete** on the SFTP target. |
 | rest-server HTTP password | `RESTIC_REST_PASSWORD_FILE` | 0600 root | Read and append on an append-only server. No deletes. |
 | Pinned host key / server cert | `/etc/pbo/known_hosts`, `RESTIC_CACERT` | 0644 | Not secret. Stops a MITM from posing as the target. |
-| ntfy token | `NTFY_TOKEN` in the config, or `NTFY_CREDS_FILE` | keep 0600 root (not checked) | Sending notifications. Passed to curl on stdin, never on its command line. |
+| Backend credentials (S3, B2, Azure, GCS, Swift, rclone) | `RESTIC_ENV_FILE`, default `/etc/pbo/restic.env` | 0600 root (0400 or 0600 the janitor user) | Whatever the provider's key allows, usually read, write and delete on the bucket. |
+| ntfy token | `NTFY_TOKEN` in the config, or `NTFY_CREDS_FILE` | config 0600; the file at most 0640 | Sending notifications. Passed to curl on stdin, never on its command line. |
 | Janitor copy of the repo password | janitor `/etc/pbo/restic-pass` | 0400 server user | Same as the DR key, plus delete rights on the repo files. |
 
-Since 0.6 `/etc/pbo/config` is read, not run: a strict KEY=VALUE reader assigns
-only the keys of the config schema and refuses shell code (ADR 0009). Some keys
-still name programs root runs (`exec` in the schema: `RESTIC_BIN`,
-`RESTIC_SFTP_COMMAND`, `PBO_VZDUMP_HOOK`), so pbo refuses the file if it is group-
-or world-writable or owned by anyone but root (or the janitor user on a janitor).
-It can hold an ntfy token/topic and the SFTP command: keep it 0600. In a cluster,
-keep secrets out of `/etc/pve`: pmxcfs replicates it to every node in cleartext;
-an `exec` or `local-only` key in the shared `/etc/pve/pbo/config` is ignored
-(doctor FAIL), so one node's admin cannot make every node run a program.
+### The config is data, not code
+
+pbo 0.5 sourced `/etc/pbo/config` as shell code, as root, on every command, timer
+and vzdump hook. Since 0.6 a strict reader reads it (`lib/config_parse.sh`, ADR
+0009) and nothing in it runs:
+
+- Only `KEY=VALUE` lines, single- or double-quoted values, comments and `${KEY}`
+  references to a config key an earlier line set are accepted. Command
+  substitution, backticks, any other expansion (`$HOME`, `${X:-y}`, `~`), an
+  unquoted blank (`KEY=a b` would run `b`), operators, functions, `source`,
+  control flow, arrays and `+=` are refused, with the file and line. A refused line
+  stops every command with exit 78 rather than running on the rest of the file (a
+  dropped line would fall back to a default: another repo, another retention).
+- Only keys of the schema become variables. `PATH`, `IFS`, `BASH_ENV`, `LD_PRELOAD`
+  or one of pbo's own names in the file change nothing. `export` is accepted for a
+  config key (read, not exported) and for the proxy variables (`http_proxy`,
+  `https_proxy`, `no_proxy`), which are exported to the programs pbo runs; any other
+  `export` is refused.
+- A refusal message never repeats the value of a secret key, or anything that
+  looks like URL credentials: the messages reach doctor, the logs, the install
+  guard and apt's terminal log.
+
+Some keys still name programs root runs (flagged `exec` in the schema:
+`RESTIC_BIN`, `RESTIC_SFTP_COMMAND`, `PBO_VZDUMP_HOOK`). So the file rules stay:
+pbo refuses a config that is group- or world-writable or owned by anyone but root
+(or the janitor user on a janitor), and `pbo doctor` checks that its directory is
+not writable by others either. The config can hold an ntfy token and topic and the
+SFTP command: keep it 0600.
+
+**The cluster-shared file.** pmxcfs replicates `/etc/pve/pbo/config` to every node
+in cleartext, with its own modes (root:www-data 0640). So keep secrets out of
+`/etc/pve`, and pbo ignores there every key flagged `exec` or `local-only`
+(`RESTIC_SFTP_COMMAND`, `RESTIC_BIN`, `PBO_VZDUMP_HOOK`, `RESTIC_ENV_FILE`,
+`PVE_STORAGE_ID`, ...; doctor FAIL, `pbo config check` error): one node's admin
+cannot make every node run a program or read its credentials from a file in
+pmxcfs. Ignored rather than refused, so one node's edit cannot stop pbo on all of
+them. `pbo config set --shared` refuses secret, exec and per-node keys, and
+`CACHE_DIR` with the keys that follow it.
+
+**Writes.** pbo writes the config only through `pbo config set|unset` (also for
+`pbo setup`, the menu and `pbo integrate`): a lock, a temp file in the config's own
+directory, the candidate read back by the strict reader and by bash before it
+replaces the file, owner, group, mode and ACL kept, and the change in the audit log
+with secret values masked. `KEY=VALUE` typed as one argument is refused by its key
+name alone, so a secret never reaches a message or the audit record.
+
+### RESTIC_ENV_FILE
+
+Cloud backends take their credentials from environment variables, which the
+config cannot export. They live in `RESTIC_ENV_FILE`, which pbo reads with the
+same reader and hands to restic alone: the values are put into restic's own
+environment in the subshell of each call (`env`), never into pbo's shell, so
+vzdump, pct, curl, the hooks and every other program pbo runs never see them.
+Doctor, `pbo config list|show|check` and `doctor --report` name the file and its
+variable names, never a value.
+
+pbo refuses the file, and stops every command with exit 78 except `config`,
+`doctor`, `version` and `help` (which diagnose it, and refuse only a restic call),
+so the timers and the vzdump hook stop too, when it is a symlink, owned by anyone but root or the user pbo runs as (on a janitor also
+`JANITOR_USER`), writable by group or others, or readable by others; and when it
+sets a name that changes which program runs or how the shell behaves (`PATH`,
+`IFS`, `ENV`, `BASH_ENV`, `LD_*`, `GCONV_PATH`, `BASH_FUNC_*`, ...), what pbo sets
+for restic itself (`RESTIC_REPOSITORY*`, `RESTIC_PASSWORD*`, `RESTIC_FROM_*`,
+`RESTIC_CACHE_DIR`, the rest-server login, `RESTIC_HOST`), a config key, or one of
+pbo's internal names. It is local-only: the cluster-shared config cannot name it.
+`install.sh` refuses to upgrade while pbo would refuse it.
+
+### Permissions and `pbo doctor --fix`
+
+One rule table (`lib/perms.sh`) says who owns each of pbo's paths and with which
+mode; every path in it is a config value. `pbo doctor` checks it, `pbo doctor
+--fix` changes what the table marks as pbo's to change (`--dry-run` lists it
+first; each change is audit-logged), `install.sh` runs `pbo doctor --fix
+--perms-only`, the cache move applies it to the new paths, and every backup closes
+CACHE_DIR by the same rule.
+
+| Path (host) | Owner | Mode | Why |
+|---|---|---|---|
+| `CACHE_DIR` | root | at most 0750, plus `u:<ct root>:--x` per unprivileged CT | plaintext vzdump archives; an unprivileged CT's vzdump runs tar as its mapped root |
+| the directories above `CACHE_DIR` | | passable by each CT's mapped root | the same tar must pass them; changed only with `--fix-parents`, and then only by a traverse-only ACL entry |
+| `RESTIC_CACHE_REPO` (top directory) | | at most 0770 | other users must not read the cache repo |
+| `PVE_SPOOL_DIR`, its `dump` | root | 0755 | PVE jobs write there, CT roots pass it |
+| `PVE_STAGING_DIR`; staged files | root | 0700; 0600 | staged archives are plaintext |
+| `LOCK_DIR` | root | 0700 | whoever can write there can hold or pre-create pbo's locks |
+| `LOG_DIR`; the logs | root | 0755; 0600 | repo paths, guest names, errors, who did what |
+| `STATE_DIR`; `STATE_DIR/runs` | root | 0755; 0750 | the storage plugin reads the catalogue below it; job logs |
+| the catalogue and its directory | root | 0644; 0755 | the storage plugin reads it |
+| `RESTIC_CACHE_DIR` | root | 0700 | restic's metadata cache (paths, tags, file names) |
+| the config's directory; the config | root | 0700; 0600 | it holds the DR key and credentials; its exec keys name programs root runs |
+| `RESTIC_PASSWORD_FILE`, `RESTIC_REST_PASSWORD_FILE`, `RESTIC_ENV_FILE` | root (reported) | 0600 or 0400 | the DR key, the rest-server password, backend credentials |
+| `NTFY_CREDS_FILE` | root (reported) | at most 0640 | ntfy credentials; other tools may share the file through its group |
+| the mount point's parent | root | at most 0700 (checked only) | the cache repo is mounted with allow_other |
+
+On a janitor the cache, logs, state, locks, restic cache, DR key and
+`RESTIC_ENV_FILE` belong to `JANITOR_USER`, and the config is 0640 root:<the group
+named like that user> in a 0750 directory. The rules that keep a fix safe:
+
+- A symlink where a directory or file is expected is reported and never changed (a
+  fix would change its target), and the system's shared directories (`/`, `/etc`,
+  `/tmp`, `/var/lock`, ..., and any sticky one) are never checked or changed: a
+  config at `/etc/pbo.conf` cannot make `/etc` 0700.
+- Every change goes through a file descriptor opened without following symlinks and
+  checked for its type, its link count and its path right before the change, so a
+  file swapped in between check and change is refused (on a janitor root fixes files
+  in directories the janitor user can write).
+- Never recursive; nothing is created. A config directory other than `/etc/pbo` (an
+  explicit `PBO_CONFIG` elsewhere) is only checked, never changed: other software
+  keeps files there.
+- CACHE_DIR is never closed while a CT's ACL entry is missing or setfacl is absent
+  (closed without it, that CT's backup fails). On a filesystem without POSIX ACLs
+  doctor says so (ZFS: `zfs set acltype=posixacl`).
+
+### Moving the cache directory
+
+When the cache holds data, `pbo config set CACHE_DIR <new>` runs as root and moves
+plaintext archives and the cache repo, so it checks the target before it writes
+anything: no symlink on the
+way, no system directory, every directory above it root's and not writable by
+others, an existing target root's and empty, and the ACL probes it runs only in a
+directory only root can write (another user could swap a probe for a symlink
+before root's `setfacl`). While it runs it holds every pbo lock and the cache lock
+(`LOCK_DIR/pbo.cache`) exclusive, so backups, ingest, restores, test restores and
+the mount stop with exit 75 instead of writing into a half-moved tree; while its
+journal says unfinished, those, `restic init` and the vzdump hook refuse to run, so
+no process with the old path creates a new, empty repo there.
+
+An empty cache (a new install, the first `pbo setup`) is not moved: pbo only
+refuses a relative path, a system directory, a symlink at the target itself, a
+non-directory or a non-empty directory, then creates it with the CACHE_DIR
+permission rule. It does not check who owns the directories above it, so put the
+cache under a path only root can write (such as `/var/cache/pbo`).
 
 `pbo backup-host` leaves out private key material: the DR key, the rest-server
 password, an old pbo-web key (0.4), `/etc/pve/priv` (the cluster CA key, authkey, tokens), the
@@ -96,8 +219,12 @@ are masked in log lines, job logs, alerts and JSON.
 - **The janitor never runs as root.** Started as root, pbo re-execs as
   `JANITOR_USER`. Its state and log directories belong to that user, and root writing
   there could be redirected through a symlink; a root prune also leaves repo files the
-  server can't read. Only `pbo config check` stays root (it is about the root-owned
-  config itself), and it writes nothing into those directories.
+  server can't read. What stays root is only what concerns root's own files: `pbo
+  config check|set|unset` (the root-owned config the janitor user only reads), `pbo
+  timers apply` (the drop-ins in the systemd directory) and the permission and
+  schedule pass of `pbo doctor --fix` before the drop to that user. None of them
+  writes into the janitor user's directories, and `config set|unset` take their lock
+  on the config's own directory, not in the user's LOCK_DIR.
 - **Restore always goes to a new vmid** and never overwrites a running guest. Every
   restore and test-restore lands in the audit log: `LOG_DIR/audit.log` (text, rotated
   weekly, 12 kept) and `LOG_DIR/audit.jsonl` (one JSON object per command with user,

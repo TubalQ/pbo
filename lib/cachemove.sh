@@ -462,7 +462,7 @@ _cm_preflight() {
             elif [[ "$CM_ST_TYPE" != pbo ]]; then
                 _cm_check fail69 "storage '$CM_SID' is of type $CM_ST_TYPE, not pbo: PVE_STORAGE_ID names another storage"
             elif [[ "$CM_ST_NODES" != "$(_local_node)" ]]; then
-                _cm_check fail69 "storage '$CM_SID' is not restricted to this node (nodes: ${CM_ST_NODES:-all}): storage.cfg is cluster-wide, so disabling it and changing its path would change it for every node; restrict it first (pvesm set $CM_SID --nodes $(_local_node))"
+                _cm_check fail69 "storage '$CM_SID' is not restricted to this node (nodes: ${CM_ST_NODES:-all}): storage.cfg is cluster-wide, so disabling it and changing its path would change it for every node; restrict it with 'pvesm set $CM_SID --nodes $(_local_node)' only if no other node uses it (that takes it from every other node); in a cluster move this node to its own storage first (RUNBOOK, \"In a cluster\")"
             else
                 _cm_check ok "storage '$CM_SID' belongs to this node alone$([[ -n "$CM_ST_NEWPATH" ]] && printf '; its path follows the spool (%s -> %s)' "$CM_ST_PATH" "$CM_ST_NEWPATH")"
             fi

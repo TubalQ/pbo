@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1
 # tests/perms.sh: the permission rule table and its engine (lib/perms.sh, ADR
-# 0009 "Permissions (M6)"): each rule's check and fix on a tree under
+# 0009 "Permissions"): each rule's check and fix on a tree under
 # run-perms/, a second --fix that changes nothing, --dry-run that changes
 # nothing, symlink and hard-link refusal, shared and system directories left
 # alone, a config outside pbo's own directory or on pmxcfs, a missing or
@@ -305,7 +305,7 @@ out="$(PBO_CONFIG="$RUN/shared-etc/pbo.conf" "$BIN" --json doctor --fix --perms-
 chmod 0775 "$RUN/shared-etc"
 out="$(PBO_CONFIG="$RUN/shared-etc/pbo.conf" "$BIN" --json doctor --fix --perms-only 2>/dev/null)"
 [[ "$(stat -c %a "$RUN/shared-etc")" == 775 ]] \
-    && jq -e --arg p "$RUN/shared-etc" 'all(.changes[]; .path != $p) and any(.findings[]; .level == "warn" and (.message | startswith($p + " (config/..) is mode 0775, should be at most 0755: root sources the config in it as code") and (contains("doctor --fix") | not)))' >/dev/null <<<"$out" \
+    && jq -e --arg p "$RUN/shared-etc" 'all(.changes[]; .path != $p) and any(.findings[]; .level == "warn" and (.message | startswith($p + " (config/..) is mode 0775, should be at most 0755: the config in it names programs root runs (exec keys)") and (contains("doctor --fix") | not)))' >/dev/null <<<"$out" \
     && ok "config in a shared group-writable directory: a finding, no change, no fix hint" || bad "shared config dir 775: $(stat -c %a "$RUN/shared-etc") $(jq -c '[.changes, [.findings[].message|select(contains("shared-etc"))]]' <<<"$out")"
 mkdir -p "$RUN/pve/pbo"; chmod 0755 "$RUN/pve/pbo"
 { cat "$H/etc/config"; printf 'PBO_PVE_CFS_DIR=%s\n' "$RUN/pve"; } > "$RUN/pve/pbo/config"; chmod 0640 "$RUN/pve/pbo/config"

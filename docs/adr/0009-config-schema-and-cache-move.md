@@ -1,50 +1,110 @@
 # ADR 0009, a config schema, a strict reader, and moving the cache directory
 
-- **Status:** Proposed 2026-11-24. Goal: make it easy for other installations to
-  choose the cache directory and other settings and to get permissions right,
-  with nothing hard-coded. Target 0.6.0. Accepted when 0.6.0-rc1 has passed
-  verification on a PVE host.
-- **Decision (proposed):** keep `KEY=VALUE` in `/etc/pbo/config` (no YAML, no new
-  dependency), but describe every key in one schema (`lib/config_schema.sh`: type,
-  default, section, roles, flags), read the file with a strict parser instead of
-  `source`, write it only through `pbo config set|unset` (atomic, quoted, comments
-  kept, mode and owner kept, always the local file), move CACHE_DIR with a
-  journalled, resumable `pbo config set CACHE_DIR <new>`, group retention per
-  guest instead of per snapshot path, apply permissions from one rule table
-  (`pbo doctor --fix`), and make everything that differs between installations a
-  schema key (paths, names, schedules, thresholds, backend environment).
+- **Status:** Proposed 2026-11-24, for 0.6.0. It becomes Accepted with the 0.6.0
+  release.
+- **Goal:** make it easy for other installations to choose the cache directory and
+  the other settings and to get permissions right, with nothing hard-coded.
 
 ## Context
 
-- The config is sourced as shell code (lib/common.sh `load_config`).
-- The known keys are scraped with grep (lib/views.sh), which misses `LOCK_DIR` and the
-  keys with inline defaults.
-- `_cfg_set` (lib/menu.sh) writes values unquoted, drops comments, is not atomic, breaks a
-  janitor's 0640 root:JUSER config, and can write into the cluster-shared
-  `/etc/pve/pbo/config`.
-- The wizard clobbers existing values on a re-run.
-- CACHE_DIR feeds 19 places, among them the spool (also in storage.cfg) and staging
-  (also in the catalogue's `staging_dir`, which the plugin reads).
-- Retention groups by snapshot path (`forget --group-by paths`), so moving CACHE_DIR
-  would leave the old snapshots in groups that are never pruned.
-- Nothing checks that the CACHE_DIR parents are traversable by an unprivileged CT's
-  mapped root.
-- Schedules, the Storage Box alias, the mount point in a unit and several thresholds are
-  hard-coded.
+What pbo 0.5 did:
 
-## Details
+- The config was sourced as shell code (lib/common.sh `load_config`), by root, on
+  every command, timer and vzdump hook.
+- The known keys were scraped from the code with grep (lib/views.sh), which missed
+  `LOCK_DIR` and every key that only had an inline default.
+- `_cfg_set` (lib/menu.sh) wrote values unquoted, dropped comments, was not atomic
+  (a temp file in `/tmp`), broke a janitor's 0640 root:<user> config, and wrote the
+  cluster-shared `/etc/pve/pbo/config` when no local file existed.
+- The setup wizard clobbered existing values on a re-run.
+- CACHE_DIR fed some twenty places, among them the spool (also named in
+  storage.cfg) and staging (also in the catalogue's `staging_dir`, which the
+  storage plugin reads). Changing it meant editing the config and hoping.
+- Retention grouped by snapshot path (`forget --group-by paths`), so moving
+  CACHE_DIR would leave the old snapshots in groups that are never pruned.
+- Nothing checked that the directories above CACHE_DIR are passable by an
+  unprivileged CT's mapped root, and there was no way to repair modes in one step.
+- The timer schedules, a provider-specific repo alias, the mount point in a unit
+  and several thresholds were hard-coded.
 
-0.6 is built in milestones, and this ADR and the code comments name them: M1
-the schema (`lib/config_schema.sh`) and the read-only `pbo config` commands, M2
-the config grammar (the reader next to `source`), M3 loading (the reader
-replaces `source`), M4 the writer (`pbo config set|unset`), M5 retention per
-guest, M6 permissions, M7 the cache move, M8 the wizard, MP portability
-(nothing that differs between installations hard-coded; part 1 without the
-writer, part 2 with it). This ADR is filled in as the milestones land:
-grammar, schema format, writer, the move's state machine, the retention
-equivalence argument, the permission table, and the portability rules.
+## Decision
 
-### Config grammar (M2)
+Keep `KEY=VALUE` in `/etc/pbo/config` (no YAML, no new dependency), and make it
+data with a schema:
+
+1. **Schema.** Every key is described once, in `lib/config_schema.sh`: type,
+   default, section, roles and flags. Defaults, validation, `pbo config
+   list|get|show|template`, the generated `etc/config.example` and doctor's config
+   check all read it.
+2. **Reader.** The config is read with a strict parser that never runs anything,
+   accepts a subset of the bash grammar, gives every accepted line the value bash
+   would assign, assigns only schema keys, and refuses everything else (exit 78).
+3. **Writer.** The config is written only through one writer (`pbo config
+   set|unset`, also for the wizard, the menu and `pbo integrate`): atomic, quoted,
+   comments, owner, mode and ACL kept, read back before it replaces the file,
+   always the local file unless `--shared` is asked for.
+4. **Retention per guest.** A guest whose snapshots lie under more than one path is
+   retained as one guest; everything else gets exactly the 0.5 calls.
+5. **Permissions.** One rule table for every path pbo owns, checked by doctor and
+   applied by `pbo doctor --fix`.
+6. **Cache move.** `pbo config set CACHE_DIR <new>` moves the cache with its data,
+   as a journalled, resumable state machine that rolls back until the config is
+   written.
+7. **Wizard.** `pbo setup` is a front end of the writer and the cache move: safe to
+   run again, and it asks for the type of offsite target.
+8. **Portability.** Everything that differs between installations is a schema key
+   with a default or derived at run time: paths, names, schedules, thresholds, the
+   backend's environment, the storage id in a cluster.
+
+## Design
+
+### Schema
+
+`lib/config_schema.sh` holds one row per key, `KEY|TYPE|DEFAULT|SECTION|ROLES|FLAGS|DESCRIPTION`,
+in one single-quoted string inside a function (`_cs_table`): sourcing the file
+costs nothing until a command needs the table, and a string costs less to read
+than a heredoc.
+
+- **Types:** `bool`, `int:MIN:MAX`, `decimal:MIN:MAX`, `enum:a,b` (a leading empty
+  entry allows empty), `duration` (restic's), `path`, `dir`, `string`, `list`,
+  `vmids`, `vmids-csv`, `url`, `version`, `command`, `calendar` and `timespan`
+  (systemd's, see "Portability"). `_cs_validate KEY VALUE` checks a value and says
+  why it does not fit; an empty value is always valid, it means the default.
+- **Defaults:** a literal; `${KEY}` references to keys earlier in the table,
+  expanded with that key's effective value (nothing is eval'ed); or `@fn`, a
+  function `_cfgdef_<KEY>` that computes it into `_CS_R` without a subshell
+  (`LOCK_DIR` by uid, `PVE_STORAGE_ID` from pmxcfs, `HOST_BACKUP_EXCLUDES` from
+  the password files). `set_defaults` runs on every start, so no default forks.
+- **Roles:** `host`, `janitor`. A key of the other role is not listed, not in that
+  role's template, and `config set` refuses it.
+- **Flags:** `secret` (never printed: `<set>`/`<unset>`), `exec` (names or runs a
+  program), `local-only` (ignored in the cluster-shared file), `internal` (a test
+  hook: not in the example, not in `config list`), `advanced` (commented out in the
+  example), `managed=<cmd>` (changed through that command only), `follows=<KEY>`
+  (lives below KEY by default and moves with it), `samefs=<KEY>`,
+  `on_change=<hook>` (what a change implies: `move-cache`, `restart-mount`,
+  `confirm-repo`, `apply-schedule`), `deprecated=<KEY>` (still honoured, named with
+  its replacement, not in the example), `template=` and `template_<role>=` (what the
+  example writes instead of the default).
+- **Environment switches** (`PBO_REPO`, `PBO_NO_NOTIFY`, `TMPDIR`, the test hooks
+  of the environment) are listed next to the table (`CS_ENV_SWITCHES`), so the
+  reader and doctor can name one set in the config as a switch pbo reads from its
+  environment, not as a typo.
+- **Loading.** `_cs_core` loads only what every start needs (the key order and the
+  raw defaults by whole-array expansions, the flags by key); `_cs_load` adds types,
+  sections, roles and descriptions for the commands that show or check them.
+- **The example.** `pbo config template [--role host|janitor]` generates the
+  example from the table: sections in table order with their titles, every key of
+  the role but the internal and deprecated ones, active unless advanced (or
+  flagged as what that role must set), each with its description. A derived
+  default is written out literally (as in 0.5), never as `${KEY}`: a commented line
+  must be a valid config line on its own once uncommented, and the reader refuses a
+  reference to a key no earlier line sets. `etc/config.example` is that output;
+  CI fails when it is stale.
+- **Versions.** `PBO_CONFIG_VERSION` (schema version 1) is what a file declares;
+  a rename bumps it and marks the old key `deprecated=<new>`.
+
+### Reader
 
 **Why not `source`.** A sourced config is code that root runs on every pbo
 command, timer and vzdump hook: a stray `$(...)`, an `export PATH=...`, a
@@ -83,8 +143,8 @@ keeps working).
   `declare`/`readonly`/`local`, `unset`, anything else.
 - `export KEY=V`: accepted with a warning for a schema key (0.6 does not export
   config keys to child processes); accepted and recorded in `CFG_EXPORT` for
-  `http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (M3 exports
-  those to the programs pbo runs); refused for anything else, with the hint to
+  `http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (exported
+  to the programs pbo runs, see "Loading"); refused for anything else, with the hint to
   put variables for restic in `RESTIC_ENV_FILE` (see "Portability"), others
   in a systemd drop-in (`Environment=`).
   An exported `PATH`, `IFS`, `BASH_ENV` or `LD_PRELOAD` would change what root
@@ -95,15 +155,15 @@ keeps working).
   schema key without the `secret` flag and the text holds nothing that looks
   like URL credentials: the messages reach doctor, `pbo config check`, the
   install.sh guard and the `.deb` postinst (apt's term.log).
-- An unknown key is kept for the comparison and warned about (M3 never assigns
-  it as a shell variable); an environment switch such as `PBO_REPO` set in the
-  file is named as one. A key set twice in one file: the last wins, with a
+- An unknown key is kept for `--compare-bash` and warned about, and never
+  assigned as a shell variable; an environment switch such as `PBO_REPO` set in
+  the file is named as one. A key set twice in one file: the last wins, with a
   warning.
 - In the cluster-shared `/etc/pve/pbo/config` a key flagged `exec` or
   `local-only` is not applied (`CFG_IGNORED`; doctor FAIL, an error for `pbo
   config check`): pmxcfs copies that file to every node, and such a key runs a
-  program or describes one node. Ignored rather than refused (M3): one node's
-  edit of the shared file must not stop pbo on every node.
+  program or describes one node. Ignored rather than refused: one node's edit
+  of the shared file must not stop pbo on every node.
 
 **References and precedence.** A reference resolves to the value an earlier
 line gave the key, in the merged order load_config sources the files: with
@@ -129,31 +189,10 @@ and records `PBO_CONFIG_FILES`. Three fast paths (a bare value, a simple
 compiles a regex on every `[[ =~ ]]`, a glob costs far less; the rest goes
 through a character scanner that also names the reason for a refusal. The two
 paths give the same result on every fixture and example (`_CFG_SLOW=1` in
-tests/config_parse.sh). Parsing a config takes milliseconds, a file with every
-key active a few times as long. The file depends on no other library,
-so install.sh can source it from the source tree.
+tests/config_parse.sh). The file depends on no other library, so install.sh can
+source it from the source tree.
 
-**Shadow mode (M2, replaced in M3).** In 0.6 M2 the config was still sourced. doctor and
-`pbo config check` also run the reader (before sourcing, so references see the
-environment bash sees) and record the sourced value of every key it assigned
-right after sourcing, before `set_defaults`. doctor warns about each key the two
-read differently (a secret only as `<differs>`) and each line the reader refuses,
-and says OK when they agree. No other command runs the reader, so startup costs
-stay as they were. `pbo config check` is lenient: an unset variable, a syntax
-error, a `${X:?}` or an `exit` (tried in a subshell first; such a file is then
-not sourced and named as one bash stops on) and a broken role config (a bad
-`PBO_ROLE`, a janitor with an integration or append-only, which every other
-command stops on at startup) do not stop it but are reported as errors,
-`--file F` reads F without sourcing it, and it exits 78 when pbo 0.6 would
-refuse the config. install.sh reads the existing configs with
-the reader of the version it installs before it replaces anything and warns; M3
-turns that into a refusal (with `--force`) once the reader replaces `source`.
-tests/all.sh runs every suite with a load_config hook that logs the reader's
-verdict on each config file loaded, and checks at the end that the reader
-accepts them all and agrees with bash. M3 removed the runtime comparison (see
-"Loading"); the hook and the corpus check stay.
-
-### Loading (M3)
+#### Loading
 
 **Decision.** `load_config` (lib/common.sh) reads the config files with the
 strict reader and never sources them. Only keys of the schema become shell
@@ -192,12 +231,11 @@ variables; nothing the config says can run, export or overwrite anything else.
   or `PBO_CONFIG`), whether it exists or not: the only file pbo writes. 0.5's
   `_cfg_set` (setup, menu) and `_integ_set_mode` (integrate) wrote to
   `PBO_CONFIG_LOADED`, which names the shared file when no local file exists
-  yet; they write `PBO_CONFIG_LOCAL` now, through the writer since M4 (see
-  "Writer").
+  yet; they write `PBO_CONFIG_LOCAL` now, through the writer (see "Writer").
   `PBO_CONFIG_FILES` lists the files read. `PBO_CONFIG_LOADED` (the last file
   read) and `PBO_CONFIG_SHARED_LOADED` stay for readers; a writer must not use
   them.
-- **No bash at runtime.** The shadow comparison of M2 is gone. `pbo config check
+- **No bash at runtime.** No command sources the config. `pbo config check
   --compare-bash` is the explicit opt-in for migration debugging: it sources
   the files in a subshell with a clean environment (`env -i`, PATH and
   `CFG_ENV`, stdin and stdout closed, a timeout) after the owner and mode rules,
@@ -208,8 +246,9 @@ variables; nothing the config says can run, export or overwrite anything else.
 - **The janitor.** As before, root loads the config and `_role_check` re-execs
   pbo as `JANITOR_USER`, which reads the 0640 root:<group> file again (owned by
   root, so the owner rule passes for that user too). `config check|set|unset`
-  run as root stay root (`PBO_SUBCOMMAND`): they concern the file itself, which
-  the janitor user may read but not write. Root then writes no file in the
+  and `timers apply` run as root stay root (`PBO_SUBCOMMAND`): they concern
+  root's own files, the config the janitor user may read but not write and the
+  timer drop-ins. Root then writes no file in the
   janitor user's `LOG_DIR` (`LOG_FILE`, `AUDIT_FILE` and `AUDIT_JSON` cleared,
   stderr and stdout only; `ensure_dirs` creates no log file there either): a
   file there may be a symlink that user planted, and one root creates locks
@@ -223,11 +262,10 @@ variables; nothing the config says can run, export or overwrite anything else.
 - **References to keys that only have a default.** `${KEY}` to a schema key no
   earlier line set (and the environment does not hold) stays an error, rather
   than expanding to the key's default: bash stops there under `set -u` (pbo
-  0.5, a downgrade), and a default is not something the file said. So the
-  generated example writes every derived default literally (as 0.5 did), and
+  0.5, a downgrade), and a default is not something the file said. That is why
+  the generated example writes derived defaults out ("Schema"), also
   `HOST_BACKUP_EXCLUDES`, whose 0.5 template used
-  `${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}` (an expansion the reader
-  refuses), is written out too. That a literal list no longer follows a changed
+  `${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}`. That a literal list no longer follows a changed
   `RESTIC_PASSWORD_FILE` is covered in the code: `pbo backup-host` always
   excludes `RESTIC_PASSWORD_FILE` and `RESTIC_REST_PASSWORD_FILE` as
   configured. tests/config_parse.sh uncomments each commented example line in
@@ -242,22 +280,18 @@ variables; nothing the config says can run, export or overwrite anything else.
   (tests/fixtures/set_defaults_0.5.sh) is the reference tests/config.sh
   compares with, as root and as nobody, so the test never compares the schema
   with itself.
-- **Cost.** Every start now needs part of the schema. An associative-array
-  element costs a few microseconds to create, so the whole table (6 arrays of
-  ~90 keys) costs more than reading a small config.
-  A generated bash file with the filled arrays was measured and is no faster
-  (bash parses the declare lines at the same cost), so there is no build step:
-  the table stays the one source and `_cs_core` loads only what the loader needs
-  (the key order and the raw defaults by whole-array expansions, the flags by
-  key); the descriptions, types, sections and roles wait for a command that
-  shows or checks them (`_cs_load`). The file check makes one `stat` instead of
+- **Cost.** Every start now needs part of the schema, and filling the whole
+  table (six associative arrays, one element per key each) costs more than
+  reading a small config. So the table stays the one source (no generated file,
+  see "Alternatives considered") and `_cs_core` loads only what the loader needs
+  ("Schema", Loading). The file check makes one `stat` instead of
   two plus an `id -u` (`$EUID`), `set_defaults` no `id -u`, and `ensure_dirs` no
   `mkdir` for directories that exist. With a small config, `pbo version` (whose
   time goes mostly to `restic version` and jq) and `load_config` alone are no
   slower than before the schema. A config with every key set costs more to
   read; tests/config.sh keeps a budget for it.
 
-### Writer (M4)
+### Writer
 
 0.5 wrote the config with `sed` (`_cfg_set`, the wizard and the menu): values
 unquoted (`KEY=a b` runs `b`), comments of a replaced line dropped, a temp
@@ -313,7 +347,7 @@ A call is one transaction of any number of sets and unsets:
   accept it, every set key must read as the value given and come from the
   candidate, every unset key must no longer be set there, every other key must
   read as before, and bash, sourcing the files up to the candidate in a clean
-  subshell (`_cfg_compare_bash`, the shadow comparison of M2), must agree with
+  subshell (`_cfg_compare_bash`, the comparison `--compare-bash` uses), must agree with
   the reader on every key the change gives and on every key whose bash
   reading the change alters. Any such difference refuses the change (78) and
   names the first key. A difference the files had before (a CRLF line, which
@@ -375,23 +409,24 @@ changes, each hook once:
 - `confirm-repo` (`RESTIC_OFFSITE_REPO`, `RESTIC_CACHE_REPO`), for the keys
   given only, before the lock: pbo will use another repo and moves no data;
   needs `--yes` or a yes on a terminal (64 otherwise).
-- `move-cache` (`CACHE_DIR`), under the lock before the replace: M4 handles an
-  empty cache. The old directory must not exist or hold only directories (no
-  repo config, nothing in spool or staging, no dump: any file counts, a
-  directory pbo cannot read counts), the new one must not be a system
-  directory, a symlink or a non-empty directory (`lost+found` and the
-  snapshot directories `.zfs` and `.snapshot` of a ZFS dataset or an NFS
-  export are allowed; in the old cache those two are not counted as data
-  either), and with the Proxmox integration on the spool must not follow
-  (storage.cfg names it for the whole cluster). Then the directory is created
-  0755 and the permission table's CACHE_DIR rules are applied to it (the ACL
-  entries for unprivileged CTs, then the mode; the parents are checked), and
-  the config is written. `_cfg_hook_move_cache` is the one place that decides:
-  since M7 a cache with data, an empty cache whose spool follows while the
-  integration is on, and any change while a move is unfinished go to the
-  cache move (lib/cachemove.sh, "Cache move" below); M4 refused the first two
-  with 69. The same directory written another way (a trailing slash) is no
-  move.
+- `move-cache` (`CACHE_DIR`), under the lock before the replace.
+  `_cfg_hook_move_cache` is the one place that decides: a cache with data, an
+  empty cache whose spool follows while the integration is on (storage.cfg
+  names the spool, so the storage must be repointed), and any change while a
+  move is unfinished go to the cache move ("Cache move" below). The same
+  directory written another way (a trailing slash) is no move. What is left is
+  an empty cache: the old directory does not exist or holds only directories
+  (no repo config, nothing in spool or staging, no dump: any file counts, a
+  directory pbo cannot read counts), and the new one must not be a system
+  directory, a symlink or a non-empty directory (`lost+found` and the snapshot
+  directories `.zfs` and `.snapshot` of a ZFS dataset or an NFS export are
+  allowed; in the old cache those two are not counted as data either). Then the
+  directory is created 0755 and the permission table's CACHE_DIR rules are
+  applied to it (the ACL entries for unprivileged CTs, then the mode; the
+  parents are checked), and the config is written; no filesystem type is
+  checked on this path.
+- `apply-schedule` (`SCHEDULE_*`), after the write: the timer drop-ins
+  ("Portability", Timer schedules).
 - `restart-mount` (`PVE_CATALOG_MOUNT`, `PVE_CATALOG_MOUNT_DIR`), after the
   write: pbo-mount.service is restarted only when it is active and no restore
   reads through it.
@@ -400,10 +435,10 @@ changes, each hook once:
 which converges PVE's side itself, and `config set` refuses it.
 
 A failing after-write hook leaves the written config and exits 69. On a
-janitor `config set|unset` run as root stay root (`_role_check`, M3): root
-writes the 0640 root:<user> file the janitor user only reads.
+janitor `config set|unset` run as root stay root (`_role_check`, "Loading"):
+root writes the 0640 root:<user> file the janitor user only reads.
 
-### Retention per guest (M5)
+### Retention per guest
 
 pbo backs up the directory `$CACHE_DIR/<vmid>` (a host backup: its path list) and
 retains with `restic forget --group-by paths`, so a path group has stood for a
@@ -450,11 +485,10 @@ A vmid whose path set is also used by another vmid or by an untagged snapshot
 breaks the injectivity; pbo never writes that, so such a vmid is not split: it
 stays retained per path as in 0.5 and doctor warns about it.
 
-**Consequences.** For a split guest the next prune forgets snapshots 0.5 kept;
-doctor names the split guests (a warning with `RETENTION_GROUP_BY=paths`, whose
-old groups are never pruned), and `pbo --dry-run prune` / `list --reasons` show
-the plan first. Each split guest costs one extra forget per prune (offsite: one
-more round-trip) until its old snapshots are gone. The cache tier makes
+**Calls and failure.** Doctor names the split guests (a warning with
+`RETENTION_GROUP_BY=paths`, whose old groups are never pruned), and `pbo
+--dry-run prune` / `list --reasons` show the plan first. Each split guest costs
+one extra forget per prune offsite until its old snapshots are gone. The cache tier makes
 no extra call: its paths pass has no tag filter, so the keep and remove lists of
 its forget JSON hold every snapshot the repo had, and the split guests are found
 in that set. When the forget gives no usable JSON (it failed), the guest pass
@@ -462,7 +496,7 @@ does not run; the paths pass never forgets more than it would. On a host whose
 offsite is append-only the janitor owns that repo's retention, so doctor there
 does not judge split guests by the host's `RETENTION_GROUP_BY`.
 
-### Permissions (M6)
+### Permissions
 
 pbo's directories and files were made with the right modes in a dozen places
 (ensure_dirs, the catalogue writer, `integrate enable`, install.sh, the
@@ -477,11 +511,11 @@ rule: `NAME|KIND|OWNER|GROUP|MODE|ACL|CLASS|WHY`) and one engine
 where the path comes from: a config key, `KEY/<sub>`, `KEY/..` (its directory),
 `config`/`config/..` (the local config file pbo loaded), `config-shared`.
 Nothing in the table is a path; a rule whose path does not exist is skipped
-(M6 creates nothing). Doctor runs `--check`; `pbo doctor --fix` runs `--fix`
-first, then the full report; every backup runs the CACHE_DIR rule
+(the engine creates nothing). Doctor runs `--check`; `pbo doctor --fix` runs
+`--fix` first, then the full report; every backup runs the CACHE_DIR rule
 (`_cache_dir_protect` is a thin wrapper); install.sh runs `pbo doctor --fix
---perms-only`; the cache move (M7) applies it to the new paths; the wizard (M8)
-will call it too.
+--perms-only`; the writer's move-cache hook and the cache move apply it to the
+new paths; the wizard ends with `pbo doctor --fix`.
 
 | Rule (host) | Kind | Owner | Mode | Class | Why |
 |---|---|---|---|---|---|
@@ -495,10 +529,11 @@ will call it too.
 | `STATE_DIR`; `STATE_DIR/runs` | dir | root | 0755; 0750 | fix | the plugin reads the catalogue below it; job logs |
 | `PBO_CATALOG/..`; `PBO_CATALOG` | dir; file | root | 0755; 0644 | fix | the PVE storage plugin reads it |
 | `RESTIC_CACHE_DIR` | dir | root | 0700 | fix | restic's metadata cache |
-| `config/..`; `config` | dir; file | root | 0700; 0600 | fix | DR key and credentials live there; sourced as code |
+| `config/..`; `config` | dir; file | root | 0700; 0600 | fix | DR key and credentials live there; its exec keys name programs root runs |
 | `config-shared` | keys | | no secret or exec key | check | pmxcfs copies it to every node (its modes are pmxcfs's) |
 | `RESTIC_PASSWORD_FILE` | file | root (reported) | 0600 or 0400 | fix | the DR key |
 | `RESTIC_REST_PASSWORD_FILE` | file | root (reported) | 0600 or 0400 | fix | the rest-server password |
+| `RESTIC_ENV_FILE` | file | root (reported) | 0600 or 0400 | fix | the backend credentials restic gets |
 | `NTFY_CREDS_FILE` | file | root (reported) | at most 0640 | fix | ntfy credentials; other tools may share the file through its group |
 | `PVE_CATALOG_MOUNT_DIR/..` | dir | root | at most 0700 | check | the mount uses allow_other |
 | `METRICS_FILE/..` (METRICS_ENABLED) | dir | root | | check | pbo refuses to write the textfile elsewhere |
@@ -509,8 +544,8 @@ belong to JANITOR_USER; `config/..` 0750 and `config` 0640 are root:<the group
 named JANITOR_USER, as install.sh and pbo-janitor.service's `Group=` use>. Not
 the user's primary group: `adduser --system` makes that nogroup, which other
 daemons share, and the unit's supplementary groups leave it out. If no group
-of that name exists, the group is reported and not changed. The DR key belongs
-to JANITOR_USER, 0400 or 0600 (a fix sets 0400); the ntfy file belongs to
+of that name exists, the group is reported and not changed. The DR key and
+`RESTIC_ENV_FILE` belong to JANITOR_USER, 0400 or 0600 (a fix sets 0400); the ntfy file belongs to
 JANITOR_USER, at most 0640. No PVE or metrics rules. LOCK_DIR's default
 depends on the uid (`/run/pbo` as root, `STATE_DIR/lock` otherwise): the fix
 pass of a janitor started as root takes the janitor's `STATE_DIR/lock` when
@@ -520,8 +555,8 @@ LOCK_DIR is root's default, so `/run/pbo` is never given to JANITOR_USER.
 directory: `/etc/pbo` (the internal key `PBO_PERMS_CONFIG_DIR`, a test hook,
 names another one). A config anywhere else (`PBO_CONFIG=/usr/local/etc/pbo.conf`,
 `/etc/default/pbo`) lives next to other software's files, so its directory is
-checked only, against "at most 0755, owned by root": root sources the config
-as code, and whoever can write the directory can replace it. A config on
+checked only, against "at most 0755, owned by root": the config names programs
+root runs (its exec keys), and whoever can write the directory can replace it. A config on
 pmxcfs (`/etc/pve`, test hook `PBO_PVE_CFS_DIR`), also an explicit
 `PBO_CONFIG` there, gets no mode rule at all (pmxcfs has fixed modes) and only
 the `config-shared` key check.
@@ -604,14 +639,14 @@ that pass; with `--fix` the changes (`FIXED`, or `WOULD FIX` in a dry run) and
 record `read_only: false` (`AUDIT_RW_OVERRIDE`); with `--dry-run` it stays
 true.
 
-### Cache move (M7)
+### Cache move
 
 CACHE_DIR is where the cache repo, the dumps of a running backup, the PVE spool
 and the staging directory live; storage.cfg names the spool for the whole
 cluster, the catalogue names staging, a process that read the config before a
 change still has the old paths, and a restic process with the old path in
-hand would create a new, empty repo there and back up into it. 0.6 M4 changed
-CACHE_DIR only while the cache was empty.
+hand would create a new, empty repo there and back up into it. The writer alone
+can only create an empty cache ("Writer", move-cache).
 
 **Decision.** `pbo config set CACHE_DIR <new>` moves the data, as a journalled
 state machine in `lib/cachemove.sh`, entered from the writer's move-cache hook
@@ -758,28 +793,165 @@ below a place a finished move recorded as its old directory (or the old cache
 repo, when it followed the cache; one pinned outside it stayed where it was and
 may be created again) unless that is below the latest move's new one, or at a
 local path the config on disk no longer names (read again for that check).
-`ensure_dirs` does not create a CACHE_DIR a finished move left. A later
-change of CACHE_DIR on an empty cache (M4's path) is recorded in the journal
-once the config is written, as the latest move (method `empty`): setting it
-back to a place an earlier move left makes that place usable again, and the
-place it leaves becomes one the cache left.
+`ensure_dirs` does not create a CACHE_DIR a finished move left.
 
-**Consequences.** A move with data needs `--yes` (or a yes on a terminal);
-an empty cache keeps M4's behaviour and writes no journal. A copy needs the
-space of the cache twice until the old copy goes. A janitor's cache is moved
-only when it is empty (its user owns the directory; the move refuses with 78
-and says how). Retention after a move groups each guest's old and new paths
-(M5). The journal of the last move stays (doctor names it) and carries the
-earlier ones' old directories.
-### Portability (MP, part 1)
+**An empty cache** needs no `--yes` and starts no journal: the writer's
+move-cache hook creates the directory. When a journal exists (an earlier move),
+the change is recorded in it once the config is written, as the latest move
+(method `empty`): setting CACHE_DIR back to a place an earlier move left makes
+that place usable again, and the place it leaves becomes one the cache left.
+
+**Limits.** A move with data needs `--yes` (or a yes on a terminal). A janitor's
+cache is moved only when it is empty (its user owns the directory; the move
+refuses with 78 and says how). Retention after a move groups each guest's old and
+new paths ("Retention per guest"). The journal of the last move stays (doctor
+names it) and carries the earlier ones' old directories.
+
+### Wizard
+
+0.5's `pbo setup` was written for one target and one run: it asked for an SFTP
+host every time (a Storage Box host name as the example), wrote
+`sftp:<label>:<path>` with an ssh command whether or not one was needed,
+rewrote the pinned host keys, ran `mkdir -p` on the cache path it was given and
+pinned `RESTIC_CACHE_REPO`, wrote `NTFY_URL=` on a no, and took any number. Run
+again to change one thing, it overwrote the rest.
+
+**Decision.** The wizard (lib/menu.sh, `run_setup_wizard`) is a front end of
+the writer and the cache move. It holds no config logic of its own.
+
+- **Defaults are the effective config.** Each question offers the value pbo
+  uses now and Enter keeps it: CACHE_DIR, LOCAL_REPO, the retention keys,
+  BACKUP_MODE, BACKUP_ORDER, the SCHEDULE_* keys, ntfy (a secret is not shown:
+  "Enter keeps the current one"). For an sftp repo the host, port, user, key and
+  known_hosts file come from the repo and `RESTIC_SFTP_COMMAND`
+  (`_setup_sftp_parse`: the command wins, since restic connects with it; ssh
+  options before and after the destination, `-p -i -l -o Port= User=
+  IdentityFile= UserKnownHostsFile=`; a 0.5 repo's host is then a label; an
+  IPv6 host in brackets in the repo, bare or in brackets in the command), and
+  the command the wizard writes parses back to the parts it was built from
+  (tests/menu.sh). The command's other options (`-F`, `-J`, `-o ProxyJump=`,
+  keep-alives, flags) are kept as words and go into the rebuilt command, and
+  into the connection test, as long as the host stays the same: Enter on every
+  part must not drop a jump host. A value that equals the effective one is not written
+  (`_setup_set`, `_setup_change`), so a run that keeps every answer leaves the
+  config byte for byte as it was, and a re-run never pins a default. The
+  values a cache move changed are read back from `pbo --json config list`; a
+  value there that is only the masked form of the one the wizard holds (a
+  login in a repo string) is not taken over.
+- **The offsite repo is kept unless the operator changes it.** A configured repo
+  is shown in one line (its login masked; for a `rest:` repo whether it is
+  append-only, for another backend the names of the variables in
+  `RESTIC_ENV_FILE`) with "keep" as the default; keeping skips every offsite
+  step, the connection test included. Replacing it asks first: pbo moves no
+  snapshot, and a typo would start an empty repo next to the old one.
+- **The type of target.** SFTP, rest-server, a local or mounted directory,
+  another restic backend, or (with a local cache repo) none:
+  - SFTP: any host (a name, IPv4 or IPv6), port, user and key. The repo is
+    `sftp:<user>@<host>:<path>` (`sftp:<user>@[<v6>]:<path>` for IPv6), so it
+    says where it is without a command.
+    `RESTIC_SFTP_COMMAND` is written only when restic's default (`ssh
+    <user>@<host> -s sftp`) is not enough: another port, a key ssh does not try
+    by itself (`~/.ssh/id_{rsa,ecdsa,ecdsa_sk,ed25519,ed25519_sk}`), the
+    pinned host key (`UserKnownHostsFile=` with `StrictHostKeyChecking=yes`;
+    pinning stays the recommended default, so most setups get a command), ssh
+    options of the configured command that are kept, or, with nothing pinned,
+    a host whose key `~/.ssh/known_hosts` does not hold yet: restic's default
+    runs ssh with `StrictHostKeyChecking=ask`, which fails without a terminal
+    (the timers), so trust on first use gets the command with `accept-new`.
+    Otherwise a command left from before is removed. A host key already in
+    `PBO_KNOWN_HOSTS` is not scanned again (`ssh-keygen -F`); a new one is
+    added to the file. A Storage Box is recognised by its domain only, and only
+    then do its defaults (port 23, the account as the user, a relative path),
+    its key installation hints and the question about its snapshots
+    (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`) appear.
+  - rest-server: the URL (a login in it is refused: the user goes into
+    `RESTIC_REST_USERNAME`, the password into a 0600 file next to the DR key by
+    default, so it is in no repo string pbo logs; a configured URL that has
+    one is offered without it, its user as the default user and its password
+    moved to the file on a yes, never shown), an optional pinned
+    certificate, and whether the server is append-only (`OFFSITE_APPEND_ONLY`;
+    the note says the janitor prunes then).
+  - a directory: the path is the repo; a warning when it shares the
+    filesystem of CACHE_DIR (one disk failure takes both copies).
+  - another backend: the repository string as restic takes it (`sftp:`,
+    `rest:` and `local:` are sent to their own types), then the credentials:
+    the variables that backend reads are named with what each one is (s3, b2,
+    azure, gs, swift, rclone; none for one pbo does not know), each value is
+    read without echo, a variable the file has is kept on Enter, more can be
+    added by name (one `RESTIC_ENV_FILE` refuses is refused at once). The file
+    is written whole, its other lines and comments kept, 0600, and only after
+    pbo's own reader of it (`_restic_env_read`) takes the candidate back with
+    every value as given. No value reaches the output or the log.
+  When the type changes, the keys of the old one are removed (an ssh command,
+  or the rest-server login, certificate and append-only flag), so nothing stale
+  stays in the config. The writer removes lines from the local file only: a
+  key the cluster-shared file or the environment sets is written to its
+  default in the local file instead, which wins over both (a shared
+  `OFFSITE_APPEND_ONLY=true` left in effect would stop this host from ever
+  pruning its new repo; a shared ntfy server would keep sending after "turn
+  ntfy off"). A key that still is not at its default afterwards is named.
+- **The cache step.** The local filesystems are listed with type and free
+  space (`findmnt -rn -b -t <types>`, `df -P -T -l -t <type>...` without it;
+  the tool filters by type before it sizes anything, since a statfs of a hard
+  NFS mount whose server is gone never returns): disk filesystems only,
+  read-write, no container volume (`subvol-*-disk-*`, `basevol-*`), one row
+  per filesystem (the datasets of a ZFS pool share its free space; a bind
+  mount is its source again). The one with the most free space is suggested
+  (`<mount>/pbo-cache`; the schema default when it lies on that filesystem; the
+  current directory when it is on that filesystem already). It is the default
+  only on a first setup (no offsite repo, no DR key and no local cache repo
+  yet) when the config names no CACHE_DIR and the current one holds no data;
+  otherwise it is a hint and the effective CACHE_DIR the default (an
+  offsite-only host has an empty cache between backups). A warning when the
+  root filesystem is smaller than 1.5 times the largest dump of the node's
+  guests (every disk of a VM, a container's rootfs and backed-up mount points:
+  PVE's `maxdisk` is only a VM's boot disk). The directory is set
+  with `pbo config set CACHE_DIR <path> --yes`, in a pbo of its own (the move
+  takes its locks and keeps its journal; the wizard's shell then reads the
+  values back with `pbo --json config list`): the same path writes nothing
+  (a re-run never pins the default, nor a CACHE_DIR the cluster-shared file
+  sets); another one first runs the same command with
+  `--dry-run` and shows the plan (the empty-cache creation, or the move's
+  checks and steps), and changes nothing without a yes. When the plan names a
+  directory above the target that an unprivileged CT cannot pass,
+  `--fix-parents` is offered and the dry run shown again with it; a refusal
+  offers another path. `RESTIC_CACHE_REPO` is never written: it follows
+  CACHE_DIR.
+- **Values are checked where they are typed.** Every answer that becomes a key
+  goes through the schema (`_cs_validate`: whole numbers and their bounds,
+  enums, URLs, calendar expressions) and is asked again until it is valid; the
+  other answers (paths, ports, host and user names, repository strings,
+  variable names) have checks of their own. The prompts report the end of the
+  input, so a question that cannot get a valid answer stops the wizard instead
+  of asking for ever (scripted answers, a closed terminal); what the steps
+  before it wrote stays.
+- **Writes.** The config only through the writer: `_cfg_set`/`_cfg_unset`
+  (one `_cfg_write` transaction on the local file, its after-write hooks:
+  apply-schedule writes the timer drop-ins of a changed schedule; audit-logged
+  as `config set`) and `pbo config set CACHE_DIR` (`_cfg_set` refuses a
+  CACHE_DIR that changes). confirm-repo is the wizard's own question. The files
+  that are not the config (the DR key, a rest-server password,
+  `RESTIC_ENV_FILE`, known_hosts) go through one writer, `_setup_write_file`: a
+  temp file in the target's directory with the mode set before anything is in
+  it that matters (`mktemp` makes it 0600), an optional check, then a rename; a
+  symlink or anything but a regular file at the path is refused. An existing DR
+  key is never replaced.
+- **Timers.** A timer that is not enabled is offered with yes as the default
+  on a first setup and no on a re-run: Enter never starts a timer (the restore
+  test boots a guest) that an earlier run left off.
+- **Last,** `pbo doctor --fix` (with `--fix-parents` when the cache move the
+  operator ran with it went through, or when the operator agrees to it after a
+  permission warning named it) and its report.
+
+### Portability
 
 **Principle.** Everything that can differ between hosts is a schema key with a
 default, or is derived at run time: paths, names, times, limits, the backend
 and uids. What is genuinely fixed (pmxcfs at `/etc/pve`, `/proc`, the two
 install layouts, the shared system directories pbo refuses to touch) is listed
-with its reason. Part 1 is everything that needs no config writer; the timer
-schedules (systemd drop-ins written by `config set`) and per-node storage ids
-in a cluster came with the writer in part 2 (below).
+with its reason (`tests/hardcode.allow`). The timer schedules (systemd drop-ins
+written by `config set`) and the per-node storage ids in a cluster need the
+writer; they are at the end of this section.
 
 **The lint.** `tests/hardcode.sh` scans what runs on a host (`pbo`, `lib/`
 without the schema, `install.sh`, `systemd/`, `pve-plugin/`) for absolute
@@ -931,7 +1103,7 @@ is not version-shaped is shown as "other". tests/portability.sh plants
 secrets, URLs, users, hosts, a port and paths in the config and checks that
 none appears.
 
-### Portability (MP, part 2): timer schedules, per-node storage ids
+#### Timer schedules and per-node storage ids
 
 **Timer schedules.** The times were fixed in `systemd/*.timer` (and repeated in
 install.sh's messages and doctor's job-window check), so another schedule meant
@@ -1082,168 +1254,128 @@ and converged its path to its own spool, which broke the first node's.
   `_pve_storage_id` (the configured or derived value); the vzdump hook and the
   plugin never named it (they match the type `pbo` and PVE's storeid).
 
-**Tests.** `tests/schedule_config.sh` (the keys against the units, drop-ins
-written and removed, reload, and stop / `clean --what=state` / start in that
-order for a running enabled timer only, refused values with and without
-systemd-analyze, dry run, `timers [apply]`, doctor's warnings and `--fix`, the
-calendar systemd runs against the config through the systemctl mock,
-install.sh over fresh units, the janitor's keys and its root pass through a
-fake runuser, the job window)
-and the cluster part of `tests/integrate.sh` (a mocked member list of one and
-three nodes: the derived id, an entry kept, an explicit id, another node's
-storage refused, enable/status/disable with `pbo-<node>`, ownership, the
-move warning). Both run a copy of pbo that stops (99) when a path it resolved
-(the config files, the directories, the PVE paths, the systemd directory) lies
-outside the suite's run directory, before any command runs and before any
-config or drop-in write (`tests/fixtures/run_dir_guard.sh`), and every suite
-points `PBO_SYSTEMD_DIR` into the checkout, so no test can read or change a
-host's units.
+## Consequences
 
-### Wizard (M8)
+- **The config format is a contract.** A config that 0.5 ran and 0.6 refuses stops
+  every command (78) until it is fixed; `install.sh` refuses the upgrade first, the
+  `.deb` reports it. The migration notes in CHANGELOG 0.6.0 list every refused form
+  and its rewrite, and `pbo config check --compare-bash` names the keys the two
+  versions read differently. Every file pbo writes stays valid bash, so a downgrade
+  to 0.5 still reads it.
+- **One place per fact.** A key is added in the schema once; the example, `config
+  list`, validation, doctor and the writer follow. `tests/hardcode.sh` keeps new
+  paths, names and times out of the code, `tests/docs.sh` keeps the example, `pbo
+  help` and the documented commands in step with the parser.
+- **Retention changes for split guests only.** Their next prune forgets snapshots
+  0.5 kept (the old path's last ones); doctor names them and `pbo --dry-run prune`
+  shows the plan. `RETENTION_GROUP_BY=paths` keeps the 0.5 grouping for 0.6 and is
+  removed in 0.7.
+- **Moving the cache is an operation, not an edit.** It needs a quiet moment (it
+  takes every lock), `--yes`, and on another filesystem the space of the cache twice
+  until the old copy goes. It refuses network filesystems unless `--force`, a pbo
+  storage shared with other nodes, and a janitor cache with data. The journal of the
+  last move stays and carries the earlier ones' old directories.
+- **Clusters.** New integrations in a cluster get a storage per node and need a
+  backup job per node; existing ones keep their id until the operator moves them
+  (doctor names the steps). pbo still never edits jobs.cfg.
+- **Schedules live in drop-ins.** The unit files keep the defaults; a drop-in in
+  `/etc/systemd/system` survives upgrades. An `override.conf` written with `systemctl
+  edit` wins only while its timer's keys are at their defaults (there is no
+  `schedule.conf` to sort after it), and doctor and `pbo timers` name it.
+- **Startup cost.** Every start reads part of the schema and parses the config
+  instead of sourcing it; `_cs_core` and the reader's fast paths keep that at the
+  cost of the 0.5 `source` for a small config, and tests/config.sh keeps a budget
+  for a config with every key set.
+- **Supported restic range.** `RESTIC_MIN` 0.14.0 comes from the features pbo uses;
+  CI runs one pinned release, so the range below it is supported by that analysis,
+  not by a test run (README, "Compatibility").
+- **Left for later:** a `pbo config migrate` that rewrites deprecated keys (until
+  then `config check` and doctor name the replacement), downloading a pinned restic
+  in `install.sh` (it names what to install instead), a generic notification
+  webhook, and PVE versions other than the tested one in CI.
 
-0.5's `pbo setup` was written for one target and one run: it asked for an SFTP
-host every time (a Storage Box host name as the example), wrote
-`sftp:<label>:<path>` with an ssh command whether or not one was needed,
-rewrote the pinned host keys, ran `mkdir -p` on the cache path it was given and
-pinned `RESTIC_CACHE_REPO`, wrote `NTFY_URL=` on a no, and took any number. Run
-again to change one thing, it overwrote the rest.
+## Alternatives considered
 
-**Decision.** The wizard (lib/menu.sh, `run_setup_wizard`) is a front end of
-the writer and the cache move. It holds no config logic of its own.
+- **YAML or TOML.** A new dependency on every host and a migration of every config,
+  for values that are flat `KEY=VALUE` anyway.
+- **Keep `source`, add checks.** A check before sourcing is a second parser that has
+  to agree with bash on everything; a check after it is too late, the code has run.
+  Reading the file with a parser that agrees with bash on the subset it accepts gives
+  the same values without running anything.
+- **A generated bash file with the filled schema arrays.** Bash parses the declare
+  lines at about the cost of splitting the table, so it would add a build step and a
+  second source of truth for nothing.
+- **Retention by `--group-by ''` alone.** One call per guest for every guest, and a
+  change of the restic calls for every repo; restic has no negative tag filter, so
+  the untagged snapshots could not stay in the unfiltered call. The two passes change
+  nothing where no guest is split.
+- **Moving the cache with `mv`.** GNU `mv` silently copies across filesystems and
+  deletes the source unchecked, knows nothing of storage.cfg, the catalogue, running
+  backups or restic processes holding the old path, and cannot be resumed.
 
-- **Defaults are the effective config.** Each question offers the value pbo
-  uses now and Enter keeps it: CACHE_DIR, LOCAL_REPO, the retention keys,
-  BACKUP_MODE, BACKUP_ORDER, the SCHEDULE_* keys, ntfy (a secret is not shown:
-  "Enter keeps the current one"). For an sftp repo the host, port, user, key and
-  known_hosts file come from the repo and `RESTIC_SFTP_COMMAND`
-  (`_setup_sftp_parse`: the command wins, since restic connects with it; ssh
-  options before and after the destination, `-p -i -l -o Port= User=
-  IdentityFile= UserKnownHostsFile=`; a 0.5 repo's host is then a label; an
-  IPv6 host in brackets in the repo, bare or in brackets in the command), and
-  the command the wizard writes parses back to the parts it was built from
-  (tests/menu.sh). The command's other options (`-F`, `-J`, `-o ProxyJump=`,
-  keep-alives, flags) are kept as words and go into the rebuilt command, and
-  into the connection test, as long as the host stays the same: Enter on every
-  part must not drop a jump host. A value that equals the effective one is not written
-  (`_setup_set`, `_setup_change`), so a run that keeps every answer leaves the
-  config byte for byte as it was, and a re-run never pins a default. The
-  values a cache move changed are read back from `pbo --json config list`; a
-  value there that is only the masked form of the one the wizard holds (a
-  login in a repo string) is not taken over.
-- **The offsite repo is kept unless the operator changes it.** A configured repo
-  is shown in one line (its login masked; for a `rest:` repo whether it is
-  append-only, for another backend the names of the variables in
-  `RESTIC_ENV_FILE`) with "keep" as the default; keeping skips every offsite
-  step, the connection test included. Replacing it asks first: pbo moves no
-  snapshot, and a typo would start an empty repo next to the old one.
-- **The type of target.** SFTP, rest-server, a local or mounted directory,
-  another restic backend, or (with a local cache repo) none:
-  - SFTP: any host (a name, IPv4 or IPv6), port, user and key. The repo is
-    `sftp:<user>@<host>:<path>` (`sftp:<user>@[<v6>]:<path>` for IPv6), so it
-    says where it is without a command.
-    `RESTIC_SFTP_COMMAND` is written only when restic's default (`ssh
-    <user>@<host> -s sftp`) is not enough: another port, a key ssh does not try
-    by itself (`~/.ssh/id_{rsa,ecdsa,ecdsa_sk,ed25519,ed25519_sk}`), the
-    pinned host key (`UserKnownHostsFile=` with `StrictHostKeyChecking=yes`;
-    pinning stays the recommended default, so most setups get a command), ssh
-    options of the configured command that are kept, or, with nothing pinned,
-    a host whose key `~/.ssh/known_hosts` does not hold yet: restic's default
-    runs ssh with `StrictHostKeyChecking=ask`, which fails without a terminal
-    (the timers), so trust on first use gets the command with `accept-new`.
-    Otherwise a command left from before is removed. A host key already in
-    `PBO_KNOWN_HOSTS` is not scanned again (`ssh-keygen -F`); a new one is
-    added to the file. A Storage Box is recognised by its domain only, and only
-    then do its defaults (port 23, the account as the user, a relative path),
-    its key installation hints and the question about its snapshots
-    (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`) appear.
-  - rest-server: the URL (a login in it is refused: the user goes into
-    `RESTIC_REST_USERNAME`, the password into a 0600 file next to the DR key by
-    default, so it is in no repo string pbo logs; a configured URL that has
-    one is offered without it, its user as the default user and its password
-    moved to the file on a yes, never shown), an optional pinned
-    certificate, and whether the server is append-only (`OFFSITE_APPEND_ONLY`;
-    the note says the janitor prunes then).
-  - a directory: the path is the repo; a warning when it shares the
-    filesystem of CACHE_DIR (one disk failure takes both copies).
-  - another backend: the repository string as restic takes it (`sftp:`,
-    `rest:` and `local:` are sent to their own types), then the credentials:
-    the variables that backend reads are named with what each one is (s3, b2,
-    azure, gs, swift, rclone; none for one pbo does not know), each value is
-    read without echo, a variable the file has is kept on Enter, more can be
-    added by name (one `RESTIC_ENV_FILE` refuses is refused at once). The file
-    is written whole, its other lines and comments kept, 0600, and only after
-    pbo's own reader of it (`_restic_env_read`) takes the candidate back with
-    every value as given. No value reaches the output or the log.
-  When the type changes, the keys of the old one are removed (an ssh command,
-  or the rest-server login, certificate and append-only flag), so nothing stale
-  stays in the config. The writer removes lines from the local file only: a
-  key the cluster-shared file or the environment sets is written to its
-  default in the local file instead, which wins over both (a shared
-  `OFFSITE_APPEND_ONLY=true` left in effect would stop this host from ever
-  pruning its new repo; a shared ntfy server would keep sending after "turn
-  ntfy off"). A key that still is not at its default afterwards is named.
-- **The cache step.** The local filesystems are listed with type and free
-  space (`findmnt -rn -b -t <types>`, `df -P -T -l -t <type>...` without it;
-  the tool filters by type before it sizes anything, since a statfs of a hard
-  NFS mount whose server is gone never returns): disk filesystems only,
-  read-write, no container volume (`subvol-*-disk-*`, `basevol-*`), one row
-  per filesystem (the datasets of a ZFS pool share its free space; a bind
-  mount is its source again). The one with the most free space is suggested
-  (`<mount>/pbo-cache`; the schema default when it lies on that filesystem; the
-  current directory when it is on that filesystem already). It is the default
-  only on a first setup (no offsite repo, no DR key and no local cache repo
-  yet) when the config names no CACHE_DIR and the current one holds no data;
-  otherwise it is a hint and the effective CACHE_DIR the default (an
-  offsite-only host has an empty cache between backups). A warning when the
-  root filesystem is smaller than 1.5 times the largest dump of the node's
-  guests (every disk of a VM, a container's rootfs and backed-up mount points:
-  PVE's `maxdisk` is only a VM's boot disk). The directory is set
-  with `pbo config set CACHE_DIR <path> --yes`, in a pbo of its own (the move
-  takes its locks and keeps its journal; the wizard's shell then reads the
-  values back with `pbo --json config list`): the same path writes nothing
-  (a re-run never pins the default, nor a CACHE_DIR the cluster-shared file
-  sets); another one first runs the same command with
-  `--dry-run` and shows the plan (the empty-cache creation, or the move's
-  checks and steps), and changes nothing without a yes. When the plan names a
-  directory above the target that an unprivileged CT cannot pass,
-  `--fix-parents` is offered and the dry run shown again with it; a refusal
-  offers another path. `RESTIC_CACHE_REPO` is never written: it follows
-  CACHE_DIR.
-- **Values are checked where they are typed.** Every answer that becomes a key
-  goes through the schema (`_cs_validate`: whole numbers and their bounds,
-  enums, URLs, calendar expressions) and is asked again until it is valid; the
-  other answers (paths, ports, host and user names, repository strings,
-  variable names) have checks of their own. The prompts report the end of the
-  input, so a question that cannot get a valid answer stops the wizard instead
-  of asking for ever (scripted answers, a closed terminal); what the steps
-  before it wrote stays.
-- **Writes.** The config only through the writer: `_cfg_set`/`_cfg_unset`
-  (one `_cfg_write` transaction on the local file, its after-write hooks:
-  apply-schedule writes the timer drop-ins of a changed schedule; audit-logged
-  as `config set`) and `pbo config set CACHE_DIR` (`_cfg_set` refuses a
-  CACHE_DIR that changes). confirm-repo is the wizard's own question. The files
-  that are not the config (the DR key, a rest-server password,
-  `RESTIC_ENV_FILE`, known_hosts) go through one writer, `_setup_write_file`: a
-  temp file in the target's directory with the mode set before anything is in
-  it that matters (`mktemp` makes it 0600), an optional check, then a rename; a
-  symlink or anything but a regular file at the path is refused. An existing DR
-  key is never replaced.
-- **Timers.** A timer that is not enabled is offered with yes as the default
-  on a first setup and no on a re-run: Enter never starts a timer (the restore
-  test boots a guest) that an earlier run left off.
-- **Last,** `pbo doctor --fix` (with `--fix-parents` when the cache move the
-  operator ran with it went through, or when the operator agrees to it after a
-  permission warning named it) and its report.
+## Appendix: implementation notes
 
-**Tests.** `tests/menu.sh`: the parsers and checks as units, the cache step
-against a fake pbo that records its arguments, and `pbo setup` end to end with
-scripted answers through a copy of pbo that sources
-`tests/fixtures/run_dir_guard.sh` with `TEST_GUARD_KEYS=PBO_KNOWN_HOSTS
-RESTIC_REST_PASSWORD_FILE`; the guard also wraps the move-cache hook (the new
-CACHE_DIR) and the wizard's file writer and key generator, so neither a test
-nor the code under it can create anything outside the run directory. Two more
-hooks of the guard: `TEST_GUARD_SHARED` (a file in the run directory read as the
-cluster-shared config) and `TEST_GUARD_CACHE_DEFAULT` (the schema default of
-CACHE_DIR in the run directory, for a config without a CACHE_DIR line). findmnt
-(it refuses a sized listing without `-t`), ssh-keyscan, sftp, curl, systemctl,
-pvesh and qm are mocks, restic a fake, HOME the run directory.
+**Order of the work.** 0.6 was built in milestones, each releasable on its own:
+M1 the schema and the read-only `pbo config` commands, M5 retention per guest (before
+the cache move, which needs it), M2 the reader next to `source` (shadow mode), M3
+the reader instead of `source`, M4 the writer, M6 permissions, M7 the cache move, M8
+the wizard, and the portability work in two parts (without and with the writer).
+Code comments that name a milestone refer to this list.
+
+**Shadow mode (M2, replaced in M3).** While the config was still sourced, doctor
+and `pbo config check` also ran the reader (before sourcing, so references saw the
+environment bash saw) and compared the value of every key it assigned with the
+sourced one, before `set_defaults`; doctor warned about each difference (a secret
+only as `<differs>`) and each line the reader refused. No other command ran the
+reader. install.sh warned with the reader of the version it installs; M3 turned
+that into the refusal. tests/all.sh still runs every suite with a load_config hook
+that logs the reader's verdict on each config file loaded, and checks at the end
+that the reader accepts them all and agrees with bash (the config corpus).
+
+**Tests, per area.**
+
+- Schema and reader: tests/config.sh (the defaults against a frozen copy of the
+  0.5 `set_defaults`, as root and as a plain user; a startup budget) and
+  tests/config_parse.sh (a table of tricky lines against bash, every example line
+  uncommented in turn, the slow and fast paths alike, the corpus).
+- Writer: tests/config_write.sh, through a copy of pbo whose reader and writer are
+  pinned to files in the run directory (tests/fixtures/config_write_hook.sh).
+- Retention: tests/retention.sh (split guests on both tiers, the janitor's bound
+  forget, `list --reasons`, the 0.5 calls where nothing is split).
+- Permissions: tests/perms.sh.
+- Cache move: tests/cachemove.sh, with a failure injected after each step for a
+  rename and a copy, the old tree compared byte for byte (modes, owners, mtimes,
+  ACLs) after each rollback.
+- Wizard: tests/menu.sh: the parsers and checks as units, the cache step against a
+  fake pbo that records its arguments, and `pbo setup` end to end with scripted
+  answers (first setup, re-runs that keep an sftp and an append-only `rest:` repo,
+  each type of target, a cache with data moved on a yes and left on a no). findmnt,
+  ssh-keyscan, sftp, curl, systemctl, pvesh and qm are mocks, restic a fake, HOME
+  the run directory.
+- Portability: tests/portability.sh (RESTIC_ENV_FILE's scope and refusals, `catalog
+  _umount`, every systemd unit in both install layouts with the .deb built for real,
+  RESTIC_MIN in doctor and install.sh, the threshold keys, time zones, custom idmaps,
+  `doctor --report` with secrets, URLs, hosts and paths planted in the config),
+  tests/schedule_config.sh (the keys against the units, drop-ins written and
+  removed, reload and the stop / `clean --what=state` / start order, refused values
+  with and without systemd-analyze, `timers [apply]`, doctor's warnings and `--fix`,
+  install.sh over fresh units, the janitor's root pass, the job window), the
+  cluster part of tests/integrate.sh (a mocked member list of one, two and three
+  nodes), and tests/hardcode.sh.
+- Docs: tests/docs.sh (every schema key in the example, every command and flag of
+  `pbo help`, the README command list and the docs' code blocks through the parser;
+  a 64 catches a misspelt flag only where the parser rejects unknown words, so each
+  help form is also run with a trailing unknown flag, and the commands whose parser
+  ignores one are listed with the flags they take).
+- **No test touches the host.** Every suite points RESTIC_ENV_FILE, NTFY_CREDS_FILE,
+  PBO_SYSTEMD_DIR, pmxcfs and storage.cfg into the checkout (tests/all.sh), and
+  tests/docs.sh, tests/integrate.sh, tests/menu.sh and tests/schedule_config.sh run
+  pbo through a copy that sources tests/fixtures/run_dir_guard.sh (tests/config_write.sh
+  and tests/cachemove.sh use their own hooks; the other suites only point their paths
+  into the checkout through tests/all.sh and their own exports): it stops pbo (99) before any command when a path
+  it resolved (the config files, the directories, the PVE paths, the systemd
+  directory, the keys a suite names in `TEST_GUARD_KEYS`) lies outside the suite's
+  run directory, and before any config, drop-in or wizard write, a new CACHE_DIR or
+  a generated key there. Its hooks `TEST_GUARD_SHARED` (a file in the run directory
+  read as the cluster-shared config) and `TEST_GUARD_CACHE_DEFAULT` (the schema
+  default of CACHE_DIR in the run directory) cover what a config file cannot.

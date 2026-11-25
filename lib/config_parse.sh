@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# lib/config_parse.sh: the strict config reader (ADR 0009, "Config grammar").
+# lib/config_parse.sh: the strict config reader (ADR 0009, "Reader").
 #
 # pbo 0.5 sources /etc/pbo/config as shell code. pbo 0.6 reads it instead: each
 # line is blank, a comment, or KEY=VALUE in a small subset of the bash grammar,

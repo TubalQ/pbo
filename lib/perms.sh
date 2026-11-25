@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # lib/perms.sh: the permission rule table and the engine that checks or applies
-# it (0.6 M6, ADR 0009 "Permissions (M6)"). doctor runs it with --check, `pbo
+# it (0.6 M6, ADR 0009 "Permissions"). doctor runs it with --check, `pbo
 # doctor --fix` with --fix, every backup with --fix --only CACHE_DIR:dir
 # (_cache_dir_protect in lib/common.sh), install.sh through `pbo doctor --fix
 # --perms-only`.
@@ -75,7 +75,7 @@ _perm_rules() {
         "PBO_CATALOG|file|root|-|0644|-|fix|the PVE storage plugin reads the catalogue" \
         "RESTIC_CACHE_DIR|dir|root|-|0700|-|fix|restic's metadata cache (snapshot paths, tags, file names)" \
         "config/..|dir|root|-|0700|-|fix|the config directory also holds the DR key and credentials" \
-        "config|file|root|-|0600|-|fix|root sources the config as code, and it can hold ntfy credentials" \
+        "config|file|root|-|0600|-|fix|its exec keys name programs root runs, and it can hold ntfy credentials" \
         "config-shared|keys|-|-|-|-|check|pmxcfs copies the cluster-shared config to every node" \
         "RESTIC_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the DR key: whoever reads it can decrypt every backup" \
         "RESTIC_REST_PASSWORD_FILE|file|root?|-|0600/0400|-|fix|the rest-server password" \
@@ -287,7 +287,7 @@ _perm_entry() {
             # other software keeps files there, so it is never changed and need
             # not be 0700; only what lets someone replace the config is named
             gr=- ms='<0755' cls=check
-            why="root sources the config in it as code: whoever can write the directory can replace the config"
+            why="the config in it names programs root runs (exec keys): whoever can write the directory can replace the config"
         fi
     fi
     local fix=0 hint; [[ "$_PERM_MODE" == fix && "$cls" == fix ]] && fix=1

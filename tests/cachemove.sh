@@ -454,7 +454,9 @@ rm -rf "$RUN/state/ingest-deferred"
 mkcfg "$A" "PBO_INTEGRATION=both"; storage "$A" ''
 refused 69 'not restricted to this node (nodes: all)' "the pbo storage for every node (storage.cfg is cluster-wide)" -- "$B"
 storage "$A" 'pve1,pve2'
-refused 69 'not restricted to this node' "the pbo storage on two nodes" -- "$B"
+# the hint must not tell a cluster to pin a shared storage to one node: that
+# takes it from every other node (and their jobs and GUI restores)
+refused 69 "not restricted to this node.*only if no other node uses it.*move this node to its own storage first" "the pbo storage on two nodes (the hint points a cluster to its own storage)" -- "$B"
 # every failure at once
 storage "$A" ''; exec 8>>"$RUN/lock/pbo.global"; flock -n 8; : > "$A/spool/dump/vzdump-lxc-8001-2026_01_15-05_00_00.tar"
 snapshot_state

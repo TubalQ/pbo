@@ -1646,7 +1646,7 @@ _config_change_report() {
     return 0
 }
 
-readonly CONFIG_SUBCOMMANDS="show, list [--all], get KEY, set KEY VALUE... [--shared] [--yes] [--force] (CACHE_DIR also [--resume|--abort] [--keep-old] [--fix-parents] [--verify-data]), unset KEY... [--shared], template [--role host|janitor], check [--file F] [--role host|janitor] [--compare-bash]"
+readonly CONFIG_SUBCOMMANDS="show, list [--all], get KEY, set KEY VALUE... [--shared] [--yes] [--force] (CACHE_DIR also [--resume|--abort] [--keep-old] [--fix-parents] [--verify-data]), unset KEY... [--shared] [--yes], template [--role host|janitor], check [--file F [--shared]] [--role host|janitor] [--compare-bash]"
 
 rdo_config() {
     local sub="${1:-show}"; [[ $# -gt 0 ]] && shift
