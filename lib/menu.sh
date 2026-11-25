@@ -47,24 +47,30 @@ _ago() {
 # _hsize <bytes>: human-readable size, falls back to raw bytes without numfmt.
 _hsize() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${1:-0}"; }
 
-# Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
-# Always the local file (PBO_CONFIG_LOCAL, load_config): never the cluster-shared
-# /etc/pve/pbo/config, which PBO_CONFIG_LOADED names when no local file exists
-# yet (pmxcfs would copy the value to every node). 0.6 M4 replaces this writer.
+# _cfg_set KEY VALUE: KEY=VALUE in the config, through the writer of `pbo config
+# set` (_cfg_write, lib/config.sh: atomic, quoted, comments, owner and mode
+# kept, a missing file created as the permission table says), and the effective
+# values that change updated in memory. Always the local file
+# (PBO_CONFIG_LOCAL): never the cluster-shared /etc/pve/pbo/config. The value
+# is checked against the schema first; a key that follows another one
+# (RESTIC_CACHE_REPO under CACHE_DIR) is not pinned at its derived default. No
+# on_change hooks: the wizard does those steps itself. Returns 1 (and says why
+# on stderr) when nothing was written.
 _cfg_set() {
-    local k="$1" v="$2" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
-    # a fresh install (e.g. the .deb) has no config yet: create it, root only
-    if [[ ! -f "$cfg" ]]; then
-        install -d -m 0700 "$(dirname "$cfg")" && ( umask 077; printf '# pbo config, written by pbo setup\nPBO_CONFIG_VERSION=%s\n' "${PBO_CONFIG_SCHEMA:-1}" > "$cfg" ) \
-            || { printf 'cannot create config: %s\n' "$cfg" >&2; return 1; }
+    local k="$1" v="$2" msg rc=0
+    _cfg_write_ensure
+    if ! _cs_has "$k"; then printf 'pbo: %s is not a known config key, not written\n' "$k" >&2; return 1; fi
+    if ! msg="$(_cs_validate "$k" "$v")"; then printf 'pbo: %s, not written\n' "$msg" >&2; return 1; fi
+    local -a op=(set "$k" "$v")
+    if [[ -n "$v" ]] && _cs_flag "$k" follows >/dev/null; then
+        _cs_default_r "$k"
+        # not when the shared file or the environment sets it: removing the
+        # line would hand the key to that value (_cfg_key_elsewhere)
+        [[ "${v%/}" != "${_CS_R%/}" ]] || _cfg_key_elsewhere "$k" "$PBO_CONFIG_LOCAL" || op=(unset "$k")
     fi
-    tmp="$(mktemp)"
-    # sed replacement: escape \ & and the delimiter
-    local ve; ve="$(printf '%s' "$v" | sed -e 's/[\\&|]/\\&/g')"
-    if grep -qE "^${k}=" "$cfg"; then sed "s|^${k}=.*|${k}=${ve}|" "$cfg" > "$tmp"
-    else { cat "$cfg"; printf '%s=%s\n' "$k" "$v"; } > "$tmp"; fi
-    chmod 600 "$tmp"; mv "$tmp" "$cfg"
-    if [[ "$k" == "BACKUP_ORDER" ]]; then BACKUP_ORDER="$v"; fi
+    _cfg_write "${op[@]}" || rc=$?
+    if (( rc )); then printf 'pbo: config: %s\n' "$CFGW_ERR" >&2; return 1; fi
+    for k in "${!CFGW_EA[@]}"; do printf -v "$k" '%s' "${CFGW_EA[$k]}"; done
     return 0
 }
 
@@ -266,7 +272,7 @@ menu_status() {
 
 # Build the ssh command restic uses as its sftp.command. When <khfile> is given
 # the host key is pinned (StrictHostKeyChecking=yes); otherwise it is trust-on-
-# first-use (accept-new). Emitted WITHOUT the outer quotes _cfg_set adds.
+# first-use (accept-new). The bare command line: _cfg_set quotes it.
 _pbo_sftp_command() {   # <user> <host> <port> <key> [khfile]
     local user="$1" host="$2" port="$3" key="$4" kh="${5:-}"
     if [[ -n "$kh" ]]; then
@@ -394,7 +400,7 @@ run_setup_wizard() {
     repo="$(_ask "Repo path (RELATIVE, Storage Box is chrooted)" "$repo_def")"
     _cfg_set OFFSITE_ENABLED true
     _cfg_set RESTIC_OFFSITE_REPO "sftp:${repo_label}:${repo}"
-    _cfg_set RESTIC_SFTP_COMMAND "\"$(_pbo_sftp_command "$user" "$host" "$port" "$key" "$khfile")\""
+    _cfg_set RESTIC_SFTP_COMMAND "$(_pbo_sftp_command "$user" "$host" "$port" "$key" "$khfile")"
 
     # --- 7. restic password (DR key) ---
     printf '\n%s— DR key (repo password) —%s\n' "$C_B" "$C_0"

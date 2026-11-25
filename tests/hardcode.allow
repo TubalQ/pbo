@@ -14,6 +14,7 @@
 ^pve-plugin/PboPlugin.pm:/var/lib/dpkg/status$            dpkg's database: the plugin reads its own package version
 ^systemd/[^:]+:/bin/sh$                                   the POSIX shell
 ^lib/json.sh:/tmp$                                        the POSIX default of TMPDIR (${TMPDIR:-/tmp}, not a config key)
+^lib/config.sh:/tmp$                                      the POSIX default of TMPDIR for a dry run's temp file (${TMPDIR:-/tmp})
 :/etc/systemd/system$                                     systemd's directory for local units (install.sh puts the units there)
 ^install.sh:/etc/logrotate.d/pbo$                         logrotate's drop-in directory
 :/(usr/)?(local/)?s?bin$                                  the standard PATH, for a program started with an empty environment (vzdump's hook, the clean subshell of config check --compare-bash)

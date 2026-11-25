@@ -33,7 +33,7 @@ _close_lock_fds() {
     local v fd
     # PBO_JSON_FD too: a child holding a copy of pbo's stdout keeps a caller's
     # $(...) waiting until the child exits
-    for v in GLOBAL_LOCK_FD VMID_LOCK_FD SCHED_LOCK_FD TR_TARGET_LOCK_FD JOB_ADMIT_FD PBO_JSON_FD; do
+    for v in GLOBAL_LOCK_FD VMID_LOCK_FD SCHED_LOCK_FD TR_TARGET_LOCK_FD JOB_ADMIT_FD CFG_LOCK_FD PBO_JSON_FD; do
         fd="${!v:-}"; [[ "$fd" =~ ^[0-9]+$ ]] && eval "exec $fd>&-"
     done
     return 0

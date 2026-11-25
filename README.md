@@ -552,7 +552,17 @@ the other role's keys. `pbo config get KEY` prints one value. `pbo config check`
 reads the config the way pbo 0.6 will (plain `KEY=VALUE` lines, never run as shell
 code; see [ADR 0009](docs/adr/0009-config-schema-and-cache-move.md), "Config
 grammar"), names each line it would refuse or read differently from bash, and exits
-78 if pbo 0.6 would refuse the file; `pbo doctor` runs the same comparison. The DR key
+78 if pbo 0.6 would refuse the file; `pbo doctor` runs the same comparison.
+
+Change keys with `pbo config set KEY VALUE [KEY VALUE...]` and `pbo config unset
+KEY...` rather than an editor: the value is checked against the schema, quoted, and
+the file is rewritten atomically with its comments, owner and mode kept, and read
+back before it replaces the old one (`--dry-run` shows the diff). `--shared` writes
+the cluster-shared `/etc/pve/pbo/config` instead (no secrets, no per-node keys, no
+`CACHE_DIR`; only while pmxcfs is mounted);
+keys another command manages (`PBO_INTEGRATION`: `pbo integrate`) are refused. A new
+repo URL needs `--yes` (no data is moved); `CACHE_DIR` can be changed this way while
+the cache is still empty. The DR key
 (`RESTIC_PASSWORD_FILE`) is the one secret that must never leave the host
 unencrypted, but the config is not harmless either: it can hold an ntfy token and
 topic (on a public ntfy server the topic is the password) and the SFTP command. Keep

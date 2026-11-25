@@ -41,8 +41,8 @@
 #   managed=<cmd>      changed through `pbo <cmd>`, not by editing the key
 #   follows=<KEY>      lives below <KEY> by default and moves with it
 #   samefs=<KEY>       must be on the same filesystem as <KEY>
-#   on_change=<hook>   what changing it implies (move-cache, integrate-converge,
-#                      restart-mount, confirm-repo)
+#   on_change=<hook>   what changing it implies (move-cache, restart-mount,
+#                      confirm-repo)
 #   deprecated=<KEY>   replaced by <KEY>; still honoured, not in the example
 #   template=<value>   the value the example writes instead of the default (the
 #                      example is installed as the first /etc/pbo/config)
@@ -104,7 +104,7 @@ JOB_RUNNER|enum:auto,systemd,direct|auto|jobs|host|advanced|auto (systemd-run wh
 RESTIC_BIN|command|restic|restic|host,janitor|exec,advanced|the restic binary (tests point it at a scratch binary)
 LOCAL_REPO|bool|true|restic|host,janitor|advanced,template_janitor=false|true = cached (local repo + copy), false = offsite only
 OFFSITE_ENABLED|bool|true|restic|host,janitor|advanced,template_janitor=true|false = local repo only (no offsite copy)
-RESTIC_CACHE_REPO|dir|${CACHE_DIR}/repo|restic|host|advanced,follows=CACHE_DIR|local restic repo (cache tier)
+RESTIC_CACHE_REPO|dir|${CACHE_DIR}/repo|restic|host|advanced,follows=CACHE_DIR,on_change=confirm-repo|local restic repo (cache tier)
 RESTIC_OFFSITE_REPO|string||restic|host,janitor|advanced,on_change=confirm-repo,template_janitor=/srv/restic/<host>/pbo|sftp:<host>:<path> (native sftp), rest:https://..., or a local directory
 RESTIC_SFTP_COMMAND|command||restic|host|secret,exec,local-only,advanced|full ssh command for native sftp (port, key, pinned host key); empty = the restic default
 RESTIC_SFTP_CONNECTIONS|int:1:|8|restic|host|advanced|parallel sftp connections (faster restore; Storage Box ~10 max)
@@ -127,7 +127,7 @@ TR_HISTORY|path|${STATE_DIR}/restore-tests.jsonl|testrestore|host|advanced|evide
 TR_WAIT_TRIES|int:1:|30|testrestore|host|advanced|how often to check that the copy answers
 TR_WAIT_SLEEP|int:0:|2|testrestore|host|advanced|seconds between those checks
 TR_STORAGE|string||testrestore|host|advanced|storage for the throwaway copy; empty = the first one that can hold the guest
-PBO_INTEGRATION|enum:standalone,both,integrated|standalone|integration|host|advanced,managed=integrate,on_change=integrate-converge|standalone | both | integrated
+PBO_INTEGRATION|enum:standalone,both,integrated|standalone|integration|host|advanced,managed=integrate|standalone | both | integrated
 PVE_STORAGE_ID|string|pbo|integration|host|advanced|the pbo storage in PVE
 PVE_SPOOL_DIR|dir|${CACHE_DIR}/spool|integration|host|advanced,follows=CACHE_DIR,samefs=CACHE_DIR|PVE jobs write here (same filesystem as CACHE_DIR)
 PVE_STAGING_DIR|dir|${CACHE_DIR}/staging|integration|host|advanced,follows=CACHE_DIR|archives staged for a restore from the PVE GUI
