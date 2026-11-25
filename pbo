@@ -496,6 +496,31 @@ _pbo_on_exit() {
     audit_command_end "$rc"
 }
 
+# _pbo_stateless <args after the command>: `help` and `config template`, run
+# before load_config (main). No config means no log file, audit file, ntfy
+# topic or Proxmox notification target: a usage error goes to stderr (and the
+# JSON error object) only, never to a log or an alert. The JSON result goes to
+# the stdout pbo started with, as json_open arranges, but without its marker
+# file: these commands print their object outside any subshell. A failure
+# without a message (an errexit) is still named, as _pbo_on_exit does.
+_pbo_stateless() {
+    LOG_FILE='' AUDIT_FILE='' AUDIT_JSON='' PBO_NO_NOTIFY=1
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then exec {PBO_JSON_FD}>&1; fi
+    trap '_pbo_stateless_exit $?' EXIT
+    if [[ "$PBO_COMMAND" == help ]]; then
+        if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$(jq -cn --arg u "$(usage)" '{status:"ok", ok:true, usage:$u}')"; else usage; fi
+        return 0
+    fi
+    shift   # template
+    _config_template_cmd "$@"
+}
+_pbo_stateless_exit() {
+    local rc="$1"
+    (( rc != 0 )) || return 0
+    [[ "${PBO_ERROR_LOGGED:-0}" == 1 || "$rc" == "$EX_USAGE" ]] || log_error "$PBO_COMMAND: stopped unexpectedly (exit $rc)"
+    json_error "$rc" "$PBO_COMMAND failed (exit $rc)"
+}
+
 # ---------------------------------------------------------------------------
 # Main.
 # ---------------------------------------------------------------------------
@@ -508,11 +533,21 @@ main() {
     [[ -n "$PBO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
     shift || true
 
+    # `help` and `config template` print what this source tree holds (the
+    # usage text, the example generated from the schema), so they run before
+    # load_config: no config is needed, read or checked, and nothing is
+    # written (no directory, log line, audit record, lock or JSON marker
+    # file). They work as any user on a machine without /etc/pbo, and CI
+    # generates etc/config.example with the second.
+    if [[ "$PBO_COMMAND" == help || ( "$PBO_COMMAND" == config && "${1:-}" == template ) ]]; then
+        _pbo_stateless "$@"; exit "$EX_OK"
+    fi
+
     # PBO_SUBCOMMAND: `config check|set|unset` stay root on a janitor
     # (_role_check). PBO_CFG_LENIENT: `config check` must report a config pbo
-    # refuses, and `config template` does not depend on it, so neither stops on
-    # a line the reader refuses. Set here only, never from the environment: a
-    # lenient load elsewhere would run a command on what is left of the config.
+    # refuses, so it does not stop on a line the reader refuses. Set here
+    # only, never from the environment: a lenient load elsewhere would run a
+    # command on what is left of the config.
     # `catalog _umount` (pbo-mount.service's ExecStopPost) loads leniently too
     # and runs on a RESTIC_ENV_FILE pbo refuses: it only lazily unmounts a FUSE
     # mount at PVE_CATALOG_MOUNT_DIR and runs no restic, and a dead mount left
@@ -520,7 +555,7 @@ main() {
     PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0
     if [[ "$PBO_COMMAND" == config ]]; then
         PBO_SUBCOMMAND="${1:-show}"
-        case "$PBO_SUBCOMMAND" in check|template) PBO_CFG_LENIENT=1 ;; esac
+        [[ "$PBO_SUBCOMMAND" == check ]] && PBO_CFG_LENIENT=1
     elif [[ "$PBO_COMMAND" == catalog ]]; then
         PBO_SUBCOMMAND="${1:-}"
         [[ "$PBO_SUBCOMMAND" == _umount ]] && PBO_CFG_LENIENT=1
@@ -569,7 +604,7 @@ main() {
         integrate)     rdo_integrate "$@" ;;
         notify-test)   rdo_notify_test ;;
         metrics)       cmd_metrics "$@" ;;
-        help)          if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$(jq -cn --arg u "$(usage)" '{status:"ok", ok:true, usage:$u}')"; else usage; fi ;;
+        # help and config template: _pbo_stateless, before load_config
         *) printf 'unknown command: %s\n' "$PBO_COMMAND" >&2; usage >&2; json_error "$EX_USAGE" "unknown command: $PBO_COMMAND"; exit "$EX_USAGE" ;;
     esac
 }

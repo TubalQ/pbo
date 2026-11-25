@@ -131,7 +131,8 @@ P() { out="$(timeout 60 "$BIN" "$@" </dev/null 2>"$RUN/err")"; rc=$?; }
 
 # --- the harness ---------------------------------------------------------------------------
 cfg --no-sysdir
-out="$(env -u PBO_SYSTEMD_DIR "$BIN" help 2>"$RUN/err")"; rc=$?   # (tests/all.sh points it into the checkout)
+# a command that loads the config (help and config template load none)
+out="$(env -u PBO_SYSTEMD_DIR "$BIN" version 2>"$RUN/err")"; rc=$?   # (tests/all.sh points it into the checkout)
 [[ $rc == 99 ]] && grep -q 'PBO_SYSTEMD_DIR=/etc/systemd/system is outside' "$RUN/err" \
     && ok "harness: a config that leaves PBO_SYSTEMD_DIR at the host's directory stops pbo (99) before it runs" || bad "guard: rc=$rc $(cat "$RUN/err")"
 cfg

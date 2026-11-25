@@ -222,6 +222,179 @@ out="$(P 'MODE=standalone MODE_SOURCE=flag; inst_integration')"; rc=$?
 [[ $rc == 0 && ! -e "$RUN/plugin/Custom/PboPlugin.pm" ]] && grep -q 'reload-or-restart pvedaemon' "$MOCK_LOG" \
     && ok "--integration standalone: plugin removed, daemons reloaded" || bad "remove: rc=$rc $out"
 
+# --- the closing message says what is in place, read only ----------------------------------------------
+# systemctl is the mock (is-enabled: MOCK_SYSTEMCTL_ENABLED), storage.cfg,
+# vzdump.conf, pmxcfs and the config are files under run/. The message must
+# reflect them and change none of them: the mock log may hold is-enabled only.
+fm="$RUN/final"; mkdir -p "$fm/etc" "$fm/lib" "$fm/units" "$fm/sbin" "$fm/pve"
+all_timers="pbo.timer pbo-prune.timer pbo-verify.timer pbo-test-restore.timer"
+# F <mode> <config mode> <snippet>: the closing message (or the snippet) with the run/ paths
+# (FLIB: another LIBDIR below $fm, FSHARED: a cluster-shared config below $fm)
+F() { PBO_INSTALL_CFGDIR="$fm/etc" PBO_INSTALL_STORAGE_CFG="$fm/storage.cfg" PBO_INSTALL_VZDUMP_CONF="$fm/vzdump.conf" \
+      PBO_INSTALL_CFS_DIR="$fm/pve" PBO_INSTALL_LIBDIR="${FLIB:-$fm/lib}" PBO_INSTALL_UNITDIR="$fm/units" PBO_INSTALL_BIN="$fm/sbin/pbo" \
+      PBO_INSTALL_SHARED_CFG="${FSHARED:-}" S "MODE=$1 CFG_MODE='$2'; ${3:-inst_final_message}" 2>&1; }
+fstate() { cat "$fm/storage.cfg" "$fm/vzdump.conf" "$fm/other-vzdump.conf" "$fm/shared.cfg" "$fm/etc/config" 2>/dev/null | md5sum; ls -la "$fm" "$fm/etc" "$fm/units" 2>&1; }
+# every path the closing message reads must be below $fm: a config line that
+# moved one out would have it read the machine's own file
+fpaths() { F both both 'printf "%s\n" "$(inst_vzdump_conf)" "$CFGDIR" "$STORAGE_CFG" "$CFS_DIR" "$LIBDIR" ${SHARED_CFG:+"$SHARED_CFG"}' | grep -v "^$fm/" || true; }
+only_reads() { ! grep -v '^systemctl is-enabled ' "$MOCK_LOG" | grep -q .; }
+
+# a fresh install: no timer enabled, no storage, no hook line, no mode in the config
+rm -f "$fm/storage.cfg" "$fm/vzdump.conf" "$fm/etc/config"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="" F both '')"
+[[ "$out" == *"The wizard offers to enable the schedule at the end. To do it by hand instead:
+  systemctl enable --now pbo.timer         (backups, nightly: SCHEDULE_BACKUP)
+  systemctl enable --now pbo-prune.timer   (prune, weekly: SCHEDULE_PRUNE)
+  systemctl enable --now pbo-verify.timer  (integrity, weekly, 1/12 of the data per run: SCHEDULE_VERIFY)
+  systemctl enable --now pbo-test-restore.timer  (restore test, weekly, one guest per run: SCHEDULE_TEST_RESTORE)
+'$fm/sbin/pbo timers' shows when each runs"* \
+   && "$out" == *"Proxmox integration: both. The storage plugin, the vzdump hook and the units are
+in place; the storage itself is not created yet. Once the repo exists:
+  $fm/sbin/pbo --dry-run integrate enable both"*"$fm/sbin/pbo integrate enable both              (adds the pbo storage, the hook line in
+                                         $fm/vzdump.conf, pbo-catalog.timer)"* \
+   && "$out" != *"in place:"* && "$out" != *MISSING* ]] && only_reads \
+    && ok "closing message, fresh install: the guidance as before (timers to enable, the storage not created yet)" || bad "final fresh: $out"
+out="$(MOCK_SYSTEMCTL_ENABLED="" F standalone '')"
+[[ "$out" == *"The wizard offers to enable the schedule"* && "$out" != *"Proxmox integration: "* ]] \
+    && ok "closing message, standalone: no integration part" || bad "final standalone: $out"
+
+# an upgrade over a working install: every timer enabled, the storage with its
+# spool, our hook line, pbo-catalog.timer, the mode in the config
+printf 'dir: local\n\tpath /var/lib/vz\n\tcontent iso\n\npbo: pbo\n\tcontent backup\n\tnodes pve1\n\tpath /var/cache/pbo/pve-spool\n' > "$fm/storage.cfg"
+printf '# defaults\ntmpdir: /var/tmp\n# pbo: added by '"'"'pbo integrate enable'"'"'\nscript: %s/vzdump-hook\n' "$fm/lib" > "$fm/vzdump.conf"
+printf 'PBO_INTEGRATION=both\n' > "$fm/etc/config"; chmod 600 "$fm/etc/config"
+snap="$(fstate)"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+ok_all=1
+for t in $all_timers; do grep -qE "^  $t +enabled +\(" <<<"$out" || ok_all=0; done
+[[ $ok_all == 1 && "$out" == *"Timers (install.sh never enables or disables one):"* \
+   && "$out" == *"Proxmox integration: both."*"in place: storage pbo present"*"in place: the hook line in $fm/vzdump.conf"*"in place: pbo-catalog.timer enabled"* \
+   && "$out" != *"not created yet"* && "$out" != *"integrate enable"* && "$out" != *"NOT enabled"* && "$out" != *MISSING* \
+   && "$out" != *"The wizard offers"* && "$out" != *"systemctl enable"* ]] && only_reads && [[ "$(fstate)" == "$snap" ]] \
+    && ok "closing message, upgrade with everything in place: each timer enabled, storage pbo present, no next step, nothing changed" || bad "final all: $out $(cat "$MOCK_LOG")"
+# the hook of the .deb layout counts as ours too
+printf 'script: /usr/lib/pbo/vzdump-hook\n' > "$fm/vzdump.conf"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: the hook line"* && "$out" != *MISSING* ]] && ok "closing message: the packaged hook path is pbo's hook too" || bad "final deb hook: $out"
+
+# a partial state: the storage is there, the hook line and pbo-catalog.timer
+# are not, pbo-verify.timer is not enabled
+printf '# defaults\ntmpdir: /var/tmp\n' > "$fm/vzdump.conf"
+snap="$(fstate)"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="pbo.timer pbo-prune.timer pbo-test-restore.timer" F both both)"
+re_on='(^|'$'\n'')  pbo\.timer +enabled +\(' re_off='(^|'$'\n'')  pbo-verify\.timer +NOT enabled  \([^)]*\): systemctl enable --now pbo-verify\.timer'
+[[ "$out" =~ $re_on && "$out" =~ $re_off \
+   && "$out" != *"systemctl enable --now pbo.timer"* && "$out" != *"systemctl enable --now pbo-prune.timer"* \
+   && "$out" == *"in place: storage pbo present"*"MISSING:  the hook line in $fm/vzdump.conf"*"MISSING:  pbo-catalog.timer enabled"*"To complete it"*"$fm/sbin/pbo integrate enable both              (adds only what is missing)"* \
+   && "$out" != *"not created yet"* && "$out" != *"in place: the hook"* ]] && only_reads && [[ "$(fstate)" == "$snap" ]] \
+    && ok "closing message, partial state: each timer's state, what is there, what is missing and the step to complete it, nothing changed" || bad "final partial: $out"
+# the mode is written last by integrate enable: a config without it is not finished
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F integrated both)"
+[[ "$out" == *"MISSING:  PBO_INTEGRATION=integrated in $fm/etc/config (it says both)"*"integrate enable integrated"* ]] \
+    && ok "closing message: a mode the config does not have yet is named as missing" || bad "final mode: $out"
+# a foreign hook is named (integrate enable refuses to replace it)
+printf 'script: /usr/local/bin/other-hook\n' > "$fm/vzdump.conf"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"MISSING:  the hook line"*"runs another hook (script: /usr/local/bin/other-hook)"* ]] \
+    && ok "closing message: a foreign script: line is named as such" || bad "final foreign: $out"
+# a catalogue-only storage (no path) needs no hook line
+printf 'pbo: pbo\n\tcontent backup\n\tnodes pve1\n' > "$fm/storage.cfg"; rm -f "$fm/vzdump.conf"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: storage pbo present (catalogue only: no spool, no hook)"* && "$out" != *MISSING* && "$out" != *"integrate enable"* ]] \
+    && ok "closing message: a catalogue-only storage without a hook line is complete" || bad "final catalog-only: $out"
+# ... and with a foreign hook: --catalog-only is what integrate enable offers
+# then, the foreign hook stays and blocks nothing (no jobs, nothing to ingest)
+printf 'script: /usr/local/bin/other-hook\n' > "$fm/vzdump.conf"
+snap="$(fstate)"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: storage pbo present (catalogue only: no spool, no hook)"* \
+   && "$out" == *"in place: $fm/vzdump.conf runs another hook (script: /usr/local/bin/other-hook), left as is: a catalogue-only storage needs none"* \
+   && "$out" != *MISSING* && "$out" != *"integrate enable"* && "$out" != *"not ingested"* ]] && only_reads && [[ "$(fstate)" == "$snap" ]] \
+    && ok "closing message: a catalogue-only storage with a foreign hook is complete (the hook left as is), nothing changed" || bad "final catalog-only foreign: $out"
+# a partial catalogue-only setup: the next step keeps --catalog-only (a plain
+# enable would add a spool and the hook line, or refuse over a foreign hook)
+for vz in '' 'script: /usr/local/bin/other-hook'; do
+    if [[ -n "$vz" ]]; then printf '%s\n' "$vz" > "$fm/vzdump.conf"; else rm -f "$fm/vzdump.conf"; fi
+    : > "$MOCK_LOG"
+    out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers" F both both)"
+    [[ "$out" == *"MISSING:  pbo-catalog.timer enabled"* && "$out" != *"MISSING:  the hook line"* \
+       && "$out" == *"$fm/sbin/pbo --dry-run integrate enable both --catalog-only    (what it would change)"* \
+       && "$out" == *"$fm/sbin/pbo integrate enable both --catalog-only              (adds only what is missing)"* \
+       && "$out" != *"integrate enable both "[!-]* ]] && only_reads \
+        && ok "closing message: catalogue-only, pbo-catalog.timer not enabled (${vz:-no script: line}) → 'integrate enable both --catalog-only'" || bad "final catalog-only partial ($vz): $out"
+    out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both '')"
+    [[ "$out" == *"MISSING:  PBO_INTEGRATION=both in $fm/etc/config (it says standalone)"* && "$out" == *"integrate enable both --catalog-only "* \
+       && "$out" != *"MISSING:  the hook line"* ]] \
+        && ok "closing message: catalogue-only, the mode not in the config yet (${vz:-no script: line}) → --catalog-only too" || bad "final catalog-only mode ($vz): $out"
+done
+# integrated has no catalogue-only form (enable refuses it): the spool and the
+# hook are what is missing, and the plain enable is the step
+rm -f "$fm/vzdump.conf"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F integrated integrated)"
+[[ "$out" == *"MISSING:  a spool (path) for storage pbo"* && "$out" == *"MISSING:  the hook line in $fm/vzdump.conf"* \
+   && "$out" == *"$fm/sbin/pbo integrate enable integrated              (adds only what is missing)"* && "$out" != *"--catalog-only"* ]] \
+    && ok "closing message: integrated over a catalogue-only storage names the spool and the hook as missing, no --catalog-only" || bad "final catalog-only integrated: $out"
+
+# the hook pbo counts as its own (_integ_is_our_hook): PBO_VZDUMP_HOOK from the
+# local config, the hook next to pbo (also through a symlinked LIBDIR)
+printf 'dir: local\n\tpath /var/lib/vz\n\npbo: pbo\n\tcontent backup\n\tnodes pve1\n\tpath /var/cache/pbo/pve-spool\n' > "$fm/storage.cfg"
+printf 'script: %s/site-hook\n' "$fm" > "$fm/vzdump.conf"
+printf 'PBO_INTEGRATION=both\nPBO_VZDUMP_HOOK=%s/site-hook\n' "$fm" > "$fm/etc/config"; chmod 600 "$fm/etc/config"
+[[ -z "$(fpaths)" ]] && ok "closing message: every path it reads is below the run dir" || bad "final paths outside the run dir: $(fpaths)"
+snap="$(fstate)"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: the hook line in $fm/vzdump.conf"* && "$out" != *MISSING* && "$out" != *"another hook"* && "$out" != *"integrate enable"* ]] \
+   && only_reads && [[ "$(fstate)" == "$snap" ]] \
+    && ok "closing message: the hook PBO_VZDUMP_HOOK names is pbo's hook, nothing changed" || bad "final PBO_VZDUMP_HOOK: $out"
+# PBO_VZDUMP_HOOK is exec: pbo ignores it in the cluster-shared file, so does this
+printf 'PBO_VZDUMP_HOOK=%s/site-hook\n' "$fm" > "$fm/shared.cfg"
+printf 'PBO_INTEGRATION=both\n' > "$fm/etc/config"
+out="$(FSHARED="$fm/shared.cfg" MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"MISSING:  the hook line"*"runs another hook (script: $fm/site-hook)"* ]] \
+    && ok "closing message: PBO_VZDUMP_HOOK in the cluster-shared file does not count (pbo ignores it there)" || bad "final shared hook: $out"
+rm -f "$fm/shared.cfg"
+mkdir -p "$fm/real-lib"; ln -sfn "$fm/real-lib" "$fm/lib-link"
+printf 'script: %s/real-lib/vzdump-hook\n' "$fm" > "$fm/vzdump.conf"
+out="$(FLIB="$fm/lib-link" MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: the hook line"* && "$out" != *MISSING* && "$out" != *"another hook"* ]] \
+    && ok "closing message: a symlinked LIBDIR: the resolved hook path (what pbo writes) is pbo's hook" || bad "final symlinked libdir: $out"
+# VZDUMP_CONF from the config: the file pbo integrate writes the hook line to
+printf '# defaults\ntmpdir: /var/tmp\n' > "$fm/vzdump.conf"
+printf 'script: %s/lib/vzdump-hook\n' "$fm" > "$fm/other-vzdump.conf"
+printf 'PBO_INTEGRATION=both\nVZDUMP_CONF=%s/other-vzdump.conf\n' "$fm" > "$fm/etc/config"
+[[ -z "$(fpaths)" ]] && ok "closing message: ... also with VZDUMP_CONF set in the config" || bad "final paths outside the run dir: $(fpaths)"
+snap="$(fstate)"; : > "$MOCK_LOG"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: the hook line in $fm/other-vzdump.conf"* && "$out" != *MISSING* \
+   && "$out" == *"the hook line from $fm/other-vzdump.conf"* && "$out" != *"$fm/vzdump.conf"* ]] && only_reads && [[ "$(fstate)" == "$snap" ]] \
+    && ok "closing message: VZDUMP_CONF from the config is the file checked and named (the uninstall hint too), nothing changed" || bad "final VZDUMP_CONF: $out"
+# ... from the cluster-shared file (an ordinary key there), the local one winning
+printf 'PBO_INTEGRATION=both\n' > "$fm/etc/config"
+printf 'VZDUMP_CONF=%s/other-vzdump.conf\n' "$fm" > "$fm/shared.cfg"
+out="$(FSHARED="$fm/shared.cfg" MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: the hook line in $fm/other-vzdump.conf"* ]] && ok "closing message: VZDUMP_CONF from the cluster-shared file" || bad "final shared VZDUMP_CONF: $out"
+printf 'PBO_INTEGRATION=both\nVZDUMP_CONF=%s/vzdump.conf\n' "$fm" > "$fm/etc/config"
+out="$(FSHARED="$fm/shared.cfg" MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"MISSING:  the hook line in $fm/vzdump.conf"* ]] && ok "closing message: ... the local VZDUMP_CONF wins over the shared one" || bad "final local VZDUMP_CONF: $out"
+rm -f "$fm/shared.cfg" "$fm/other-vzdump.conf"
+printf 'PBO_INTEGRATION=both\n' > "$fm/etc/config"
+# the storage id: PVE_STORAGE_ID from the config, else derived as pbo derives
+# it (pbo-<node> in a cluster); another node's entry is not this node's
+printf 'pbo: pbo-pve2\n\tcontent backup\n\tnodes pve2\n\tpath /x\n' > "$fm/storage.cfg"
+printf '{"nodename":"pve1","version":3,"cluster":{"name":"lab","version":2,"nodes":2,"quorate":1}}\n' > "$fm/pve/.members"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"MISSING:  storage pbo-pve1"* && "$out" != *"storage pbo-pve2 present"* ]] && ok "closing message: in a cluster this node's storage is pbo-<node>" || bad "final cluster: $out"
+printf 'PBO_INTEGRATION=both\nPVE_STORAGE_ID=pbo-pve2\n' > "$fm/etc/config"
+out="$(MOCK_SYSTEMCTL_ENABLED="$all_timers pbo-catalog.timer" F both both)"
+[[ "$out" == *"in place: storage pbo-pve2 present"* ]] && ok "closing message: PVE_STORAGE_ID from the config names the storage" || bad "final storage id: $out"
+rm -f "$fm/pve/.members"
+# the integration files' line says whether pbo-catalog.timer is enabled
+out="$(MOCK_SYSTEMCTL_ENABLED="pbo-catalog.timer" F both both inst_integration_files)"
+[[ "$out" == *"pbo-catalog.timer (enabled)"* && -x "$fm/lib/vzdump-hook" && -f "$fm/units/pbo-catalog.timer" ]] \
+    && ok "integration files: pbo-catalog.timer shown as enabled when it is" || bad "integration files enabled: $out"
+out="$(MOCK_SYSTEMCTL_ENABLED="" F both both inst_integration_files)"
+[[ "$out" == *"pbo-catalog.timer (not enabled: 'pbo integrate enable' starts it)"* ]] && ok "integration files: ... and as not enabled when it is not" || bad "integration files off: $out"
+
 # --- the hook is not a lib .sh ----------------------------------------------------------------------
 [[ "$(printf '%s\n' lib/*.sh | grep -c vzdump-hook)" == 0 && -x lib/vzdump-hook ]] && ok "lib/*.sh does not match the hook (installed on its own, 0755)" || bad "hook glob"
 

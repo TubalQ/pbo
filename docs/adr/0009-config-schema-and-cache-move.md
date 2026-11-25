@@ -100,7 +100,10 @@ than a heredoc.
   default is written out literally (as in 0.5), never as `${KEY}`: a commented line
   must be a valid config line on its own once uncommented, and the reader refuses a
   reference to a key no earlier line sets. `etc/config.example` is that output;
-  CI fails when it is stale.
+  CI fails when it is stale. It depends on the schema alone, so main() runs it
+  (and `help`) before the config is loaded: no config file is needed, read or
+  checked, and nothing is written (no directory, log, audit record or lock). It
+  works as any user on a machine without `/etc/pbo`.
 - **Versions.** `PBO_CONFIG_VERSION` (schema version 1) is what a file declares;
   a rename bumps it and marks the old key `deprecated=<new>`.
 
@@ -223,10 +226,10 @@ variables; nothing the config says can run, export or overwrite anything else.
   bash but no longer run as code (CHANGELOG 0.6.0 migration notes). pbo does not
   run on the rest of the file: a dropped line would silently fall back to a
   default (another repo, another retention). Lenient mode (`PBO_CFG_LENIENT`,
-  set only by main() for `config check`, `config template` and `catalog
-  _umount`) keeps the accepted lines and goes on, so check can report, template
-  does not depend on the config, and pbo-mount.service's cleanup (a lazy
-  unmount of a FUSE mount, no restic) still runs on a config pbo refuses.
+  set only by main() for `config check` and `catalog _umount`) keeps the
+  accepted lines and goes on, so check can report, and pbo-mount.service's
+  cleanup (a lazy unmount of a FUSE mount, no restic) still runs on a config
+  pbo refuses. `config template` reads no config at all (above).
 - **Variables.** `PBO_CONFIG_LOCAL` is always the local file (`/etc/pbo/config`
   or `PBO_CONFIG`), whether it exists or not: the only file pbo writes. 0.5's
   `_cfg_set` (setup, menu) and `_integ_set_mode` (integrate) wrote to
@@ -392,7 +395,8 @@ secrets as `<set>`/`<unset>`. `audit_log` records the change (`KEY=<secret>`
 for a secret or unknown key) and the command record in audit.jsonl gets the
 arguments with those values masked (`AUDIT_ARGS`). `config` left
 `AUDIT_READONLY`: set and unset are recorded `read_only: false`, show, list,
-get, template and check stay read-only.
+get and check stay read-only; template, which runs without a config, writes no
+record.
 
 **Keys that follow.** A key flagged `follows=<BASE>` is not pinned at the
 value it derives: `config set RESTIC_CACHE_REPO <CACHE_DIR>/repo` (or the

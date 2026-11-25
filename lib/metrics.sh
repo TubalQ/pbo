@@ -132,9 +132,11 @@ _audit_who() { printf '%s' "${PBO_AUDIT_USER:-${SUDO_USER:-$(id -un 2>/dev/null 
 # Read-only commands are logged too (who looked at what is part of an audit),
 # flagged so a reader can filter them. `config` is not in the list: `config
 # set|unset` change the config; its read-only subcommands (show, list, get,
-# template, check) set AUDIT_RO_OVERRIDE (rdo_config, lib/config.sh). `timers apply`
+# check) set AUDIT_RO_OVERRIDE (rdo_config, lib/config.sh). `timers apply`
 # writes drop-ins: AUDIT_RW_OVERRIDE (lib/timers.sh), like `doctor --fix`.
-readonly AUDIT_READONLY="status list usage doctor metrics help preflight restore-report guests timers version"
+# `help` and `config template` write no record at all: they run before the
+# config is loaded, so without a log directory (main(), _pbo_stateless).
+readonly AUDIT_READONLY="status list usage doctor metrics preflight restore-report guests timers version"
 
 audit_command_start() {
     AUDIT_T0="$(date +%s)"
