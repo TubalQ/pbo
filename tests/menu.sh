@@ -64,21 +64,21 @@ eq "_ago: future clamps"  "$(_ago $((now+600))   $now)" "0m ago"
 
 # --- the jq pipelines menu_restore feeds the pickers ---
 LIST='{"archives":[
-  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_15-05_00_00.tar","size_bytes":1200000000,"modtime":"2026-01-15T05:00:00Z","snapshot":"aaaa"},
-  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_13-05_00_00.tar","size_bytes":1100000000,"modtime":"2026-01-13T05:00:00Z","snapshot":"bbbb"},
-  {"vmid":"201","archive":"vzdump-lxc-201-2026_01_15-04_00_00.tar","size_bytes":100000000,"modtime":"2026-01-15T04:00:00Z","snapshot":"cccc"}
+  {"vmid":"8202","archive":"vzdump-lxc-8202-2026_01_15-05_00_00.tar","size_bytes":1200000000,"modtime":"2026-01-15T05:00:00Z","snapshot":"aaaa"},
+  {"vmid":"8202","archive":"vzdump-lxc-8202-2026_01_13-05_00_00.tar","size_bytes":1100000000,"modtime":"2026-01-13T05:00:00Z","snapshot":"bbbb"},
+  {"vmid":"8201","archive":"vzdump-lxc-8201-2026_01_15-04_00_00.tar","size_bytes":100000000,"modtime":"2026-01-15T04:00:00Z","snapshot":"cccc"}
 ]}'
 
 # guest grouping: one row per vmid, sorted, with count + newest modtime
 guests="$(jq -r '.archives | group_by(.vmid)[]
     | [ .[0].vmid, length, ([.[].modtime]|max) ] | @tsv' <<<"$LIST")"
 eq "guest pipeline: rows" "$(wc -l <<<"$guests")" "2"
-eq "guest pipeline: 201 has 1 snapshot" "$(awk -F'\t' '$1=="201"{print $2}' <<<"$guests")" "1"
-eq "guest pipeline: 202 has 2 snapshots" "$(awk -F'\t' '$1=="202"{print $2}' <<<"$guests")" "2"
-eq "guest pipeline: 202 newest modtime" "$(awk -F'\t' '$1=="202"{print $3}' <<<"$guests")" "2026-01-15T05:00:00Z"
+eq "guest pipeline: 8201 has 1 snapshot" "$(awk -F'\t' '$1=="8201"{print $2}' <<<"$guests")" "1"
+eq "guest pipeline: 8202 has 2 snapshots" "$(awk -F'\t' '$1=="8202"{print $2}' <<<"$guests")" "2"
+eq "guest pipeline: 8202 newest modtime" "$(awk -F'\t' '$1=="8202"{print $3}' <<<"$guests")" "2026-01-15T05:00:00Z"
 
-# snapshot list for 202, newest first: first row must be the 01-15 timestamp
-snaps="$(jq -r --arg v 202 '.archives[] | select(.vmid==$v)
+# snapshot list for 8202, newest first: first row must be the 01-15 timestamp
+snaps="$(jq -r --arg v 8202 '.archives[] | select(.vmid==$v)
     | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
         .size_bytes, .modtime, .snapshot ] | @tsv' <<<"$LIST" | sort -rk3)"
 eq "snapshot pipeline: newest-first ts" "$(head -1 <<<"$snaps" | cut -f1)" "2026_01_15-05_00_00"
@@ -99,8 +99,8 @@ eq "status: dedup/compress label math" "$sz" \
 # --- status detailed: per-guest grouping + newest-first snapshot rows ---
 det="$(jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' <<<"$LIST" | sort)"
 eq "detail: guest groups" "$(wc -l <<<"$det")" "2"
-first="$(jq -r --arg v 202 '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' <<<"$LIST" | sort -r | head -1 | cut -f3)"
-eq "detail: 202 newest snapshot id" "$first" "aaaa"
+first="$(jq -r --arg v 8202 '.archives[]|select(.vmid==$v)|[.modtime,.size_bytes,.snapshot]|@tsv' <<<"$LIST" | sort -r | head -1 | cut -f3)"
+eq "detail: 8202 newest snapshot id" "$first" "aaaa"
 
 # --- detailed view: reasons -> policy letter code (d/w/m/y/L) ---
 polcode() {
