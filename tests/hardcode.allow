@@ -18,7 +18,6 @@
 :/etc/systemd/system$                                     systemd's directory for local units (install.sh puts the units there)
 ^install.sh:/etc/logrotate.d/pbo$                         logrotate's drop-in directory
 :/(usr/)?(local/)?s?bin$                                  the standard PATH, for a program started with an empty environment (vzdump's hook, the clean subshell of config check --compare-bash)
-:/etc/rest-server/tls/cert.pem$                           rest-server's own default certificate path, offered by the wizard
 
 # --- the two install layouts (tests/portability.sh runs every unit in both) -----------
 :/usr/local/(lib/pbo|sbin/pbo|share/pbo)(/|$)             install.sh's layout; packaging/build-deb.sh rewrites the units to /usr/lib/pbo and /usr/sbin
