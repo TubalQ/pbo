@@ -381,7 +381,7 @@ cls_json='[
  {"short_id":"4","tags":["vmid=106"],"paths":["/c/106"]}, {"short_id":"5","tags":["vmid=106"],"paths":["/d/106"]},
  {"short_id":"6","tags":["note=x"],"paths":["/d/106"]},
  {"short_id":"7","tags":["vmid=107"],"paths":["/x/107"]}, {"short_id":"8","tags":["vmid=107"],"paths":["/y/107"]},
- {"short_id":"9","tags":["vmid=108"],"paths":["/p","/q"]}, {"short_id":"10","tags":["vmid=108"],"paths":["/q","/p"]},
+ {"short_id":"9","tags":["vmid=104"],"paths":["/p","/q"]}, {"short_id":"10","tags":["vmid=104"],"paths":["/q","/p"]},
  {"short_id":"11","tags":["vmid=1;touch /tmp/x"],"paths":["/h1"]}, {"short_id":"12","tags":["vmid=1;touch /tmp/x"],"paths":["/h2"]},
  {"short_id":"13","tags":["vmid=host-pve1"],"paths":["/etc","/m"]}, {"short_id":"14","tags":["vmid=host-pve1"],"paths":["/etc","/m","/n"]}
 ]'

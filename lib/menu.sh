@@ -1646,7 +1646,7 @@ menu_export() {
     local rest_lines=()
     if [[ -n "${RESTIC_REST_USERNAME:-}" ]]; then
         rest_lines+=("RESTIC_REST_USERNAME=${RESTIC_REST_USERNAME}" "RESTIC_REST_PASSWORD=$(_rest_password)")
-        [[ -n "${RESTIC_CACERT:-}" ]] && rest_lines+=("# RESTIC_CACERT: the server's cert, also on the janitor at /etc/rest-server/tls/cert.pem")
+        [[ -n "${RESTIC_CACERT:-}" ]] && rest_lines+=("# RESTIC_CACERT: the server's TLS certificate (the same file the rest-server uses)")
     fi
     local l; for l in "${rest_lines[@]}"; do echo "  $l"; done
     echo "  ${C_B}RESTIC_PASSWORD=${pw}${C_0}"

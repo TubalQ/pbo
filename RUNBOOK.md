@@ -522,8 +522,8 @@ cache is moved only while it is empty.
   0, and the snapshot is still there. That's what append-only looks like.
 - **Show Configuration or Restore in the Proxmox GUI says "retry in a few
   minutes".** pbo is staging the archive in the background (an offsite-only one is
-  copied out with `restic dump`, a snapshot younger than about a minute is not in
-  the mount yet). Try again; the staging logs are in `/var/lib/pbo/jobs/stage-*`.
+  copied out with `restic dump`, a snapshot that new is not in
+  the mount yet for a while). Try again; the staging logs are in `/var/lib/pbo/jobs/stage-*`.
 - **A Proxmox backup job to `pbo` failed at job-end.** Its archives are in the cache
   repo but not offsite (or still in the spool). `pbo ingest --pending` finishes them;
   `pbo doctor` fails while one waits for longer than `PVE_SPOOL_MAX_AGE`.

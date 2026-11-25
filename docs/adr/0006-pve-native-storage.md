@@ -499,8 +499,7 @@ libpve-storage-perl 9.1.x, libpve-common-perl 9.2.x).
 13. **Spike results (spike A, restic 0.18.0).** What restic's FUSE mount and
     `restic dump` do with a CT archive in a pbo repo. `restic dump --no-lock`
     reads a repo without writing a lock into it, so a scratch repo can be filled
-    from a production cache repo without touching it; read times hold for cold
-    reads (an empty page cache).
+    from a cache repo without touching it.
     - **Layout (answers open question 2):** `restic mount` shows `hosts/`, `ids/`,
       `snapshots/` and `tags/`; an archive is at
       `ids/<8-char short id>/<absolute path in the snapshot>`, which is exactly what
