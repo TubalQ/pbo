@@ -40,6 +40,10 @@ source "${SELF_DIR}/lib/prune.sh"
 source "${SELF_DIR}/lib/testrestore.sh"
 # shellcheck source=lib/views.sh
 source "${SELF_DIR}/lib/views.sh"
+# shellcheck source=lib/config_schema.sh
+source "${SELF_DIR}/lib/config_schema.sh"
+# shellcheck source=lib/config.sh
+source "${SELF_DIR}/lib/config.sh"
 # shellcheck source=lib/jobs.sh
 source "${SELF_DIR}/lib/jobs.sh"
 # shellcheck source=lib/schedule.sh
@@ -64,8 +68,10 @@ source "${SELF_DIR}/lib/appendonly.sh"
 source "${SELF_DIR}/lib/metrics.sh"
 # shellcheck source=lib/menu.sh
 source "${SELF_DIR}/lib/menu.sh"
+# shellcheck source=lib/perms.sh
+source "${SELF_DIR}/lib/perms.sh"
 
-readonly VERSION="0.5.0-rc1"
+readonly VERSION="0.6.0-dev"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
@@ -100,7 +106,12 @@ Commands:
   status                      running jobs, queue length, who holds the global lock
   metrics [--no-write]        Prometheus metrics (also written to METRICS_FILE)
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
-  doctor                      health check (repo, timer, key perms, per-guest age)
+  doctor [--fix [--fix-parents]] [--perms-only]
+                              health check (repo, timer, permissions, per-guest age);
+                              --fix applies the permission table (modes, owners, the CACHE_DIR
+                              ACL; audited, with --dry-run listed only), --fix-parents also lets
+                              unprivileged CTs pass the directories above CACHE_DIR (u:<uid>:--x),
+                              --perms-only checks (or fixes) permissions alone
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   job start <command> [args]  run an action in the background (backup, restore, verify, prune,
                               test-restore, ...); prints the job id at once
@@ -110,6 +121,17 @@ Commands:
                               change it (writes the guest's pbo-* Proxmox tags, others untouched)
   timers                      the pbo timers: enabled, next and last run, last result
   config [show]               the effective configuration (secrets never shown)
+  config list [--all]         the keys for this role: value, source, type (--all: test hooks and
+                              the other role's keys too)
+  config get <KEY>            one key's effective value (a secret: <set> or <unset>)
+  config template [--role host|janitor]
+                              the example config generated from the schema (etc/config.example)
+  config check [--file F] [--role host|janitor] [--compare-bash]
+                              read the config the way pbo reads it (no shell code: KEY=VALUE,
+                              quotes, ${KEY} references) and list errors and warnings by line;
+                              --file checks F alone. --compare-bash also sources it as pbo 0.5
+                              did (a clean subshell; it RUNS the file) and names every key bash
+                              reads differently. Exit 78 when pbo refuses or ignores a line
   version                     pbo, restic and contract versions
   list [--reasons] [vmid]     list offsite archives (size, date; --reasons adds retention bucket)
   usage                       repo size, dedup ratio, snapshot count
@@ -276,7 +298,17 @@ cmd_restore() {
 cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; }
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
-cmd_doctor()       { rdo_doctor; }
+cmd_doctor() {
+    _doctor_args "$@" || die "$EX_USAGE" "unknown doctor flag: $DOCTOR_BAD_ARG (use --fix, --fix-parents, --perms-only, --dry-run)"
+    # --fix changes modes, owners and ACLs: the command record in audit.jsonl
+    # must not claim read_only (a dry run still is)
+    (( DOCTOR_FIX )) && AUDIT_RW_OVERRIDE=1
+    if (( DOCTOR_PERMS_ONLY )); then
+        command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for doctor"
+        _doctor_perms_only; return
+    fi
+    rdo_doctor
+}
 cmd_list() {
     local reasons=0 vmid=""
     while [[ $# -gt 0 ]]; do
@@ -410,6 +442,16 @@ main() {
     [[ -n "$PBO_COMMAND" ]] || { usage >&2; exit "$EX_USAGE"; }
     shift || true
 
+    # PBO_SUBCOMMAND: `config check|set|unset` stay root on a janitor
+    # (_role_check). PBO_CFG_LENIENT: `config check` must report a config pbo
+    # refuses, and `config template` does not depend on it, so neither stops on
+    # a line the reader refuses. Set here only, never from the environment: a
+    # lenient load elsewhere would run a command on what is left of the config.
+    PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0
+    if [[ "$PBO_COMMAND" == config ]]; then
+        PBO_SUBCOMMAND="${1:-show}"
+        case "$PBO_SUBCOMMAND" in check|template) PBO_CFG_LENIENT=1 ;; esac
+    fi
     load_config
     json_open
     audit_command_start

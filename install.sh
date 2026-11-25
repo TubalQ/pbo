@@ -2,8 +2,8 @@
 # install.sh: installs pbo on a Proxmox host. Idempotent.
 # NEVER enables the timer automatically (it prints how to do that yourself).
 #
-# Run as root on the host:  ./install.sh [--integration standalone|both|integrated]
-#                           ./install.sh --janitor [--user <name>]
+# Run as root on the host:  ./install.sh [--integration standalone|both|integrated] [--force]
+#                           ./install.sh --janitor [--user <name>] [--force]
 #
 # --integration (ADR 0007): how pbo works with Proxmox VE.
 #   standalone  pbo.timer backs up every guest (the default, as before 0.5)
@@ -23,7 +23,15 @@
 # tests/install.sh can source it. PBO_INSTALL_TEST=1 (tests only) lets these be
 # overridden: PBO_INSTALL_CFGDIR, PBO_INSTALL_PLUGIN_DIR, PBO_INSTALL_STORAGE_CFG, PBO_INSTALL_SYSTEMCTL,
 # PBO_INSTALL_DPKG_QUERY, PBO_INSTALL_PLUGIN_CHECK, PBO_INSTALL_TTY (0|1),
-# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR.
+# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_SHARED_CFG (the
+# cluster-shared config; none in test mode unless set), PBO_INSTALL_PBO (the pbo
+# inst_perms runs).
+#
+# Upgrade guard (0.6, ADR 0009): before any file is replaced, the existing
+# config is read with the strict reader of this source tree, the way pbo 0.6
+# reads it instead of sourcing it (inst_config_guard). A line it refuses stops
+# the install with "nothing was changed": the pbo it would install stops on
+# that config (every command and timer exits 78). --force installs anyway.
 #
 # pbo-web (the web UI of 0.4) is gone since 0.5.0: the Proxmox GUI (with the
 # integration) and the CLI cover it. An install over 0.4 removes a pbo-web that
@@ -38,8 +46,10 @@ PLUGIN_DIR=/usr/share/perl5/PVE/Storage/Custom
 SYSTEMCTL=systemctl
 DPKG_QUERY=dpkg-query
 STORAGE_CFG=/etc/pve/storage.cfg
+SHARED_CFG=/etc/pve/pbo/config
 if [[ "${PBO_INSTALL_TEST:-0}" == 1 ]]; then
     CFGDIR="${PBO_INSTALL_CFGDIR:-$CFGDIR}"
+    SHARED_CFG="${PBO_INSTALL_SHARED_CFG:-}"
     STORAGE_CFG="${PBO_INSTALL_STORAGE_CFG:-$STORAGE_CFG}"
     PLUGIN_DIR="${PBO_INSTALL_PLUGIN_DIR:-$PLUGIN_DIR}"
     SYSTEMCTL="${PBO_INSTALL_SYSTEMCTL:-$SYSTEMCTL}"
@@ -54,11 +64,12 @@ MIN_LIBPVE_STORAGE=9.1.18
 # PVE daemons that load storage plugins (pve-manager's trigger on /usr/share/perl5/PVE)
 PVE_DAEMONS=(pvedaemon pveproxy pvestatd pvescheduler)
 
-ROLE=host; JUSER=restic; INTEGRATION=""; MODE=""; MODE_SOURCE=""; MODE_NOTE=""; CFG_MODE=""
+ROLE=host; JUSER=restic; INTEGRATION=""; MODE=""; MODE_SOURCE=""; MODE_NOTE=""; CFG_MODE=""; FORCE=0
 
 die(){ printf 'install: %s\n' "$*" >&2; exit 1; }
 
-# inst_parse_args "$@": ROLE, JUSER, INTEGRATION (the flag, empty when not given).
+# inst_parse_args "$@": ROLE, JUSER, INTEGRATION (the flag, empty when not given),
+# FORCE (--force: install over a config the strict reader refuses).
 inst_parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -68,7 +79,8 @@ inst_parse_args() {
                 [[ $# -ge 2 ]] || die "$1 needs standalone|both|integrated"
                 INTEGRATION="$2"; shift 2 ;;
             --integration=*|--mode=*) INTEGRATION="${1#*=}"; shift ;;
-            *) die "unknown flag: $1 (use [--integration standalone|both|integrated] or --janitor [--user <name>])" ;;
+            --force) FORCE=1; shift ;;
+            *) die "unknown flag: $1 (use [--integration standalone|both|integrated] or --janitor [--user <name>], and --force)" ;;
         esac
     done
     if [[ -n "$INTEGRATION" ]]; then
@@ -104,13 +116,68 @@ inst_version_refusal() {
         "$MIN_PVE_MANAGER" "$MIN_LIBPVE_STORAGE" "${pm:-not installed}" "${ls:-not installed}"
 }
 
+# inst_cfg_reader: the strict config reader of this source tree
+# (lib/config_parse.sh, with the schema it checks keys against). install.sh
+# reads the existing config with it and never sources it.
+inst_cfg_reader() {
+    declare -F _cfg_parse_file >/dev/null && return 0
+    # shellcheck source=lib/config_schema.sh
+    source "$SRC/lib/config_schema.sh"
+    # shellcheck source=lib/config_parse.sh
+    source "$SRC/lib/config_parse.sh"
+}
+
 # inst_config_mode [<config>] → PBO_INTEGRATION from the existing config (read,
 # never sourced), empty when the file or the key is missing or the value invalid.
+# The last assignment the reader accepts counts, as when pbo loads the file.
 inst_config_mode() {
     local f="${1:-$CFGDIR/config}" v
     [[ -r "$f" ]] || return 0
-    v="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?PBO_INTEGRATION=["'"'"']?([A-Za-z]*)["'"'"']?[[:space:]]*(#.*)?$/\2/p' "$f" | tail -1)"
+    inst_cfg_reader
+    _cfg_reset; declare -gA CFG_ENV=()
+    _cfg_parse_file "$f" local || true
+    v="${CFG_VAL[PBO_INTEGRATION]:-}"
     case "$v" in standalone|both|integrated) printf '%s' "$v" ;; esac
+}
+
+# inst_config_guard: before any file is replaced, read the existing config
+# (the cluster-shared file, then the local one, as pbo merges them) with the
+# strict reader of the version being installed. A line it refuses stops the
+# install before anything is changed: the installed pbo would stop on it (exit
+# 78 for every command, timer and vzdump hook). The errors are listed, with
+# the migration hint for a file bash accepts. --force (FORCE=1) installs anyway,
+# with a warning. A line the reader accepts but pbo ignores (an exec or
+# local-only key in the shared file) does not stop pbo: named, not refused.
+inst_config_guard() {
+    local e f bashok=()
+    inst_cfg_reader
+    _cfg_reset
+    declare -gA CFG_ENV=()   # the units start pbo with a clean environment
+    if [[ -n "$SHARED_CFG" && -f "$SHARED_CFG" ]]; then
+        PBO_CONFIG_FILES+=("$SHARED_CFG"); _cfg_parse_file "$SHARED_CFG" shared || true
+    fi
+    if [[ -f "$CFGDIR/config" ]]; then
+        PBO_CONFIG_FILES+=("$CFGDIR/config"); _cfg_parse_file "$CFGDIR/config" local || true
+    fi
+    if (( ${#CFG_IGNORED[@]} )); then
+        echo "==> Config: lines pbo ignores (doctor reports them as FAIL)"
+        for e in "${CFG_IGNORED[@]}"; do echo "    $e"; done
+    fi
+    (( ${#CFG_ERRORS[@]} )) || return 0
+    echo "==> Config: read the way pbo 0.6 reads it (KEY=VALUE, not run as shell code)"
+    for e in "${CFG_ERRORS[@]}"; do echo "    $e"; done
+    for f in "${PBO_CONFIG_FILES[@]}"; do
+        [[ " ${CFG_ERRORS[*]}" == *" $f:"* ]] || continue
+        bash -n -- "$f" 2>/dev/null && bashok+=("$f")
+    done
+    for f in "${bashok[@]+"${bashok[@]}"}"; do
+        echo "    $f is valid bash, but pbo 0.6 no longer runs the config as code; see the 0.6.0 migration notes in CHANGELOG.md"
+    done
+    if [[ "$FORCE" == 1 ]]; then
+        echo "    WARNING: --force: installing anyway. Every pbo command stops on this config (exit 78) until the lines above are fixed ('$BIN config check' names each one)."
+        return 0
+    fi
+    die "the installed pbo would refuse this config (above). Nothing was changed. Fix the lines (each KEY=VALUE, see CHANGELOG.md), check with '$SRC/pbo config check --file <file>', then run install.sh again (or with --force to install anyway)."
 }
 
 # inst_is_tty: a person at a terminal (PBO_INSTALL_TTY in test mode).
@@ -280,6 +347,23 @@ inst_program() {
     fi
 }
 
+# inst_perms: the permission table (lib/perms.sh) applied once the files are in
+# place, through the pbo just installed (`doctor --fix --perms-only`): the
+# directories made above and whatever an older version left too open. On a
+# janitor that pbo fixes as root and reports as the janitor user. Its findings
+# are shown; it never fails the install (doctor can run again any time).
+inst_perms() {
+    echo "==> Permissions ($BIN doctor --fix --perms-only)"
+    local pbo="$BIN" out rc=0
+    [[ "${PBO_INSTALL_TEST:-0}" == 1 && -n "${PBO_INSTALL_PBO:-}" ]] && pbo="$PBO_INSTALL_PBO"
+    out="$("$pbo" doctor --fix --perms-only 2>&1)" || rc=$?
+    [[ -z "$out" ]] || printf '%s\n' "$out" | sed 's/^/    /'
+    if (( rc != 0 )); then
+        echo "    WARNING: the permission check reported problems or failed (exit $rc); fix them, then run '$BIN doctor --fix'."
+    fi
+    return 0
+}
+
 inst_janitor_units() {
     echo "==> systemd units (installed, NOT enabled)"
     sed "s/^User=.*/User=$JUSER/; s/^Group=.*/Group=$JUSER/" "$SRC/systemd/pbo-janitor.service" > "$UNITDIR/pbo-janitor.service"
@@ -411,6 +495,8 @@ main() {
     set -Eeuo pipefail
     [[ "$(id -u)" == 0 ]] || die "must be run as root."
     inst_parse_args "$@"
+    # before anything is changed: the config as the new version reads it
+    inst_config_guard
     if [[ "$ROLE" == janitor ]]; then
         id "$JUSER" >/dev/null 2>&1 || die "janitor user '$JUSER' does not exist (it should be the user rest-server runs as)"
         MODE=standalone
@@ -432,11 +518,12 @@ main() {
 
     inst_deps
     inst_program
-    if [[ "$ROLE" == janitor ]]; then inst_janitor_units; exit 0; fi
+    if [[ "$ROLE" == janitor ]]; then inst_perms; inst_janitor_units; exit 0; fi
     inst_web_remove
     inst_host_units
     inst_integration
     "$SYSTEMCTL" daemon-reload
+    inst_perms
     inst_final_message
 
     # --- interactive first-run setup (only on a real terminal) ---

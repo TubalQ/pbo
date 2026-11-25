@@ -27,10 +27,15 @@ the offsite copy the thing that has to survive when the host doesn't.
 | ntfy token | `NTFY_TOKEN` in the config, or `NTFY_CREDS_FILE` | keep 0600 root (not checked) | Sending notifications. Passed to curl on stdin, never on its command line. |
 | Janitor copy of the repo password | janitor `/etc/pbo/restic-pass` | 0400 server user | Same as the DR key, plus delete rights on the repo files. |
 
-`/etc/pbo/config` is sourced by root, so pbo refuses it if it is group- or
-world-writable or owned by anyone but root (or the janitor user on a janitor). It
-can hold an ntfy token/topic and the SFTP command: keep it 0600. In a cluster, keep
-secrets out of `/etc/pve`: pmxcfs replicates it to every node in cleartext.
+Since 0.6 `/etc/pbo/config` is read, not run: a strict KEY=VALUE reader assigns
+only the keys of the config schema and refuses shell code (ADR 0009). Some keys
+still name programs root runs (`exec` in the schema: `RESTIC_BIN`,
+`RESTIC_SFTP_COMMAND`, `PBO_VZDUMP_HOOK`), so pbo refuses the file if it is group-
+or world-writable or owned by anyone but root (or the janitor user on a janitor).
+It can hold an ntfy token/topic and the SFTP command: keep it 0600. In a cluster,
+keep secrets out of `/etc/pve`: pmxcfs replicates it to every node in cleartext;
+an `exec` or `local-only` key in the shared `/etc/pve/pbo/config` is ignored
+(doctor FAIL), so one node's admin cannot make every node run a program.
 
 `pbo backup-host` leaves out private key material: the DR key, the rest-server
 password, an old pbo-web key (0.4), `/etc/pve/priv` (the cluster CA key, authkey, tokens), the
@@ -91,7 +96,8 @@ are masked in log lines, job logs, alerts and JSON.
 - **The janitor never runs as root.** Started as root, pbo re-execs as
   `JANITOR_USER`. Its state and log directories belong to that user, and root writing
   there could be redirected through a symlink; a root prune also leaves repo files the
-  server can't read.
+  server can't read. Only `pbo config check` stays root (it is about the root-owned
+  config itself), and it writes nothing into those directories.
 - **Restore always goes to a new vmid** and never overwrites a running guest. Every
   restore and test-restore lands in the audit log: `LOG_DIR/audit.log` (text, rotated
   weekly, 12 kept) and `LOG_DIR/audit.jsonl` (one JSON object per command with user,

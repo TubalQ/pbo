@@ -1,111 +1,126 @@
 # /etc/pbo/config, KEY=VALUE. chmod 600, root:root.
 # This is the example/template, copied by install.sh. It contains no secrets
 # (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
+# Generated from lib/config_schema.sh by `pbo config template`; `pbo config list`
+# shows the effective values. A line starting with # shows the default (or an
+# example): remove the # to set it.
 #
 # The easiest way to fill this in is the interactive wizard, which does the whole
 # job in one pass (SSH key, host-key pinning, connection test, repo, DR key,
 # retention, guest set, and enabling the timers):
 #   pbo setup
 
-# Config schema this file is written for (pbo warns if it is newer than it knows).
-PBO_CONFIG_VERSION=1
+PBO_CONFIG_VERSION=1                         # config schema this file is written for (pbo warns if it is newer than it knows)
 
 # --- paths ---
-CACHE_DIR=/var/cache/pbo
-LOG_DIR=/var/log/pbo
-STATE_DIR=/var/lib/pbo
-#LOCK_DIR=/run/pbo          # default /run/pbo as root (STATE_DIR/lock otherwise); never a world-writable dir
+CACHE_DIR=/var/cache/pbo                     # vzdump dumps, the local restic repo, the PVE spool and staging
+LOG_DIR=/var/log/pbo                         # pbo.log, audit.log and audit.jsonl
+STATE_DIR=/var/lib/pbo                       # jobs, lock holders, restore-test evidence, metrics
+#LOCK_DIR=/run/pbo                           # default /run/pbo as root (STATE_DIR/lock otherwise); never a world-writable dir
 
 # --- vzdump ---
 # Fuse containers (features fuse=1) are forced to --mode stop automatically.
 # Add extra vmids here to force stop mode for them too (comma-separated).
-VZDUMP_MODE=snapshot
-VZDUMP_STOP_VMIDS=
+VZDUMP_MODE=snapshot                         # vzdump --mode for every guest not forced to stop
+VZDUMP_STOP_VMIDS=                           # these vmids are also backed up with --mode stop (comma-separated)
 
 # --- schedule ---
 # auto  = back up every guest ON THIS NODE (LXC + VM), auto-discovering new ones.
 # or a comma-separated vmid list for explicit order/exclusions (critical first).
 # In a cluster: put the SAME config on every node, each node backs up only its
 # own guests into the shared repo (an explicit list is filtered to local guests).
-BACKUP_ORDER=auto
-BACKUP_MODE=stream        # stream (one-by-one, low disk) | batch (dump all→upload)
-GLOBAL_LOCK_TIMEOUT=7200  # seconds a scheduled run waits in the queue
-#SCHEDULE_LOCK_TIMEOUT=7200  # seconds the prune timer waits for a running run-schedule (and vice versa)
-# Cluster only: restrict `prune` to one node (prune needs an exclusive repo lock).
-# Empty = any node may prune (restic's lock keeps concurrent attempts safe).
-PRUNE_OWNER=
+# PRUNE_OWNER, cluster only: restrict `prune` to one node (prune needs an exclusive
+# repo lock). Empty = any node may prune (restic's lock keeps concurrent attempts safe).
+BACKUP_ORDER=auto                            # auto | a comma-separated vmid list (critical first)
+BACKUP_MODE=stream                           # stream (one-by-one, low disk) | batch (dump all→upload)
+GLOBAL_LOCK_TIMEOUT=7200                     # seconds a scheduled run waits in the queue
+#SCHEDULE_LOCK_TIMEOUT=7200                  # seconds the prune timer waits for a running run-schedule (and vice versa); the default follows GLOBAL_LOCK_TIMEOUT
+PRUNE_OWNER=                                 # cluster: the node that prunes; empty = any node
 
 # --- retention (applied by the pbo-prune.timer, or `pbo prune`) ---
-KEEP_LOCAL=2
-KEEP_OFFSITE_DAILY=7
-KEEP_OFFSITE_WEEKLY=4
-KEEP_OFFSITE_MONTHLY=6
-KEEP_OFFSITE_YEARLY=0       # 0 = no yearly bucket
-#KEEP_OVERRIDE_MIN_LAST=3   # a per-guest keep tag never keeps fewer than this many snapshots
-#FUTURE_SKEW=3600           # janitor: snapshots dated further ahead than this block prune
 # Per guest, set Proxmox tags instead: pbo-keep-daily-N / -weekly-N / -monthly-N / -yearly-N,
 # pbo-skip (not scheduled), pbo-stop (vzdump --mode stop). See README "Per-guest policy".
+KEEP_LOCAL=2                                 # local cache repo: snapshots kept per guest
+#RESTIC_KEEP_LAST=2                          # local cache repo: keep-last per guest (follows KEEP_LOCAL)
+KEEP_OFFSITE_DAILY=7                         # offsite: daily snapshots kept per guest
+KEEP_OFFSITE_WEEKLY=4                        # offsite: weekly snapshots kept per guest
+KEEP_OFFSITE_MONTHLY=6                       # offsite: monthly snapshots kept per guest
+KEEP_OFFSITE_YEARLY=0                        # 0 = no yearly bucket
+#KEEP_OVERRIDE_MIN_LAST=3                    # a per-guest keep tag never keeps fewer than this many snapshots
+#FUTURE_SKEW=3600                            # janitor: snapshots dated further ahead than this (s) block prune
+#RETENTION_GROUP_BY=guest                    # guest | paths (paths = 0.5 behaviour, kept for one release, removed in 0.7)
 
 # --- notifications ---
-NTFY_URL=
-NTFY_TOPIC=                # on a public ntfy server the topic is the password: keep this file 0600
-#NTFY_TOKEN=               # access token (sent to curl on stdin, never on its command line)
-#NTFY_CREDS_FILE=/etc/ntfy.creds  # alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC_WARN in that file
-NOTIFY_LEVEL=fail          # fail: failures only | warn: + warnings | all: + every successful run
-# Proxmox's own notification system (Datacenter → Notifications): auto = use it when
-# no ntfy is configured, true = in addition to ntfy, false = never. Events carry the
-# fields type=pbo and hostname=<node> for matchers. `pbo notify-test` sends a test.
-NOTIFY_PVE=auto
+# NOTIFY_PVE is Proxmox's own notification system (Datacenter → Notifications): auto =
+# use it when no ntfy is configured, true = in addition to ntfy, false = never. Events
+# carry the fields type=pbo and hostname=<node> for matchers. `pbo notify-test` sends a test.
+NTFY_URL=                                    # ntfy server (base URL); empty = no ntfy
+NTFY_TOPIC=                                  # on a public ntfy server the topic is the password: keep this file 0600
+#NTFY_TOKEN=                                 # access token (sent to curl on stdin, never on its command line)
+#NTFY_CREDS_FILE=/etc/ntfy.creds             # alternative: NTFY_URL / NTFY_TOKEN / NTFY_TOPIC_WARN in that file
+NOTIFY_LEVEL=fail                            # fail: failures only | warn: + warnings | all: + every successful run
+NOTIFY_PVE=auto                              # Proxmox notifications: auto | true | false
 
+# --- metrics and audit ---
 # Prometheus textfile, rewritten after run-schedule, verify, prune, test-restore and a
-# manual backup. Its directory must be owned by root. Put it in
-# node_exporter's --collector.textfile.directory to have it scraped.
-#METRICS_FILE=/var/lib/prometheus/node-exporter/pbo.prom
-#METRICS_ENABLED=true
-# One JSON line per command (who/what/exit) plus restore events.
-#AUDIT_JSON=/var/log/pbo/audit.jsonl
+# manual backup. Its directory must be owned by root. Put it in node_exporter's
+# --collector.textfile.directory to have it scraped, e.g.
+#   METRICS_FILE=/var/lib/prometheus/node-exporter/pbo.prom
+#METRICS_ENABLED=true                        # write the Prometheus textfile
+#METRICS_FILE=/var/lib/pbo/pbo.prom          # node_exporter textfile; its directory must be owned by root; the default follows STATE_DIR
+#AUDIT_JSON=/var/log/pbo/audit.jsonl         # one JSON line per command (who/what/exit) plus restore events; the default follows LOG_DIR
 
 # --- health check ---
-DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapshot is older (a problem on a janitor)
-#STORAGE_BOX_SNAPSHOTS_CONFIRMED=false  # true once the provider keeps snapshots of the box (ransomware backstop)
+DOCTOR_MAX_AGE=172800                        # 48h, `pbo doctor` flags a guest whose newest snapshot is older (a problem on a janitor)
+#STORAGE_BOX_SNAPSHOTS_CONFIRMED=false       # true once the provider keeps snapshots of the box (ransomware backstop)
 
 # --- integrity (pbo-verify.timer) ---
-#VERIFY_ROTATE=12          # verify --scheduled reads 1/N of the data per run (0 = structure only)
-#VERIFY_MAX_AGE=3456000    # doctor warns when the last verify is older (40 days)
+#VERIFY_ROTATE=12                            # verify --scheduled reads 1/N of the data per run (0 = structure only)
+#VERIFY_MAX_AGE=3456000                      # doctor warns when the last verify is older (40 days)
+#VERIFY_READ_DATA=0                          # 1 = every verify reads all data (restic check --read-data, expensive over SFTP)
+#VERIFY_SUBSET=                              # a manual verify reads this sample (restic --read-data-subset, e.g. 5%)
 
 # --- jobs (pbo job start) ---
-#JOB_KEEP=200              # finished jobs kept in STATE_DIR/runs
-#JOB_MAX_ACTIVE=20         # active jobs in all
-#JOB_MAX_PER_USER=5        # active jobs per user
-#JOB_RUNNER=auto           # auto (systemd-run when available) | systemd | direct
+#JOB_KEEP=200                                # finished jobs kept in STATE_DIR/jobs
+#JOB_MAX_ACTIVE=20                           # active jobs in all
+#JOB_MAX_PER_USER=5                          # active jobs per user
+#JOB_RUNNER=auto                             # auto (systemd-run when available) | systemd | direct
 
 # --- restic repo ---
 # Onboarding: run `pbo setup` (or set the keys below by hand + create the
 # password file 0600 + run `pbo init` once before the first backup).
-#RESTIC_BIN=restic                             # override in tests (scratch binary)
-#LOCAL_REPO=true                               # true=cached (local repo+copy), false=offsite-only
-#OFFSITE_ENABLED=true                          # false=local repo only (no offsite copy)
-#RESTIC_CACHE_REPO=/var/cache/pbo/repo         # local restic repo (cache tier)
-#RESTIC_OFFSITE_REPO=sftp:storagebox:pbo      # native sftp, RELATIVE path (Storage Box is chrooted!)
-# The Storage Box needs port/key in the ssh command (the repo URL's host label is just a name).
-# `pbo setup` pins the host key into /etc/pbo/known_hosts and uses StrictHostKeyChecking=yes;
-# the accept-new form below is the trust-on-first-use fallback.
-#RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
-#RESTIC_SFTP_CONNECTIONS=8                     # parallel sftp connections (faster restore; Storage Box ~10 max)
+# Native sftp uses a RELATIVE path on a Storage Box (it is chrooted), e.g.
+#   RESTIC_OFFSITE_REPO=sftp:storagebox:pbo
+# The Storage Box needs port/key in the ssh command (the repo URL's host label is
+# just a name). `pbo setup` pins the host key into /etc/pbo/known_hosts and uses
+# StrictHostKeyChecking=yes; accept-new is the trust-on-first-use fallback:
+#   RESTIC_SFTP_COMMAND="ssh uXXXXX-subN@uXXXXX-subN.your-storagebox.de -p 23 -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/pbo/known_hosts -o StrictHostKeyChecking=yes -s sftp"
+#RESTIC_BIN=restic                           # the restic binary (tests point it at a scratch binary)
+#LOCAL_REPO=true                             # true = cached (local repo + copy), false = offsite only
+#OFFSITE_ENABLED=true                        # false = local repo only (no offsite copy)
+#RESTIC_CACHE_REPO=/var/cache/pbo/repo       # local restic repo (cache tier); the default follows CACHE_DIR
+#RESTIC_OFFSITE_REPO=                        # sftp:<host>:<path> (native sftp), rest:https://..., or a local directory
+#RESTIC_SFTP_COMMAND=                        # full ssh command for native sftp (port, key, pinned host key); empty = the restic default
+#RESTIC_SFTP_CONNECTIONS=8                   # parallel sftp connections (faster restore; Storage Box ~10 max)
+#RESTIC_RETRY_LOCK=10m                       # backup/copy/prune wait this long on a locked repo (restic >= 0.16)
+#RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass   # repo password (DR key), 0600
+#RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache  # the restic metadata cache; the default follows STATE_DIR
+#PBO_KNOWN_HOSTS=/etc/pbo/known_hosts        # where `pbo setup` pins the host key of the SFTP server
 
 # --- append-only offsite (restic rest-server --append-only), see ADR 0004 ---
 # The host can add snapshots but never delete them; retention runs on a separate
 # janitor (install.sh --janitor). `pbo doctor` proves the server refuses deletes.
-#RESTIC_OFFSITE_REPO=rest:https://janitor.example:8000/pve1/pbo   # with --private-repos: /<user>/<repo>
-#RESTIC_REST_USERNAME=pve1                     # basic auth user (= first path segment with --private-repos)
-#RESTIC_REST_PASSWORD_FILE=/etc/pbo/rest-pass  # that user's HTTP password, 0600
-#RESTIC_CACERT=/etc/pbo/janitor-ca.pem         # the server's self-signed cert, pinned
-#OFFSITE_APPEND_ONLY=true                      # host never forgets/prunes/removes keys offsite
-#PBO_ROLE=host                                 # host | janitor (janitor: see etc/config.janitor.example)
-#RESTIC_RETRY_LOCK=10m                         # backup/copy/prune wait this long on a locked repo (restic >= 0.16); empty = fail at once
-#RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass     # repo password (DR key), 0600
-#RESTIC_CACHE_DIR=/var/lib/pbo/restic-cache    # restic's own metadata cache
-#TR_STORAGE=local-zfs                          # throwaway storage for test-restore (empty: the first one that can hold the guest)
+# With --private-repos the repo path is /<user>/<repo>, e.g.
+#   RESTIC_OFFSITE_REPO=rest:https://janitor.example:8000/pve1/pbo
+#   RESTIC_REST_USERNAME=pve1
+#   RESTIC_REST_PASSWORD_FILE=/etc/pbo/rest-pass
+#   RESTIC_CACERT=/etc/pbo/janitor-ca.pem
+#   OFFSITE_APPEND_ONLY=true
+#OFFSITE_APPEND_ONLY=false                   # host never forgets/prunes/removes keys offsite (the janitor does)
+#RESTIC_REST_USERNAME=                       # basic auth user (= first path segment with --private-repos)
+#RESTIC_REST_PASSWORD_FILE=                  # the HTTP password of that user, 0600
+#RESTIC_CACERT=                              # the self-signed cert of the server, pinned (restic --cacert)
+#PBO_ROLE=host                               # host | janitor (install.sh --janitor; see etc/config.janitor.example)
 
 # --- scheduled restore tests (pbo-test-restore.timer, `pbo restore-report`) ---
 # Each run restores the next guest (latest test failed first, then never tested, then
@@ -113,12 +128,13 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 # answer, destroys it, and records the result in STATE_DIR/restore-tests.jsonl +
 # restore-report.{json,txt}. Restores and tests read the offsite repo when it is
 # enabled; PBO_REPO=cache (environment) reads the local one instead.
-#TR_PER_RUN=1                                  # guests per scheduled run
-#TR_MAX_AGE=1814400                            # doctor warns when the last test is older (21 days)
-#TR_REPORT_DAYS=90                             # report / coverage window in days
-#TR_HISTORY=/var/lib/pbo/restore-tests.jsonl   # evidence history (not rotated)
-#TR_WAIT_TRIES=30                              # how often to check that the copy answers
-#TR_WAIT_SLEEP=2                               # seconds between those checks
+#TR_PER_RUN=1                                # guests per scheduled run
+#TR_MAX_AGE=1814400                          # doctor warns when the last test is older (21 days)
+#TR_REPORT_DAYS=90                           # report / coverage window in days
+#TR_HISTORY=/var/lib/pbo/restore-tests.jsonl  # evidence history (not rotated); the default follows STATE_DIR
+#TR_WAIT_TRIES=30                            # how often to check that the copy answers
+#TR_WAIT_SLEEP=2                             # seconds between those checks
+#TR_STORAGE=                                 # storage for the throwaway copy; empty = the first one that can hold the guest
 
 # --- Proxmox integration ---
 # ADR 0006/0007. standalone (the default) is pbo as before: pbo.timer backs up every
@@ -127,28 +143,28 @@ DOCTOR_MAX_AGE=172800      # 48h, `pbo doctor` flags a guest whose newest snapsh
 # integrated: PVE jobs back up every guest; a guest no job selects is a doctor FAIL.
 # When the jobs cannot be read, pbo.timer backs up every guest (fail open).
 # Switch with `pbo integrate`, not by hand. A janitor is always standalone.
-#PBO_INTEGRATION=standalone                    # standalone | both | integrated
-#PVE_STORAGE_ID=pbo                            # the pbo storage in PVE
-#PVE_SPOOL_DIR=/var/cache/pbo/spool            # PVE jobs write here (same filesystem as CACHE_DIR)
-#PVE_STAGING_DIR=/var/cache/pbo/staging        # archives staged for a restore from the PVE GUI
-#PVE_STAGING_TTL=21600                         # seconds a staged archive is kept (6 h)
-#PVE_STAGING_LINK_TTL=900                      # seconds a staged symlink into the mount is kept while nothing reads through it (15 min)
-#PVE_CATALOG_MOUNT=true                        # true: stage cache archives through pbo-mount.service (restic mount, Show Configuration at once), false: restic dump
-#CATALOG_MOUNT_BG_WAIT=10                      # seconds a GUI request waits for an archive to show in the mount before staging it in the background
-#PVE_CATALOG_MOUNT_DIR=/run/pbo/mnt            # the mount point pbo-mount.service uses; a plain path below a root-only directory (allow_other)
-#CATALOG_MOUNT_WAIT=30                         # seconds a task/CLI restore waits for an archive to show in the mount before restic dump
-#CATALOG_LOCK_TIMEOUT=600                      # seconds a catalogue refresh waits for another one
-#CATALOG_MOUNT_BUSY_WAIT=900                   # prune/verify wait this long (s) while a restore reads through the mount, then exit 75
-#CATALOG_MAX_AGE=7200                          # doctor warns when the catalogue is older (2 h)
-#VZDUMP_CONF=/etc/vzdump.conf                  # its storage: line is the default for jobs without one
-#PVE_STORAGE_CFG=/etc/pve/storage.cfg          # read when `pvesh get /storage` fails
-#VZDUMP_LOCK=/var/run/vzdump.lock              # vzdump's node lock: `ingest --pending` waits for no running vzdump
-#PBO_PVE_PLUGIN_PATH=/usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm   # where `pbo integrate` and doctor look for the plugin
-#PBO_VZDUMP_HOOK=                              # the `script:` pbo puts in vzdump.conf; empty: the vzdump-hook next to pbo
+#PBO_INTEGRATION=standalone                  # standalone | both | integrated
+#PVE_STORAGE_ID=pbo                          # the pbo storage in PVE
+#PVE_SPOOL_DIR=/var/cache/pbo/spool          # PVE jobs write here (same filesystem as CACHE_DIR); the default follows CACHE_DIR
+#PVE_STAGING_DIR=/var/cache/pbo/staging      # archives staged for a restore from the PVE GUI; the default follows CACHE_DIR
+#PVE_STAGING_TTL=21600                       # seconds a staged archive is kept (6 h)
+#PVE_STAGING_LINK_TTL=900                    # seconds a staged symlink into the mount is kept while nothing reads through it (15 min)
+#PVE_CATALOG_MOUNT=true                      # true: stage cache archives through pbo-mount.service (restic mount), false: restic dump
+#CATALOG_MOUNT_BG_WAIT=10                    # seconds a GUI request waits for an archive to show in the mount before staging it in the background
+#PVE_CATALOG_MOUNT_DIR=/run/pbo/mnt          # the mount point pbo-mount.service uses; a plain path below a root-only directory (allow_other)
+#CATALOG_MOUNT_WAIT=30                       # seconds a task/CLI restore waits for an archive to show in the mount before restic dump
+#CATALOG_LOCK_TIMEOUT=600                    # seconds a catalogue refresh waits for another one
+#CATALOG_MOUNT_BUSY_WAIT=900                 # prune/verify wait this long (s) while a restore reads through the mount, then exit 75
+#CATALOG_MAX_AGE=7200                        # doctor warns when the catalogue is older (2 h)
+#VZDUMP_CONF=/etc/vzdump.conf                # its storage: line is the default for jobs without one
+#PVE_STORAGE_CFG=/etc/pve/storage.cfg        # read when `pvesh get /storage` fails
+#VZDUMP_LOCK=/var/run/vzdump.lock            # the vzdump node lock: `ingest --pending` waits for no running vzdump
+#PBO_PVE_PLUGIN_PATH=/usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm  # where `pbo integrate` and doctor look for the plugin
+#PBO_VZDUMP_HOOK=                            # the `script:` pbo puts in vzdump.conf; empty: the vzdump-hook next to pbo
 
 # --- host backup (`pbo backup-host`, manual only, tagged type=host) ---
 # Space-separated. Missing paths are skipped silently (not an error).
-#HOST_BACKUP_PATHS=/etc/pve /etc/network/interfaces /etc/network/interfaces.d /etc/hosts /etc/hostname /etc/resolv.conf /etc/fstab /etc/vzdump.conf /etc/pbo /etc/systemd/system /etc/cron.d /etc/apt/sources.list /etc/apt/sources.list.d
 # SSH keys and the DR key are excluded by default: secrets never go in the repo
 # they protect, and the host must keep its own offline copy of its keys.
-#HOST_BACKUP_EXCLUDES=/etc/pbo/restic-pass /root/.ssh **/.ssh **/id_rsa **/id_ed25519 **/id_ecdsa
+#HOST_BACKUP_PATHS="/etc/pve /etc/network/interfaces /etc/network/interfaces.d /etc/hosts /etc/hostname /etc/resolv.conf /etc/fstab /etc/vzdump.conf /etc/pbo /etc/systemd/system /etc/cron.d /etc/apt/sources.list /etc/apt/sources.list.d"  # what `pbo backup-host` saves
+#HOST_BACKUP_EXCLUDES="/etc/pbo/restic-pass /etc/pbo/rest-pass /etc/pbo/rest-pass /etc/pbo/web-tls /etc/pbo/*.old-* /etc/pve/priv /etc/pve/nodes/*/*.key /etc/pve/local/*.key /etc/pve/*.key /root/.ssh **/.ssh **/id_rsa **/id_ed25519 **/id_ecdsa **/*.key"  # never backed up: the DR key, the rest password, private keys (RESTIC_PASSWORD_FILE and RESTIC_REST_PASSWORD_FILE are excluded in any case)

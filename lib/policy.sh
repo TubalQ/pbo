@@ -133,10 +133,92 @@ _policy_groups() {
           end' 2>/dev/null
 }
 
-# _forget_policy_runs <repo> <cb> : call <cb> <repo> <forget-args...> once per
-# policy group, with --tag vmid=... filters when the repo has overrides.
+# _split_guests <snapshots-json> → one line per guest whose snapshots lie under
+# more than one path set:  <vmid>\t<number of path sets>\t<split|shared>
+# A guest's snapshots normally share one path ($CACHE_DIR/<vmid>, or the host
+# backup's path list), so `--group-by paths` is a group per guest. A CACHE_DIR
+# move, or host paths that come and go, give one guest several path sets, and
+# each would be kept as a guest of its own (an old one is never pruned).
+#   split   every one of its path sets is used by this vmid alone: retained as
+#           one guest (_forget_policy_runs)
+#   shared  a path set is also used by another vmid or by a snapshot without a
+#           valid vmid tag. pbo never writes that, so it stays retained per
+#           path as in 0.5 (taking the guest out of a mixed path group would
+#           change what the other snapshots in it keep); doctor names it.
+# The host is not part of the key: cluster nodes share a repo, and a guest that
+# migrated keeps one history. Only vmids that pass the check below leave jq.
+_split_guests() {
+    printf '%s' "$1" | jq -r '
+        [ .[]
+          | { vmid: ((.tags // []) | map(select(startswith("vmid="))) | .[0] // "" | sub("vmid=";"")),
+              p: ((.paths // []) | sort | tojson) }
+          | .vmid |= (if test("^([0-9]{1,9}|host-[A-Za-z0-9.-]{1,63})$") then . else "" end) ]
+        | (group_by(.p) | map({key: .[0].p, value: (map(.vmid) | unique)}) | from_entries) as $users
+        | [ .[] | select(.vmid != "") ] | group_by(.vmid)[]
+        | .[0].vmid as $v | (map(.p) | unique) as $ps
+        | select(($ps | length) > 1)
+        | "\($v)\t\($ps | length)\t\(if all($ps[]; $users[.] == [$v]) then "split" else "shared" end)"' 2>/dev/null
+}
+
+# _forget_policy_runs <repo> <cb> [<keep-last N>] : the one retention runner,
+# used by prune (both tiers), the janitor's bound forget and list --reasons, so
+# the plan shown is the plan pruned. Calls <cb> <repo> <forget-args...> once per
+# forget run; the args start with the --group-by. _RET_PASS tells the callback
+# which pass the run belongs to:
+#   paths  exactly the 0.5 runs: --group-by paths, one call, or one per keep
+#          policy with --tag vmid=... filters when the repo has overrides
+#   guest  one run per split guest (_split_guests): --group-by '' --tag vmid=X
+#          with the policy that guest gets in the paths pass
+# While _FORGET_RAW_FILE is set, the callback writes the run's raw forget JSON
+# there (the cache tier finds its split guests in it, see below).
+# Without <keep-last N> the policy is the offsite GFS (KEEP_OFFSITE_* and the
+# per-guest keep= tags, with the janitor's checks); with it every guest keeps
+# its newest N (the cache tier).
+# Why the paths pass may stay exactly as in 0.5 when a guest is split: its path
+# groups each hold only its own snapshots, and restic's policy keeps at least as
+# much of a subset as of the whole (ADR 0009, Retention per guest). So the paths
+# pass only forgets what the guest pass forgets anyway, the guest pass then
+# keeps exactly the per-guest set, and with no split guest the restic calls are
+# the 0.5 ones. Only RETENTION_GROUP_BY=guest (the default) runs the guest pass:
+# paths is 0.5 (removed in 0.7), and so is any other value. The key exists to
+# opt out of the deletions the guest pass makes, so a typo must not opt in.
+_RET_PASS=""
+_FORGET_RAW_FILE=""
 _forget_policy_runs() {
-    local repo="$1" cb="$2" snaps line keep ids id
+    local repo="$1" cb="$2" last="${3-}" snaps line keep ids id n kind
+    local by="${RETENTION_GROUP_BY:-guest}" rc=0 guest_pass=0
+    case "$by" in
+        guest) guest_pass=1 ;;
+        paths) ;;
+        *) log_warn "retention: RETENTION_GROUP_BY='$by' is not guest|paths, retaining per path as in 0.5" ;;
+    esac
+    if (( $# >= 3 )); then
+        # Cache tier: no per-guest policy, no janitor checks (as in 0.5). The
+        # paths pass is the 0.5 call and runs first, with no listing before it
+        # (a listing would be a call 0.5 never made, and a lock on the repo).
+        # It has no tag filter, so its groups' keep and remove lists hold every
+        # snapshot the repo had: the set a listing would have given, which is
+        # where the split guests are found. When the forget gave no usable JSON
+        # (it failed) no guest pass runs: the paths pass never forgets more
+        # than the guest pass would, the split guests just keep more this time.
+        local raw=""
+        (( guest_pass )) && raw="$(mktemp)"
+        _FORGET_RAW_FILE="$raw"; _RET_PASS=paths; "$cb" "$repo" --group-by paths --keep-last "$last" || rc=1
+        _FORGET_RAW_FILE=""
+        if [[ -n "$raw" ]]; then
+            snaps="$(jq -c 'if type == "array" then [.[] | ((.keep // []) + (.remove // []))[]] else empty end' "$raw" 2>/dev/null)" || snaps=""
+            rm -f "$raw"
+            if [[ -n "$snaps" ]]; then
+                while IFS=$'\t' read -r id n kind; do
+                    [[ "$kind" == split ]] || continue
+                    log_info "retention: guest $id has snapshots under $n paths, retained as one guest" >&2
+                    _RET_PASS=guest; "$cb" "$repo" --group-by '' --keep-last "$last" --tag "vmid=$id" || rc=1
+                done < <(_split_guests "$snaps")
+            fi
+        fi
+        _RET_PASS=""
+        return "$rc"
+    fi
     # Fail closed: without a readable snapshot list we don't know the policies,
     # and a default-policy forget over everything would be the wrong guess.
     if ! snaps="$(_restic "$repo" snapshots --json 2>/dev/null)" || ! jq -e 'type=="array"' >/dev/null 2>&1 <<<"$snaps"; then
@@ -166,13 +248,23 @@ _forget_policy_runs() {
         jq -r '.[].id' <<<"$snaps" > "$_CHECKED_IDS_FILE"
     fi
     local checked_at; checked_at="$(date +%s)"
-    local rc=0
+    # the keep policy each vmid gets in the paths pass, for its guest pass
+    local -A gkeep=()
     while IFS= read -r line; do
         keep="${line%%$'\t'*}"; ids="${line#*$'\t'}"
         local args=(); mapfile -t args < <(_keep_args "$keep")
-        if [[ -n "$ids" ]]; then for id in $ids; do args+=(--tag "vmid=$id"); done; fi
-        "$cb" "$repo" "${args[@]}" || rc=1
+        if [[ -n "$ids" ]]; then for id in $ids; do args+=(--tag "vmid=$id"); gkeep[$id]="$keep"; done; fi
+        _RET_PASS=paths; "$cb" "$repo" --group-by paths "${args[@]}" || rc=1
     done < <(_policy_groups "$snaps")
+    if (( guest_pass )); then
+        while IFS=$'\t' read -r id n kind; do
+            [[ "$kind" == split ]] || continue
+            log_info "retention: guest $id has snapshots under $n paths, retained as one guest" >&2
+            local args=(); mapfile -t args < <(_keep_args "${gkeep[$id]:-}")
+            _RET_PASS=guest; "$cb" "$repo" --group-by '' "${args[@]}" --tag "vmid=$id" || rc=1
+        done < <(_split_guests "$snaps")
+    fi
+    _RET_PASS=""
     if _is_janitor; then
         # Baseline only after every forget succeeded, stamped with the time of
         # the CHECK, so a snapshot that arrived mid-run is judged next time.
@@ -183,16 +275,17 @@ _forget_policy_runs() {
     return "$rc"
 }
 
-# _janitor_bound_forget <repo> <policy args...> → removed short_ids (JSON array).
+# _janitor_bound_forget <repo> <forget args...> → removed short_ids (JSON array).
 # restic's forget lists the repo again by itself, so a snapshot that lands
 # between our checks and that listing would be judged unchecked. On a janitor,
 # ask for the plan first (--dry-run), insist every snapshot in it was in the
-# checked set, then forget exactly the planned ids and nothing else.
+# checked set, then forget exactly the planned ids and nothing else. The args
+# carry the --group-by (paths, or '' for a split guest), so both passes are bound.
 _CHECKED_IDS_FILE=""
 _janitor_bound_forget() {
     local repo="$1"; shift
     local plan
-    plan="$(_restic "$repo" forget --group-by paths "$@" --dry-run --json 2>/dev/null)" || { log_warn "retention: forget plan failed for $repo"; return 1; }
+    plan="$(_restic "$repo" forget "$@" --dry-run --json 2>/dev/null)" || { log_warn "retention: forget plan failed for $repo"; return 1; }
     jq -e 'type=="array"' >/dev/null 2>&1 <<<"$plan" || { log_warn "retention: forget plan for $repo is not JSON"; return 1; }
     local extra
     extra="$(jq -r '[.[] | ((.keep // []) + (.remove // []))[] | .id] | .[]' <<<"$plan" | grep -vxF -f "$_CHECKED_IDS_FILE" | head -5 | tr '\n' ' ')"
@@ -255,7 +348,7 @@ _janitor_seen_update() {           # <snapshots-json> <repo> [checked-at epoch]
     rm -f "$f.tmp"; log_error "retention: could not write the janitor baseline $f"; return 1
 }
 
-# --- policy get/set -----------------------------------------------------------
+# --- policy get/set ------------------------------------------------------
 # The policy lives in the guest's Proxmox tags. These two commands are the only
 # code pbo uses to write them (scripts too). Tags can also be edited in the Proxmox
 # GUI by hand. Tags that are not pbo-* are left exactly as they were.

@@ -10,8 +10,9 @@
 #
 # Grouping trick: we back up the DIRECTORY $CACHE_DIR/<vmid> (stable path per
 # guest) → the snapshot's .paths stays stable → `forget --group-by paths` gives
-# keep-per-guest. ts is added as a TAG (ts=YYYY_MM_DD-HH_MM_SS) for selection, vmid as
-# a tag for migration safety. The sidecar (.conf) is included in the snapshot.
+# keep-per-guest. A guest whose path changed (CACHE_DIR moved) is retained as one
+# guest by an extra pass (lib/policy.sh _forget_policy_runs). ts is added as a TAG
+# (ts=YYYY_MM_DD-HH_MM_SS) for selection, vmid as a tag for migration safety. The sidecar (.conf) is included in the snapshot.
 
 # --- restic wrapper: repo + password + own metadata cache + optional native-sftp command ---
 # Used by ALL restic calls (also via run_stream) so sftp.command is set in ONE
@@ -327,22 +328,35 @@ rdo_list() {
     # dry-run forget with THIS repo's policy (cache=keep-last, offsite=GFS) and
     # merges the reasons in by short_id. Off by default (extra round-trip).
     if [[ "${LIST_WITH_REASONS:-0}" == 1 ]]; then
-        local fj
+        # The same runner prune uses (lib/policy.sh _forget_policy_runs), so the
+        # plan shown is the plan pruned. Each group is marked with its pass.
+        local fj fjf; fjf="$(mktemp)"
+        _list_reasons_cb() {
+            local out; out="$(_restic "$1" forget "${@:2}" --dry-run --json 2>/dev/null)"
+            # the runner asked for the raw JSON (the cache tier's split-guest detection)
+            if [[ -n "${_FORGET_RAW_FILE:-}" ]]; then printf '%s' "$out" > "$_FORGET_RAW_FILE"; fi
+            printf '%s' "$out" \
+                | jq -c --arg p "$_RET_PASS" 'if type == "array" then map(. + {pbo_pass: $p}) else . end' >> "$fjf" 2>/dev/null
+            printf '\n' >> "$fjf"
+        }
         if [[ "$repo" == "$RESTIC_CACHE_REPO" ]]; then
-            fj="$(_restic "$repo" forget --group-by paths --keep-last "${RESTIC_KEEP_LAST:-2}" --dry-run --json 2>/dev/null || echo '[]')"
+            _forget_policy_runs "$repo" _list_reasons_cb "${RESTIC_KEEP_LAST:-2}" || true
         else
-            # same per-guest policy groups prune uses, concatenated
-            local fjf; fjf="$(mktemp)"
-            _list_reasons_cb() { _restic "$1" forget --group-by paths "${@:2}" --dry-run --json 2>/dev/null >> "$fjf"; printf '\n' >> "$fjf"; }
             _FORGET_READONLY=1 _forget_policy_runs "$repo" _list_reasons_cb || true
-            fj="$(jq -cs 'map(select(type=="array")) | add // []' "$fjf" 2>/dev/null || echo '[]')"; rm -f "$fjf"
         fi
+        fj="$(jq -cs 'map(select(type=="array")) | add // []' "$fjf" 2>/dev/null || echo '[]')"; rm -f "$fjf"
         [[ -n "$fj" ]] || fj='[]'
         # Merge via --slurpfile over a process substitution: the forget JSON can be
         # hundreds of KB (every snapshot), which overflows argv with --argjson.
+        # A split guest's snapshots are in its paths groups too: its reasons come
+        # from its guest pass alone (a paths group may keep what the guest pass
+        # drops), and keep=false for whatever any pass removes (what prune does).
         archives="$(printf '%s' "$archives" | jq -c --slurpfile fj <(printf '%s' "$fj") '
             ($fj[0] // []) as $g
-            | ( [ $g[]? | (.reasons // [])[] | {key:(.snapshot.short_id), value:(.matches // [])} ] | from_entries ) as $why
+            | ( [ $g[]? | select(.pbo_pass == "guest") | ((.keep // []) + (.remove // []))[]? | {key:.short_id, value:true} ] | from_entries ) as $gs
+            | ( [ $g[]? | (.pbo_pass == "guest") as $gp | (.reasons // [])[]
+                  | select($gp or (($gs[.snapshot.short_id] // false) | not))
+                  | {key:(.snapshot.short_id), value:(.matches // [])} ] | from_entries ) as $why
             | ( [ $g[]? | (.remove // [])[]? | .short_id ] ) as $rem
             | map( .snapshot as $sid | . + { reasons:($why[$sid] // []), keep:(($rem | index($sid)) == null) } )
         ' 2>/dev/null || printf '%s' "$archives")"
@@ -669,16 +683,16 @@ rdo_test_restore() {
 
 # ---------------------------------------------------------------------------
 # prune, restic forget/prune. Envelope {cache_deleted,offsite_deleted} like the UI.
-# offsite_deleted = removed snapshot ids (offsite/read repo). --group-by paths
-# gives keep-per-guest (stable dumpdir path).
+# offsite_deleted = removed snapshot ids (offsite/read repo). The grouping (per
+# path, plus one pass per split guest) comes from lib/policy.sh _forget_policy_runs.
 # ---------------------------------------------------------------------------
-# _restic_forget_json <repo> <keep-flags...> → JSON array of removed short_id.
-# --group-by paths gives keep-per-guest (stable dumpdir path).
+# _restic_forget_json <repo> <forget args...> → JSON array of removed short_id.
+# The args carry the --group-by (the runner decides it).
 _restic_forget_json() {
     local repo="$1"; shift
     # `forget --json` ALONE gives a clean remove list (one json value). Do NOT run
     # --prune here (it restructures the output); reclaim space separately below.
-    local fflags=(forget --group-by paths "$@" --json)
+    local fflags=(forget "$@" --json)
     [[ "${DRY_RUN:-0}" == 1 ]] && fflags+=(--dry-run)
     # Distinguish a FAILED forget (repo unreachable, lock, auth) from "nothing to
     # remove". Swallowing the error made a failed offsite prune look like a clean
@@ -697,6 +711,8 @@ _restic_forget_json() {
         return 1
     fi
     rm -f "$errf"
+    # the runner asked for the raw JSON (the cache tier's split-guest detection)
+    if [[ -n "${_FORGET_RAW_FILE:-}" ]]; then printf '%s' "$out" > "$_FORGET_RAW_FILE"; fi
     local removed; removed="$(printf '%s' "$out" | jq -cs '[ (.[0] // []) | .[]? | .remove[]?.short_id ]' 2>/dev/null || echo '[]')"
     # Real run that actually removed snapshots → reclaim pack files separately.
     # (_FORGET_NO_PRUNE=1: the caller runs several forgets and prunes once.)
@@ -707,20 +723,27 @@ _restic_forget_json() {
     return 0
 }
 
-# _offsite_forget <repo> → removed short_ids (JSON array). GFS per policy group
-# (config default + per-guest keep= overrides, lib/policy.sh), one prune at the end.
-_OFF_REMOVED_FILE=""
-_offsite_forget_cb() {             # <repo> <forget args...>
+# _tier_forget <repo> [<keep-last N>] → removed short_ids (JSON array). Every
+# forget run of the retention runner (lib/policy.sh _forget_policy_runs), one
+# prune at the end. Without N: offsite GFS per policy group (config default +
+# per-guest keep= overrides); with N: the cache tier, keep-last N per guest.
+_FORGET_REMOVED_FILE=""
+_tier_forget_cb() {                # <repo> <forget args...>
     local r
     if _is_janitor && [[ -n "${_CHECKED_IDS_FILE:-}" ]]; then r="$(_janitor_bound_forget "$@")" || return 1
     else r="$(_FORGET_NO_PRUNE=1 _restic_forget_json "$@")" || return 1; fi
-    printf '%s\n' "$r" >> "$_OFF_REMOVED_FILE"
+    printf '%s\n' "$r" >> "$_FORGET_REMOVED_FILE"
 }
-_offsite_forget() {
+_tier_forget() {
     local repo="$1" rc=0 all
-    _OFF_REMOVED_FILE="$(mktemp)"
-    _forget_policy_runs "$repo" _offsite_forget_cb || rc=1
-    all="$(jq -cs 'add // []' "$_OFF_REMOVED_FILE" 2>/dev/null || echo '[]')"; rm -f "$_OFF_REMOVED_FILE"
+    _FORGET_REMOVED_FILE="$(mktemp)"
+    # "${@:2}": the cache passes its N even when empty, so a bad value fails the
+    # forget as in 0.5 instead of turning the cache into a GFS run
+    _forget_policy_runs "$repo" _tier_forget_cb "${@:2}" || rc=1
+    # a dry run plans a split guest's paths and guest passes on the same list,
+    # so an id can come twice; keep the first, in order (no-op otherwise)
+    all="$(jq -cs 'add // [] | reduce .[] as $x ({s: {}, o: []}; if .s[$x] then . else .s[$x] = true | .o += [$x] end) | .o' \
+        "$_FORGET_REMOVED_FILE" 2>/dev/null || echo '[]')"; rm -f "$_FORGET_REMOVED_FILE"
     if (( rc == 0 )) && [[ "${DRY_RUN:-0}" != 1 ]] && [[ "$(jq 'length' <<<"$all")" -gt 0 ]]; then
         _restic_w "$repo" prune >/dev/null 2>&1 || log_error "restic prune ($(_mask_url "$repo")) failed: the forgotten snapshots are gone but their space was not reclaimed; run 'pbo prune' again"
     fi
@@ -737,7 +760,7 @@ rdo_prune() {
     # Local cache repo: keep-last (fast restore tier).
     if [[ "${LOCAL_REPO:-true}" == "true" ]]; then
         _restic_stale_unlock "$RESTIC_CACHE_REPO"
-        cache_removed="$(_restic_forget_json "$RESTIC_CACHE_REPO" --keep-last "${RESTIC_KEEP_LAST}")" || failed+=("cache")
+        cache_removed="$(_tier_forget "$RESTIC_CACHE_REPO" "${RESTIC_KEEP_LAST}")" || failed+=("cache")
     fi
     # Offsite: pure GFS (daily/weekly/monthly), no keep-last (a cache concept).
     # Append-only offsite: the janitor owns retention. Running forget here would
@@ -748,7 +771,7 @@ rdo_prune() {
         log_info "prune: offsite is append-only, retention there runs on the janitor"
     elif [[ "${OFFSITE_ENABLED:-true}" == "true" && -n "${RESTIC_OFFSITE_REPO:-}" ]]; then
         _restic_stale_unlock "$RESTIC_OFFSITE_REPO"
-        offsite_removed="$(_offsite_forget "$RESTIC_OFFSITE_REPO")" || failed+=("offsite")
+        offsite_removed="$(_tier_forget "$RESTIC_OFFSITE_REPO")" || failed+=("offsite")
     fi
     local dry; dry="$( [[ "${DRY_RUN:-0}" == 1 ]] && echo true || echo false )"
     local nc no; nc="$(printf '%s' "$cache_removed" | jq 'length' 2>/dev/null || echo 0)"
@@ -949,15 +972,17 @@ _doctor_verify() {
 
 # _doctor_json <problems> <warnings> <line...>: the findings as objects.
 # Each line is "  <OK|WARN|FAIL>  <message>" (colour codes stripped); vmid is
-# taken from "guest N" / "vmid N" in the message, null otherwise.
+# taken from "guest N" / "vmid N" in the message, null otherwise. After
+# --fix, `changes` lists what the fix pass changed (or, in a dry run, would
+# change): {name, path, change, from, to, applied} (DP_CHANGES_JSON).
 _doctor_json() {
     local p="$1" w="$2"; shift 2
     printf '%s\n' "$@" | sed -E 's/\x1b\[[0-9;]*m//g' | jq -R -c '
         capture("^\\s*(?<lv>OK|WARN|FAIL)\\s+(?<msg>.*)$")?
         | { level: ({OK:"ok", WARN:"warn", FAIL:"fail"}[.lv]), message: .msg,
             vmid: ((.msg | capture("(guest|vmid) (?<v>[0-9]{1,9})\\b")? | .v) // null) }' \
-      | jq -cs --argjson p "$p" --argjson w "$w" '{status: (if $p == 0 then "ok" else "problems" end), ok: ($p == 0),
-            problems: $p, warnings: $w, findings: .}' | json_emit
+      | jq -cs --argjson p "$p" --argjson w "$w" --argjson ch "$DP_CHANGES_JSON" '{status: (if $p == 0 then "ok" else "problems" end), ok: ($p == 0),
+            problems: $p, warnings: $w, findings: .} + (if $ch == null then {} else {changes: $ch} end)' | json_emit
 }
 
 # fetch: extract+verify one snapshot into the cache WITHOUT restoring. Proves the
@@ -1014,9 +1039,11 @@ _restic_stale_unlock() {
 }
 
 # doctor: a fast health check that surfaces the things that silently rot, repo
-# reachability, the DR key's permissions, the timer, provider snapshots, and, per
-# guest, how old the newest snapshot is (catches a guest that quietly stopped
-# being backed up, e.g. one whose data lives on a backup=0 mountpoint).
+# reachability, permissions (the DR key, CACHE_DIR and the rest of the rule
+# table in lib/perms.sh; `doctor --fix` applies it first), the timer, provider
+# snapshots, and, per guest, how old the newest snapshot is (catches a guest
+# that quietly stopped being backed up, e.g. one whose data lives on a backup=0
+# mountpoint).
 rdo_doctor() {
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for doctor"
     _guest_meta_load    # once, in this shell: the $(...) calls below inherit it
@@ -1024,13 +1051,10 @@ rdo_doctor() {
     local problems=0 warns=0 lines=()
     local ok="  ${C_G:-}OK${C_0:-}" bad="  ${C_R:-}FAIL${C_0:-}" warn="  ${C_Y:-}WARN${C_0:-}"
 
-    # DR key present + 0600.
-    local pf="${RESTIC_PASSWORD_FILE:-/etc/pbo/restic-pass}"
-    if [[ -r "$pf" ]]; then
-        local perm; perm="$(stat -c '%a' "$pf" 2>/dev/null)"
-        if [[ "$perm" == "600" || "$perm" == "400" ]]; then lines+=("$ok  DR key $pf ($perm)")
-        else lines+=("$warn  DR key $pf is $perm, should be 0600"); warns=$((warns+1)); fi
-    else lines+=("$bad  DR key $pf missing or unreadable"); problems=$((problems+1)); fi
+    # Permissions: the rule table (lib/perms.sh), after `doctor --fix` applied
+    # it. The DR key line comes first, as it always did.
+    _doctor_perms "$ok" "$bad" "$warn"
+    lines+=("${DP_DR[@]+"${DP_DR[@]}"}"); problems=$((problems+DP_PROBLEMS)); warns=$((warns+DP_WARNS))
 
     # Repo reachable.
     local repo; repo="$(_restic_read_repo)"
@@ -1065,30 +1089,9 @@ rdo_doctor() {
         else lines+=("$bad  $own"); problems=$((problems+1)); fi
     fi
 
-    # CACHE_DIR holds plaintext vzdump archives while a backup runs.
-    if [[ "${PBO_ROLE:-host}" != janitor && -d "$CACHE_DIR" ]]; then
-        local cm; cm="$(stat -c %a -- "$CACHE_DIR" 2>/dev/null || echo 0)"
-        if (( (8#$cm & 8#007) != 0 )); then
-            lines+=("$warn  CACHE_DIR $CACHE_DIR is open to local users (mode $cm): a running backup's plaintext archive is readable; the next backup closes it (needs setfacl, package acl)"); warns=$((warns+1))
-        else
-            local cv cu cacl miss=""
-            cacl="$(getfacl -cpn -- "$CACHE_DIR" 2>/dev/null || true)"
-            while IFS= read -r cv; do
-                cu="$(_ct_root_uid "$cv")" || continue
-                grep -qE "^user:$cu:..x" <<<"$cacl" || miss+="${miss:+ }$cv"
-            done < <(find "${PBO_PVE_LXC_DIR:-/etc/pve/lxc}/" -maxdepth 1 -name '[0-9]*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort -n)
-            if [[ -n "$miss" ]]; then
-                lines+=("$bad  CACHE_DIR $CACHE_DIR is closed but has no ACL entry for the mapped root of unprivileged CT(s) $miss: their vzdump fails ('pbo backup <vmid>' or the next run-schedule adds it)"); problems=$((problems+1))
-            else
-                lines+=("$ok  CACHE_DIR closed to local users (mode $cm)")
-            fi
-        fi
-    fi
-
-    # Locks belong in a directory only pbo can write (default /run/pbo).
-    if [[ -d "$LOCK_DIR" ]] && (( 0$(stat -c '%a' "$LOCK_DIR") & 02 )); then
-        lines+=("$warn  LOCK_DIR $LOCK_DIR is world-writable: a local user can block pbo's locks (remove LOCK_DIR from the config to use /run/pbo)"); warns=$((warns+1))
-    fi
+    # The other permission findings: CACHE_DIR closed with an ACL entry per
+    # unprivileged CT, the directories above it, LOCK_DIR, logs, state, config.
+    lines+=("${DP_LINES[@]+"${DP_LINES[@]}"}")
 
     # Alerting: someone has to hear about a failed backup.
     if [[ "${PBO_NO_NOTIFY:-0}" != 1 ]]; then
@@ -1099,9 +1102,14 @@ rdo_doctor() {
     fi
 
     # Config: unknown keys (typos) and a config newer than this pbo.
-    _config_check "${PBO_CONFIG_LOADED:-}"
+    _config_check "${PBO_CONFIG_LOADED:-}" "${PBO_CONFIG_SHARED_LOADED:-}"
     local cl; for cl in "${CC_LINES[@]+"${CC_LINES[@]}"}"; do lines+=("$warn  $cl"); done
     warns=$((warns+CC_WARNS))
+    # What the strict reader found (load_config already stopped on its errors):
+    # a key pbo ignores in the cluster-shared file is a FAIL, the rest warnings.
+    _config_doctor_lines
+    for cl in "${CDL_FAIL[@]+"${CDL_FAIL[@]}"}"; do lines+=("$bad  $cl"); problems=$((problems+1)); done
+    for cl in "${CDL_WARN[@]+"${CDL_WARN[@]}"}"; do lines+=("$warn  $cl"); warns=$((warns+1)); done
 
     # Integrity: when did verify last run, and did it pass.
     _doctor_verify "$ok" "$bad" "$warn"
@@ -1129,6 +1137,30 @@ rdo_doctor() {
     # to take over the retention buckets. The janitor refuses to prune while any exist.
     local fut; fut="$(_future_snapshots "$snaps")"
     if [[ -n "$fut" ]]; then lines+=("$bad  snapshots dated in the future: $fut$(_is_janitor && echo ' (janitor prune is blocked until they are gone)')"); problems=$((problems+1)); fi
+    # Guests with snapshots under several path sets (CACHE_DIR moved, host paths
+    # changed): retention keeps each as one guest (lib/policy.sh _split_guests).
+    # From the list just loaded, no extra round-trip. Informational, unless
+    # RETENTION_GROUP_BY is anything but guest: then the old path groups are
+    # never pruned. The local setting only says how retention runs where this
+    # machine owns the repo's retention: on an append-only offsite the janitor
+    # prunes with its own RETENTION_GROUP_BY, which only its doctor can see.
+    local sg_id sg_n sg_kind sg_split="" sg_shared="" sg_ns=0 sg_nh=0
+    while IFS=$'\t' read -r sg_id sg_n sg_kind; do
+        [[ -n "$sg_id" ]] || continue
+        if [[ "$sg_kind" == split ]]; then sg_split+="${sg_split:+, }$sg_id ($sg_n paths)"; sg_ns=$((sg_ns+1))
+        else sg_shared+="${sg_shared:+, }$sg_id ($sg_n paths)"; sg_nh=$((sg_nh+1)); fi
+    done < <(_split_guests "$snaps")
+    local sg_ao=0; [[ "$repo" == "${RESTIC_OFFSITE_REPO:-}" ]] && _offsite_append_only && sg_ao=1
+    if (( sg_ns && sg_ao )); then
+        lines+=("$ok  $sg_ns guest(s) have snapshots under more than one path (CACHE_DIR moved / host paths changed); offsite is append-only, so the janitor's RETENTION_GROUP_BY decides how they are retained (run doctor on the janitor): $sg_split")
+    elif (( sg_ns )) && [[ "${RETENTION_GROUP_BY:-guest}" != guest ]]; then
+        lines+=("$warn  $sg_ns guest(s) have snapshots under more than one path (CACHE_DIR moved / host paths changed), and RETENTION_GROUP_BY=${RETENTION_GROUP_BY} retains each path on its own, so the old ones are never pruned: $sg_split"); warns=$((warns+1))
+    elif (( sg_ns )); then
+        lines+=("$ok  $sg_ns guest(s) have snapshots under more than one path (CACHE_DIR moved / host paths changed); retained as one guest each: $sg_split")
+    fi
+    if (( sg_nh )); then
+        lines+=("$warn  $sg_nh guest(s) have snapshots under more than one path, one of them shared with another vmid or with snapshots without a vmid tag: retained per path as in 0.5: $sg_shared"); warns=$((warns+1))
+    fi
     if _is_janitor; then
         local back brc=0; back="$(_backdated_snapshots "$snaps" "$repo")" || brc=$?
         (( brc == 0 )) || { lines+=("$bad  janitor baseline $(_janitor_seen_file "$repo") unreadable or malformed (prune blocked)"); problems=$((problems+1)); }

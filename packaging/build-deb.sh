@@ -57,6 +57,17 @@ if [ "$1" = configure ]; then
     install -d -m 0700 /etc/pbo
     install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
     [ -e /etc/pbo/config.example ] || cp /usr/share/doc/pbo/examples/config.example /etc/pbo/config.example
+    # pbo 0.6 reads the config instead of sourcing it: name the lines it
+    # refuses (every command then stops with 78) or warns about. Reported only:
+    # dpkg cannot stop an upgrade that is already unpacked (install.sh refuses
+    # before changing anything).
+    if [ -f /etc/pbo/config ]; then
+        rc=0; out="$(/usr/sbin/pbo config check 2>&1)" || rc=$?
+        if [ "$rc" != 0 ] || printf '%s\n' "$out" | grep -q -e ': warning: '; then
+            echo "pbo: 'pbo config check' on /etc/pbo/config (exit $rc):"
+            printf '%s\n' "$out" | sed 's/^/    /'
+        fi
+    fi
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload || true
     # Proxmox notification templates, cluster-wide via pmxcfs (plain cp, no chmod)
     if [ -d /etc/pve ]; then

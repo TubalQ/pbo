@@ -9,8 +9,8 @@
 - **Context tags:** SFTP-only, local-only, web-UI, no remote compute
 
 > This ADR is the single source for the engine choice. Code and docs should reference it,
-> not duplicate the reasoning. The proofs below were run against **restic 0.18.0**
-> in a throwaway environment.
+> not duplicate the reasoning. The proofs below hold for **restic 0.18.0**
+> (the Debian trixie package).
 
 ---
 
@@ -127,15 +127,15 @@ spare disk for a local repo. Two orthogonal config keys (added in Phase 1):
   → **breaks local-only / no-extra-machine**, the entire reason for existing.
   Rejected.
 
-## 4. Proof (restic 0.18.0, through pbo's own backup flow)
+## 4. Proof (restic 0.18.0, pbo's own flow)
 
 | What | Result |
 |---|---|
-| Dedup/incremental | A one-line change in a large file stores **only a few KiB**; repo does not grow per run |
+| Dedup/incremental | A one-line change in a multi-MiB archive → **only a few KiB stored**; repo does not grow per run |
 | Cache→offsite | `restic copy` (chunker-shared) → dedup preserved between tiers |
 | Offsite = dumb tier | repo = ordinary files (`config data index keys snapshots`) → works on any SFTP |
 | Verification | `check --read-data` = re-reads + hashes all data → **stronger** than rclone cryptcheck |
-| Restore | bit-identical (sha256 of every restored file matched) |
+| Restore | bit-identical (the sha256 of every file matches) |
 | stdin | `vzdump --stdout | restic backup --stdin` works (even dedups against the file backup) |
 
 ## 5. What restic REPLACES / what STAYS
@@ -253,8 +253,8 @@ file-level browsing in Path A (the snapshot is a tar blob).
 
 **Risks:** a large/slow repo → `restic stats`/`check` cost (mitigated: cache stats
 via the existing `_cached`; `check --read-data` as a background task). If the
-janitor side is not built, append-only is only partial (the same risk as relying on
-unprepared provider snapshots, e.g. on a Storage Box).
+janitor side is not built, append-only is only partial (the same risk as an SFTP
+target whose provider snapshots are not set up).
 
 ## 10. Open questions / follow-up
 

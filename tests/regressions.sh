@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export PBO_NO_NOTIFY=1
-# tests/audit.sh: regression tests for the fixes from a pre-release audit. Real local
+# tests/regressions.sh: regression tests for the 0.4.0 audit fixes. Real local
 # restic repos, Proxmox mocked.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -10,8 +10,8 @@ ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 command -v restic >/dev/null 2>&1 || { echo "restic not installed, skipping"; exit 0; }
 
-printf 'pbo: audit regression tests\n'
-RUN="$ROOT/run-audit"; rm -rf "$RUN"; mkdir -p "$RUN"/{cache,state,log,lock,conf,bin}
+printf 'pbo: regression tests (0.4.0 audit fixes)\n'
+RUN="$ROOT/run-regressions"; rm -rf "$RUN"; mkdir -p "$RUN"/{cache,state,log,lock,conf,bin}
 export MOCK_CONF_DIR="$RUN/conf" MOCK_LOG="$RUN/calls"; : > "$MOCK_LOG"
 # systemctl mocked too: prune/verify never reach the host's units (pbo-mount.service)
 install -m 0755 tests/mocks/pct tests/mocks/qm tests/mocks/vzdump tests/mocks/pvesh tests/mocks/pvesm tests/mocks/systemctl "$RUN/bin/"
@@ -73,8 +73,12 @@ out="$($BIN --json metrics --no-write 2>/dev/null)"
 jq -e '.ok and (.usage | test("Exit codes"))' >/dev/null 2>&1 <<<"$($BIN --json help 2>/dev/null)" && ok "--json help: one object" || bad "help json"
 
 # --- the exit fallback: an unexplained failure is never silent ---
-mkcfg "$RUN/x.cfg" 'rdo_version() { false; }'   # force an errexit inside a command
-out="$(PBO_CONFIG="$RUN/x.cfg" $BIN --json version 2>"$RUN/x.err")"; rc=$?
+# An errexit inside a command, forced in a copy of the source tree (the config
+# is not run as code since 0.6, and pbo has no test hook for it): the copied
+# lib/views.sh gets an rdo_version that fails.
+mkdir -p "$RUN/src"; cp -a pbo lib "$RUN/src/"
+printf '\n# tests/regressions.sh: force an errexit inside a command\nrdo_version() { false; }\n' >> "$RUN/src/lib/views.sh"
+out="$(PBO_CONFIG="$RUN/config" "$RUN/src/pbo" --json version 2>"$RUN/x.err")"; rc=$?
 [[ $rc != 0 ]] && jq -e '.status == "error"' >/dev/null 2>&1 <<<"$out" && grep -q "stopped unexpectedly" "$RUN/x.err" \
     && ok "an errexit deep in a command: logged and a JSON error" || bad "exit fallback rc=$rc '$out' $(tail -1 "$RUN/x.err")"
 
@@ -198,7 +202,7 @@ $BIN restore 8002 "$ts" --to 9403 --yes >/dev/null 2>&1; rc=$?; mv -f "$RUN/pves
 [[ $rc == 64 ]] && ok "restore with pvesm missing: usage error, not exit 127" || bad "pvesm missing rc=$rc"
 
 # --- setup / menu: _cfg_set creates the config, escapes values ---
-bash -c 'source lib/common.sh; source lib/menu.sh 2>/dev/null; PBO_CONFIG_LOADED='"$RUN"'/new/config; _cfg_set A "x&y|z" && _cfg_set A "p&q|r"' 2>/dev/null
+bash -c 'source lib/common.sh; source lib/menu.sh 2>/dev/null; PBO_CONFIG_LOCAL='"$RUN"'/new/config; _cfg_set A "x&y|z" && _cfg_set A "p&q|r"' 2>/dev/null
 [[ "$(stat -c '%a' "$RUN/new/config" 2>/dev/null)" == 600 ]] && grep -qx 'A=p&q|r' "$RUN/new/config" \
     && ok "_cfg_set creates a missing config (0600) and keeps & | in values" || bad "_cfg_set: $(cat "$RUN/new/config" 2>/dev/null)"
 

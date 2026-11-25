@@ -24,7 +24,7 @@ check_exit() {
 }
 
 printf 'pbo: skeleton tests\n'
-rm -rf "$PWD/run"
+rm -rf "$PWD"/run/{cache,log,state,lock,restic-pass,restic-cache,badcfg}   # only what etc/config.dev uses: other suites share ./run (tests/all.sh runs them in parallel)
 
 # --- the tool must create LOCK_DIR itself (regression: ensure_dirs) ---
 $BIN --json status >/dev/null 2>&1

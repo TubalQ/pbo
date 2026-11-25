@@ -9,16 +9,16 @@
 ## Problem
 Prune runs on the host, so the host holds credentials that can delete every
 offsite snapshot. Whoever owns the host owns the backups. Without append-only,
-provider snapshots (for example on a Storage Box) are the only backstop, and
-they're outside pbo's control and outside what `doctor` can check.
+provider snapshots (such as a Storage Box's) are the only backstop, and they're
+outside pbo's control and outside what `doctor` can check.
 
 ## Why rest-server
 restic's own rest-server has `--append-only`: it refuses DELETE on everything
 except lock files, which is exactly the split we need. It's one static binary,
 upstream, and restic speaks to it natively. An SFTP user with a restricted
 command (or `rrsync`) could do something similar but is harder to get right and
-impossible for pbo to verify. S3 object lock is the other good option and fits
-a later S3 backend.
+impossible for pbo to verify. S3 object lock is the other good option and may
+follow as a later backend.
 
 `--private-repos` maps each HTTP user to its own path, so several hosts can share
 one server without seeing each other's repos.
@@ -81,7 +81,7 @@ host can't touch. `host-*` (manual `backup-host`) is not age-checked.
 
 ## Verified
 Against restic's rest-server with `--append-only --private-repos --tls`: a
-backup through pbo works, `restic forget` from the host is refused with 403 and rc 0, host prune
-leaves offsite untouched, janitor prune applies GFS, the doctor probe gets 403
-from an append-only server and 200 from a writable one, and a restore from the
-append-only repo boots. Steps are in the RUNBOOK.
+backup through pbo works, `restic forget` from the host is refused with 403 and
+rc 0, a host prune leaves offsite untouched, a janitor prune applies GFS, the
+doctor probe returns 403 on an append-only server and 200 on a writable one,
+and a restore from the append-only repo boots. Steps are in the RUNBOOK.

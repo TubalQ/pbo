@@ -140,6 +140,8 @@ audit_command_end() {                 # <exit code>
     [[ -n "${PBO_COMMAND:-}" && -n "${AUDIT_T0:-}" ]] || return 0
     [[ "${PBO_AUDIT_DONE:-0}" == 1 ]] && return 0; PBO_AUDIT_DONE=1
     local ro=false; [[ " $AUDIT_READONLY " == *" $PBO_COMMAND "* || "${AUDIT_RO_OVERRIDE:-0}" == 1 ]] && ro=true
+    # a read-only command can change things with a flag (doctor --fix)
+    [[ "${AUDIT_RW_OVERRIDE:-0}" == 1 ]] && ro=false
     [[ "${DRY_RUN:-0}" == 1 ]] && ro=true
     _audit_json "$(jq -cn --arg time "$(date --iso-8601=seconds)" --arg user "$(_audit_who)" \
         --arg node "$(_local_node 2>/dev/null)" --arg role "${PBO_ROLE:-host}" --arg cmd "$PBO_COMMAND" \

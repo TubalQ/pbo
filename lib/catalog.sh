@@ -158,7 +158,7 @@ catalog_refresh() {
 }
 
 # _catalog_add_entry <vmid> <ts> <type> <basename> <size> <cache_snap> <offsite_snap> [keep]
-# Insert or update one entry without listing a repo (used by ingest). An empty snap
+# Insert or update one entry without listing a repo (ingest, M4). An empty snap
 # id keeps what the index already has for that tier. Needs an existing index: on
 # a missing one it adds nothing and returns 1 (a one-entry index would hide every
 # other backup; the next refresh writes a full one).
@@ -254,7 +254,7 @@ _catalog_mount_active() { _catalog_systemctl_ok && systemctl is-active --quiet "
 # when needed and wait for <file> to appear (default CATALOG_MOUNT_WAIT, 30 s).
 # Fails (the caller falls back to restic dump) when the unit is not installed or
 # the file does not show up. A running mount lists a new snapshot only after
-# only after a delay (spike A, ADR 0006 amendment 13).
+# a delay (spike A, ADR 0006 amendment 13).
 _catalog_mount_ensure() {
     local f="$1" wait="${2:-${CATALOG_MOUNT_WAIT:-30}}" i
     [[ -f "$f" ]] && return 0

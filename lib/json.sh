@@ -16,6 +16,10 @@
 # tests/json.sh pins the contract.
 
 readonly PBO_JSON_SCHEMA=1
+# jq def that drops credentials from URL-like strings: userinfo, query strings,
+# and the user in sftp:user@host (what _mask_url does in lib/common.sh).
+readonly PBO_JQ_MASK='def mask: gsub("(?<a>://)[^/@\\s]+@"; "\(.a)***@") | gsub("(?<a>://[^\\s?\"]*)\\?[^\\s\"]*"; "\(.a)?***")
+                       | gsub("(?<a>(^|[\\s=]))sftp:[^@/:\\s]+@"; "\(.a)sftp:***@");'
 JSON_EMITTED=0
 # The result goes to the stdout pbo started with (PBO_JSON_FD), not to whatever
 # stdout is current: a die inside $(...) would otherwise print its error object
@@ -37,8 +41,7 @@ json_emit() {
     [[ -n "$obj" ]] || obj='{"status":"error","ok":false,"error":"internal: empty result"}'
     local dry=false; [[ "${DRY_RUN:-0}" == 1 ]] && dry=true
     if ! jq -c --argjson schema "$PBO_JSON_SCHEMA" --arg cmd "${PBO_COMMAND:-}" --argjson dry "$dry" \
-            'def mask: gsub("(?<a>://)[^/@\\s]+@"; "\(.a)***@") | gsub("(?<a>://[^\\s?\"]*)\\?[^\\s\"]*"; "\(.a)?***")
-                       | gsub("(?<a>(^|[\\s=]))sftp:[^@/:\\s]+@"; "\(.a)sftp:***@");
+            "$PBO_JQ_MASK"'
              if type == "object" then {schema:$schema, command:$cmd, dry_run:$dry} + . | walk(if type == "string" then mask else . end)
              else error("not an object") end' \
             <<<"$obj" 1>&"${PBO_JSON_FD:-1}" 2>/dev/null; then

@@ -96,7 +96,13 @@ systemctl enable --now pbo-test-restore.timer  # restore test, Saturday 10:00
 
 Then `pbo doctor` any time to check the repo is reachable, the timer is on, the
 DR key is 0600, the last integrity check passed, the config has no unknown keys, and
-every guest has a recent snapshot.
+every guest has a recent snapshot. It also checks the permissions of pbo's
+directories and files against one table (CACHE_DIR closed with an ACL entry per
+unprivileged CT, the directories above it passable by the CTs' mapped root,
+staging, locks, logs, state, config, secrets; ADR 0009). `pbo doctor --fix`
+applies that table (`--dry-run` lists the changes first; each change is in the
+audit log); `--fix-parents` also adds a traverse-only ACL entry to a directory
+above CACHE_DIR that blocks a CT.
 
 ## Notifications
 
@@ -266,7 +272,9 @@ Commands:
   job list [--limit N] | show <id> | log <id> [--from N] [--follow] | cancel <id>
   policy get <vmid>           a guest's pbo policy (skip, stop mode, own retention)
   policy set <vmid> [--skip on|off] [--stop on|off] [--keep d30.w8.m12.y2|default]
-  doctor                      health check (repo, timer, key, alerts, verify, per-guest age)
+  doctor [--fix [--fix-parents]] [--perms-only]
+                              health check (repo, timer, permissions, alerts, verify, per-guest
+                              age); --fix applies the permission table first
   guests                      every guest: policy, newest snapshot, staleness, last restore test
   timers                      the pbo timers: enabled, next and last run, last result
   config [show]               the effective configuration (secrets never shown)
@@ -513,11 +521,21 @@ Design notes: [ADR 0004](docs/adr/0004-append-only-offsite-and-janitor.md).
 
 ## Configuration
 
-Everything is documented in `etc/config.example`. The DR key (`RESTIC_PASSWORD_FILE`)
-is the one secret that must never leave the host unencrypted, but the config is not
-harmless either: it can hold an ntfy token and topic (on a public ntfy server the topic
-is the password) and the SFTP command. Keep it 0600 and out of version control;
-`pbo config` shows it with those values masked.
+Everything is documented in `etc/config.example`, which is generated from the schema
+in `lib/config_schema.sh` (`pbo config template` prints it; `--role janitor` for a
+janitor). `pbo config list` shows this role's keys with their effective value, where
+it came from (the file, the cluster-shared `/etc/pve/pbo/config` or the default) and
+its type; `--all` adds the test hooks and
+the other role's keys. `pbo config get KEY` prints one value. `pbo config check`
+reads the config the way pbo 0.6 will (plain `KEY=VALUE` lines, never run as shell
+code; see [ADR 0009](docs/adr/0009-config-schema-and-cache-move.md), "Config
+grammar"), names each line it would refuse or read differently from bash, and exits
+78 if pbo 0.6 would refuse the file; `pbo doctor` runs the same comparison. The DR key
+(`RESTIC_PASSWORD_FILE`) is the one secret that must never leave the host
+unencrypted, but the config is not harmless either: it can hold an ntfy token and
+topic (on a public ntfy server the topic is the password) and the SFTP command. Keep
+it 0600 and out of version control; `pbo config` never prints those values (only
+`<set>` or `<unset>`) and masks credentials in URLs.
 
 ## Contributing
 

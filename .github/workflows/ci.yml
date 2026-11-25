@@ -33,6 +33,22 @@ jobs:
           for f in pbo install.sh lib/*.sh; do bash -n "$f"; done
           sh -n lib/vzdump-hook
 
+      - name: Generated config example is current
+        # etc/config.example is generated from lib/config_schema.sh (and installed as
+        # the first /etc/pbo/config): a schema change must regenerate it
+        run: |
+          mkdir -p run/ci-template
+          printf 'CACHE_DIR=%s/c\nLOG_DIR=%s/l\nSTATE_DIR=%s/s\nLOCK_DIR=%s/k\n' "$PWD/run/ci-template" "$PWD/run/ci-template" "$PWD/run/ci-template" "$PWD/run/ci-template" > run/ci-template/config
+          chmod 600 run/ci-template/config
+          PBO_CONFIG="$PWD/run/ci-template/config" PBO_NO_NOTIFY=1 ./pbo config template > run/ci-template/config.example
+          if ! diff -u etc/config.example run/ci-template/config.example; then
+            echo "::error title=config.example::etc/config.example is stale: run ./pbo config template > etc/config.example"
+            exit 1
+          fi
+          # both examples read cleanly with the strict reader pbo 0.6 uses (exit 78 otherwise)
+          PBO_CONFIG="$PWD/run/ci-template/config" PBO_NO_NOTIFY=1 ./pbo config check --file etc/config.example
+          PBO_CONFIG="$PWD/run/ci-template/config" PBO_NO_NOTIFY=1 ./pbo config check --file etc/config.janitor.example --role janitor
+
       - name: Perl plugin
         # the PVE storage plugin against stubbed PVE modules (tests/perl/lib);
         # tests/integration/pve-storage.sh covers the real ones on a PVE host

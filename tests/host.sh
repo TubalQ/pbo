@@ -24,6 +24,10 @@ mkdir -p "$RUN"/{cache,state,log,lock,fakeetc/.ssh}
 echo "iface eth0 inet dhcp"      > "$RUN/fakeetc/interfaces"
 echo "SECRET-REPO-PASSWORD"      > "$RUN/fakeetc/restic-pass"
 echo "PRIVATE-SSH-KEY"           > "$RUN/fakeetc/.ssh/id_rsa"
+# the password files this host uses live in the backed-up tree too, and
+# HOST_BACKUP_EXCLUDES below does not name them: backup-host excludes them anyway
+echo "testpass"                  > "$RUN/fakeetc/pbo-pass"
+echo "REST-HTTP-PASSWORD"        > "$RUN/fakeetc/pbo-rest-pass"
 
 cat > "$RUN/config" <<EOF
 CACHE_DIR=$RUN/cache
@@ -33,13 +37,14 @@ LOCK_DIR=$RUN/lock
 OFFSITE_ENABLED=false
 LOCAL_REPO=true
 RESTIC_CACHE_REPO=$RUN/repo
-RESTIC_PASSWORD_FILE=$RUN/pass
+RESTIC_PASSWORD_FILE=$RUN/fakeetc/pbo-pass
+RESTIC_REST_PASSWORD_FILE=$RUN/fakeetc/pbo-rest-pass
 RESTIC_CACHE_DIR=$RUN/rcache
 KEEP_LOCAL=2
 HOST_BACKUP_PATHS="$RUN/fakeetc"
 HOST_BACKUP_EXCLUDES="$RUN/fakeetc/restic-pass **/.ssh **/id_rsa"
 EOF
-printf 'testpass\n' > "$RUN/pass"; chmod 600 "$RUN/pass" "$RUN/config"
+chmod 600 "$RUN/fakeetc/pbo-pass" "$RUN/fakeetc/pbo-rest-pass" "$RUN/config"
 export PBO_CONFIG="$RUN/config"
 
 $BIN init >/dev/null 2>&1 || { echo "init failed"; exit 1; }
@@ -73,6 +78,9 @@ kept="$(find "$OUT" -name interfaces -type f | head -1)"
 [[ -z "$(find "$OUT" -name restic-pass)" ]] \
     && ok "restore-host: DR key was EXCLUDED" || bad "DR key leaked into backup"
 [[ -z "$(find "$OUT" -name id_rsa)" ]] && ok "restore-host: SSH key was EXCLUDED" || bad "SSH key leaked into backup"
+[[ -z "$(find "$OUT" -name 'pbo-pass' -o -name 'pbo-rest-pass')" && -n "$(find "$OUT" -name interfaces)" ]] \
+    && ok "restore-host: the password files in use are excluded even when HOST_BACKUP_EXCLUDES leaves them out" \
+    || bad "password file in use leaked into backup: $(find "$OUT" -name 'pbo-*pass')"
 [[ -n "$(find "$OUT" -name README.txt -path '*meta*')" ]] && ok "restore-host: rebuild metadata captured" || bad "meta missing"
 
 # --- restore-host --path: a single file only ---

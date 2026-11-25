@@ -1,6 +1,6 @@
 # ADR 0006, pbo as a native Proxmox VE backup provider
 
-- **Status:** Accepted 2026-11-23, with the [amendments at acceptance](#amendments-at-acceptance-2026-11-23) at the end of this ADR; where they conflict with the text above them, the amendments win. Proposed 2026-11-22. Built in 0.5.0. The research behind it was read-only (PVE source, `pvesm status`, `pvesh get`).
+- **Status:** Accepted 2026-11-23, with the [amendments at acceptance](#amendments-at-acceptance-2026-11-23) at the end of this ADR; where they conflict with the text above them, the amendments win. Proposed 2026-11-22. Built in 0.5.0.
 - **See also:** [ADR 0007](0007-install-modes.md), install modes and guest ownership.
 - **Decision (short):** pbo becomes a **native PVE storage type `pbo`** that does **not** set the Backup Provider feature. PVE then lists and restores pbo's existing vzdump `.tar`/`.vma` snapshots through its ordinary file-archive path. Later the same storage becomes a Datacenter -> Backup target: it writes to a spool and a hook hands each archive to `pbo ingest`. A real Backup Provider (`PVE::BackupProvider::Plugin::Base`) is deferred. It gets built only if the first two phases leave a concrete gap.
 - **Supersedes (partly):** ADR 0005's rejection of "Perl on PVE's libraries" and "a plugin inside the PVE GUI" (docs/adr/0005-web-ui.md:32-34). This ADR covers one narrow storage-plugin adapter only. It is a supported public plugin API (storage APIVER), not a patch to pve-manager.
@@ -12,7 +12,7 @@ The goal is for pbo to feel like PBS inside PVE:
 - see its backups on a storage,
 - restore from the GUI.
 
-PVE 9.x ships a Backup Provider API (`/usr/share/perl5/PVE/BackupProvider/Plugin/Base.pm`, in libpve-storage-perl). The research for this ADR read that API and every call site in vzdump, qemu-server, pve-container and pve-manager in the PVE 9.2 source (pve-manager 9.2.x, libpve-storage-perl 9.1.x). It also read pbo 0.4.
+PVE 9.x ships a Backup Provider API (`/usr/share/perl5/PVE/BackupProvider/Plugin/Base.pm`, in libpve-storage-perl). The spike read that API and every call site in vzdump, qemu-server, pve-container and pve-manager in the PVE 9.2 source (pve-manager 9.2.x, libpve-storage-perl 9.1.x). It also read pbo 0.4.
 
 What pbo does today:
 - It runs `vzdump --compress 0 --dumpdir $CACHE_DIR/<vmid>`, then `restic backup` of that directory into a cache repo, tagged vmid/ts/type/keep, and then `restic copy` to offsite (lib/restic.sh:165-237, 185-211).
@@ -29,7 +29,7 @@ These are verified facts from the PVE 9.2 source (pve-manager 9.2.x, libpve-stor
   - a storage plugin that sets `plugindata()->{features}->{'backup-provider'}` and implements `new_backup_provider($class,$scfg,$storeid,$log_function)` (Base.pm:16-20; Storage/Plugin.pm:342-350, 2821-2834; Storage.pm:358-364, 2359-2365);
   - a provider class derived from Base.pm.
 - Third-party plugins load from `/usr/share/perl5/PVE/Storage/Custom/*.pm`. They must subclass `PVE::Storage::Plugin`, and `api()` must return a value in 9..17 (Storage.pm:46, 50, 131-176). That directory does not exist on a stock PVE host.
-- The provider API has **no version of its own**. Its semantics changed in a minor release: 9.1.17 fixed an argument passed to `archive_get_guest_config` (changelog). Upstream HEAD already documents guest-identity keys that the PVE 9.2 source does not send yet, because they need newer qemu-server and pve-container releases.
+- The provider API has **no version of its own**. Its semantics changed in a minor release: 9.1.17 fixed an argument passed to `archive_get_guest_config` (changelog). Upstream HEAD already documents guest-identity keys that PVE 9.2 (pve-manager 9.2.x, libpve-storage-perl 9.1.x) does not send yet, because they need qemu-server >= 9.2.21 and pve-container >= 6.1.25.
 
 **What a provider receives and returns**
 - It **never receives a vzdump archive** (Base.pm:29-33, 92-118).
@@ -305,8 +305,8 @@ Default rule: everything below runs on a **disposable PVE 9.2 test node**, neste
 
 ## Appendix: corrections from the verification pass
 
-Independent reviewers tried to refute each load-bearing claim against the PVE 9.2
-source. What they refuted or narrowed, and how this ADR accounts for it:
+The spike had independent reviewers try to refute each load-bearing claim against
+the installed source. What they refuted or narrowed, and how this ADR accounts for it:
 
 1. **"The PVE web UI has no plugin-type gating; Restore is enabled when subtype or a vzdump volid matches."** Refuted.
    - File Restore, the Encrypted/Verify columns, Live restore and forced zstd are gated on the literal type `'pbs'` (pvemanagerlib.js:71976, 72008-72030, 72102-72125, 23547-23554, 31305-31316).
@@ -363,10 +363,10 @@ source. What they refuted or narrowed, and how this ADR accounts for it:
     - A failure at `backup-end` leaves the renamed archive in place.
     - A job-level `script` replaces the global one.
     - **ADR:** the hook guard also uses `TARGET`'s extension to refuse compressed archives. Spool leftovers are recovered by `pbo sync`. Doctor warns about job-level `script`.
-11. **Conflicts between documentation and code resolved by the stricter reading.**
+11. **Conflicts between the documentation and the installed code resolved by the stricter reading.**
     - (a) "the VM `qemu-img-path` may be an NBD URI" (Base.pm text) versus `file_size_info(...,untrusted=1)` stat()ing it (QemuServer.pm:7192). The ADR treats it as "must be a path that can be stat()ed".
     - (b) The upstream examples' `new_backup_provider` has an extra `$bandwidth_limit` argument that does not match the installed signature (Storage.pm:2364). That matters only for Phase 3, which must code against the installed Base.pm.
-    - (c) Upstream guest-identity keys are not in the PVE 9.2 code, so they are not relied on.
+    - (c) Upstream guest-identity keys are not in the installed code, so they are not relied on.
 12. **Design-level claims dropped.**
     - The full-provider design's GUI delete that forgets offsite snapshots on non-append-only sftp: dropped. Nothing in PVE deletes.
     - Its rest-server-on-unix-socket credential path is unverified: not used.
@@ -374,10 +374,10 @@ source. What they refuted or narrowed, and how this ADR accounts for it:
 
 ## Amendments at acceptance (2026-11-23)
 
-Acceptance changed some of the text above. These amendments record the changes.
-Where they conflict with an earlier section, the amendment wins. Line numbers
-refer to the PVE 9.2 source (pve-manager 9.2.x, libpve-storage-perl 9.1.x,
-libpve-common-perl 9.2.x).
+Planning the implementation at acceptance changed some of the text above. These
+amendments record the changes. Where they conflict with an earlier section, the
+amendment wins. Line numbers refer to the PVE 9.2 source (pve-manager 9.2.x,
+libpve-storage-perl 9.1.x, libpve-common-perl 9.2.x).
 
 1. **Integration is optional, chosen per host through install modes.** A host runs
    `standalone` (today's pbo, no plugin), `both` or `integrated`, set by the config
@@ -411,7 +411,7 @@ libpve-common-perl 9.2.x).
       `pbo-stop` guests); switch to `integrated` only after a long run of clean
       nightly jobs.
 
-   Repo-only work (code, tests, docs) never touches a host.
+   Repo-only work never touches a host.
 
 3. **Depends `libpve-storage-perl (>= 9.1.18)`**, not 9.1.17. 9.1.18 is the first
    version that leaves a custom plugin out on its own when it fails to load
@@ -494,24 +494,23 @@ libpve-common-perl 9.2.x).
     - Question 2: answered by spike A (amendment 13).
     - Question 5 is answered by amendment 22; question 6 by amendment 21.
 
-13. **Spike results (spike A, restic 0.18.0).** A small CT archive was copied out
-    of a cache repo with `restic dump --no-lock` (which writes no lock there) into
-    a scratch repo on the same disk, removed afterwards. Page cache was dropped
-    before each cold read.
+13. **Spike results (spike A, restic 0.18.0).** A small CT archive was copied
+    out of a cache repo with `restic dump --no-lock` (no lock is written there)
+    into a scratch repo, removed afterwards. Cold reads ran with the page cache
+    dropped.
     - **Layout (answers open question 2):** `restic mount` shows `hosts/`, `ids/`,
       `snapshots/` and `tags/`; an archive is at
       `ids/<8-char short id>/<absolute path in the snapshot>`, which is exactly what
       `_catalog_mount_file` builds. Tags show up as `tags/vmid=<vmid>/` and so on.
-    - **Mount start:** `ids/` lists the snapshots shortly after the start.
+    - **Mount start:** `ids/` lists the snapshots almost at once.
       `fusermount3 -u` stops it and restic removes its lock almost at once.
     - **Time to the config:** reading `.tar.conf` through the mount is almost
-      instant; `restic dump` of the same small file costs mostly restic's own
-      start-up.
+      free; `restic dump` of the same small file costs mostly restic start-up.
     - **Full read:** `restic dump` reads faster than the FUSE mount. Both matched
       the source sha256.
     - **Offsite (sftp, read-only `--no-lock`):** snapshot lookup, `.tar.conf` and
-      the whole archive work the same way, only slower than from the cache;
-      sha256 matched.
+      the whole archive work the same way, slower than from the cache; sha256
+      matched.
     - **prune with a locking mount:** `restic forget --prune` fails at once with
       exit 11 ("repository is already locked"). Nothing is removed. This is why
       prune and verify stop `pbo-mount.service` first (amendment 17).
@@ -520,9 +519,10 @@ libpve-common-perl 9.2.x).
       `ids/`, a new open gets EIO too, and the mount log fills with
       "Load(<data/...>) failed: no such file or directory". `restic check` of the
       repo stays clean. **The mount must keep its lock; never add `--no-lock`.**
-    - **New snapshots in a running mount** appear only after up to about a
-      minute. A just ingested archive can therefore miss `CATALOG_MOUNT_WAIT`
-      (30 s), and materialize falls back to `restic dump`, which is correct.
+    - **New snapshots in a running mount** appear only after a delay, which can
+      be longer than `CATALOG_MOUNT_WAIT` (30 s). A just ingested archive can
+      therefore miss it, and materialize falls back to `restic dump`, which is
+      correct.
     - **`restic dump --no-lock` during a prune** can fail in the same way. It
       writes to `<name>.part.*` and renames only on success, so a failed staging
       leaves no partial archive behind (lib/catalog.sh).
@@ -573,19 +573,18 @@ the decision text above did not cover. These amendments win over the sections ab
 ## Amendments from testing
 
 18. **The mount is the default.** `PVE_CATALOG_MOUNT` defaults to
-    `true`. Through the mount, Show Configuration answers without copying the
-    archive; with `restic dump` the whole archive is copied first, which grows
-    with the archive and is much slower from offsite. A restore through the
-    mount takes about as long as one with dump, both bound by writing the CT's
-    files. The mount holds a shared restic lock on the cache repo while it runs:
-    backups and `restic copy` take shared locks too and are not affected; prune
-    and verify stop it first (amendment 17); `catalog release` stops it when no
-    staged archive points into it. From a synchronous request (`--background`,
-    amendment 15) a cache archive is now linked through the mount inline, waiting
-    at most `CATALOG_MOUNT_BG_WAIT` (10 s) inside the plugin's 20 s. A snapshot
-    that the running mount does not list yet (for a while after it was
-    made, amendment 13) still falls back to the detached staging and "retry".
-    Offsite-only archives always use `restic dump`.
+    `true`. The mount answers Show Configuration without copying the archive;
+    with `restic dump` the whole archive is copied first, which takes long for a
+    large archive and longer from offsite. A restore through the mount takes
+    about as long as one with dump, both bound by writing the CT's files. The mount holds a shared restic
+    lock on the cache repo while it runs: backups and `restic copy` take shared
+    locks too and are not affected; prune and verify stop it first (amendment 17);
+    `catalog release` stops it when no staged archive points into it. From a
+    synchronous request (`--background`, amendment 15) a cache archive is now
+    linked through the mount inline, waiting at most `CATALOG_MOUNT_BG_WAIT`
+    (10 s) inside the plugin's 20 s. A snapshot that the running mount does not
+    list yet (new snapshots show up in it only after a delay) still falls back to the detached
+    staging and "retry". Offsite-only archives always use `restic dump`.
 19. **Privileged containers.** `pbo restore` and `test-restore` used to turn a
     privileged CT into an unprivileged copy (Proxmox leaves `unprivileged:` out of
     a privileged CT's config). Fixed in 0.5.0; a GUI
@@ -598,10 +597,10 @@ the decision text above did not cover. These amendments win over the sections ab
     `pbo restore` and `pbo test-restore` (CLI). The Proxmox GUI through this plugin
     is the only graphical interface from 0.5.0.
 21. **GUI restore of a CT with a host bind mount (answers open question 6).**
-    When root restores such a CT through the plugin to a new vmid, Proxmox
-    restores the bind mount (e.g. `mp1: /srv/example-data`) and raw `lxc.idmap`
-    lines as they are, keeps `onboot`, gives a new MAC with "unique", and
-    recreates a `backup=0` volume empty. For anyone but root@pam the same restore
+    A restore as root through the plugin to a new vmid keeps the bind mount
+    (`mpN: <host path>`) and the raw `lxc.idmap` lines as they were, keeps
+    `onboot`, gives a new MAC with "unique", and recreates a `backup=0` volume
+    empty. For anyone but root@pam the same restore
     fails: "restoring 'mp1' to bind mount is only possible for root" (API2/LXC.pm,
     storage-only restore). Privileged restores are not blocked as "external": that
     check applies only to storages with the backup-provider feature, which this

@@ -128,6 +128,13 @@ for leak in topic_is_a_password private_topic_path qwerty sftp_pw_123 some_unkno
 done
 has "config: topic, url, sftp command and unknown keys are reported as set secrets" '[.keys[] | select(.key | IN("NTFY_TOPIC","NTFY_URL","RESTIC_SFTP_COMMAND","MY_OWN_KEY_NOBODY_KNOWS")) | select(.secret and .set and .value == null)] | length == 4'
 ! grep -q "hunter2pass" <<<"$out" && grep -q 'rest:https://\*\*\*@backup.invalid' <<<"$out" && ok "config: URL credentials masked" || bad "config URL creds: $(grep -o 'rest:[^"]*' <<<"$out")"
+# the schema (0.6): LOCK_DIR and the keys with only an inline default are known, not secrets
+has "config: LOCK_DIR and inline-only keys shown with their value" 'any(.keys[]; .key == "LOCK_DIR" and .secret == false and .value == "'"$RUN"'/lock")
+    and any(.keys[]; .key == "TR_STORAGE" and .secret == false and .value == "teststore" and .source == "config")
+    and any(.keys[]; .key == "CATALOG_LOCK_TIMEOUT" and .secret == false and .value == "600" and .source == "default")'
+has "config: schema fields per key" 'all(.keys[] | select(.known); (.type|type) == "string" and (.section|type) == "string" and (.flags|type) == "array")
+    and any(.keys[]; .key == "PBO_INTEGRATION" and .managed_by == "integrate")
+    and any(.keys[]; .key == "MY_OWN_KEY_NOBODY_KNOWS" and .known == false and .type == null)'
 
 J list;                 envelope list
 has "list: archives typed, with ts/type/id for restore" '(.archives|type) == "array" and (.archives|length) >= 1

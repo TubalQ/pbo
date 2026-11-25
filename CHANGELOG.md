@@ -3,6 +3,253 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
+## 0.6.0 (unreleased)
+
+Planned (ADR 0009): a config schema, `pbo config list|get|set|unset|check|template`,
+a strict KEY=VALUE reader instead of sourcing the config, moving CACHE_DIR with
+`pbo config set CACHE_DIR`, retention grouped per guest, `pbo doctor --fix`, and
+nothing that differs between installations hard-coded.
+
+Changes behaviour: **the config is no longer run as code.** pbo 0.5 sourced
+`/etc/pbo/config` (and `/etc/pve/pbo/config`) as shell code. pbo 0.6 reads them
+with a strict KEY=VALUE reader (ADR 0009, "Config grammar" and "Loading"): it
+gives every accepted line exactly the value bash would, assigns only keys of the
+config schema, and refuses everything else. A config with a line it refuses
+stops every pbo command, timer and the vzdump hook with exit 78 (`EX_CONFIG`),
+naming the first three lines; `pbo config check` lists them all. `install.sh`
+checks the existing config first and changes nothing when it would be refused
+(`--force` installs anyway). See the migration notes below.
+
+Changes behaviour: retention is grouped per guest for a guest whose snapshots lie
+under more than one path (CACHE_DIR moved, a host backup whose path list
+changed). For such a guest the next prune forgets snapshots that 0.5 kept;
+`RETENTION_GROUP_BY=paths` keeps the 0.5 behaviour for one release. A repo where
+no guest is split gets exactly the 0.5 restic calls, on the cache tier and
+offsite alike.
+
+Migration notes (0.5 → 0.6 config)
+- Run `pbo config check` (0.6) before or right after the upgrade; `install.sh`
+  runs the same reader and stops before changing anything. `pbo config check
+  --compare-bash` also sources the file the way 0.5 did (in a clean subshell; it
+  runs the file) and names every key the two read differently.
+- A config that only has `KEY=value` lines, quoted values and `${KEY}` references
+  to keys set earlier (the generated example, `pbo setup`'s output) needs no
+  change. The forms that are refused, and how to write them instead:
+
+  | Refused | Why | Write instead |
+  |---|---|---|
+  | `KEY=$(cmd)`, ``KEY=`cmd` `` | runs a command | the value itself (`KEY=/srv/backup`) |
+  | `KEY=a b` | bash runs `b` as a command with `KEY=a` set | `KEY="a b"` |
+  | `f() { ...; }`, `if`/`for`/`while`, `source file`, `. file` | code | delete them; the cluster-shared `/etc/pve/pbo/config` is read by itself |
+  | `KEY+=more`, `KEY=(a b)`, `KEY[0]=a` | appends, arrays | the whole value: `KEY="a b"` |
+  | `KEY=~/x`, `KEY=/a:~/x` | bash expands `~` | the full path: `KEY=/root/x` |
+  | `KEY=${OTHER:-default}`, `${#X}`, `$1`, `$HOME`, `$$` | expansions other than a config key | the value: `KEY=/x`, or `KEY=${OTHER}` with `OTHER` set on an earlier line |
+  | `KEY=${OTHER}` with `OTHER` not set earlier in the files | used before it is set (bash stops under `set -u`) | set `OTHER` first, or write the value |
+  | `export FOO=1` (any variable but the proxy ones) | changes the environment of everything root runs | a systemd drop-in (`Environment=FOO=1`) |
+  | `KEY="multi`<br>`line"`, a trailing `\` | a value must fit on one line | one line |
+
+  Accepted with a warning (pbo runs, `config check` and doctor name it): `export
+  KEY=...` of a config key (read, no longer exported to child processes), an
+  unknown key (never assigned), a key set twice (the last wins), Windows line
+  endings and a UTF-8 BOM (dropped; bash kept the CR in the value). `export`
+  of `http_proxy`, `https_proxy`, `no_proxy` (and upper-case) is accepted and
+  exported to the programs pbo runs, as before.
+- Only schema keys become variables. An environment switch set in the config
+  (`PBO_REPO=cache`, `PBO_NO_NOTIFY=1`, `TMPDIR=...`) was honoured by 0.5 and is
+  ignored now: set it in pbo's environment (doctor names it). `PATH`, `IFS`,
+  `BASH_ENV` and pbo's own names in the config change nothing.
+- In the cluster-shared `/etc/pve/pbo/config` a key flagged `exec` or
+  `local-only` (`RESTIC_SFTP_COMMAND`, `RESTIC_BIN`, `PBO_VZDUMP_HOOK`, ...) is
+  ignored: doctor reports it as FAIL and `config check` as an error. Set it in
+  `/etc/pbo/config` on each node.
+- The file rules are unchanged: a group- or world-writable config, or one owned
+  by anyone but root (or the janitor user), is refused (78).
+
+Added
+- A config schema (`lib/config_schema.sh`): one row per key with its type,
+  default (derived ones as `${KEY}` references to earlier keys), section, roles
+  (host/janitor) and flags (secret, exec, local-only, internal, advanced,
+  managed, follows, samefs, on_change, deprecated, template). It covers every key
+  `set_defaults` defaults, the keys that only had an inline default (`LOCK_DIR`,
+  `CATALOG_*_WAIT`, `JOB_*`, `TR_HISTORY`, `TR_STORAGE`, `VERIFY_READ_DATA`,
+  `VERIFY_SUBSET`, `PBO_KNOWN_HOSTS`, ...) and the test hooks. `set_defaults`
+  applies its defaults (0.6 M3) to every key the config and the environment left
+  unset or empty; `tests/config.sh` proves they are the ones the 0.5
+  `set_defaults` gave (a frozen copy), as root and as a plain user. The keys
+  that only had an inline default now have their value set too (`config list`
+  shows it); `PBO_CONFIG_VERSION` in `config show`'s `file_schema` is still what
+  the file declares.
+- `pbo config list [--all]` (value, source (`config`, `shared` for the cluster's
+  `/etc/pve/pbo/config`, `env` for a key only pbo's environment sets, or
+  `default`), type for this role's keys; `--all`
+  adds test hooks and the other role's keys), `pbo config get KEY` (one effective
+  value; a secret prints `<set>`/`<unset>`; an unknown key exits 64) and
+  `pbo config template [--role host|janitor]` (the example config generated from
+  the schema; `--role janitor` sets `PBO_ROLE`, `LOCAL_REPO=false`,
+  `OFFSITE_ENABLED=true`, the offsite repo and the password file, like
+  `etc/config.janitor.example`). `pbo config show` keeps its format and JSON envelope; each key now
+  also has `type`, `section`, `default`, `flags`, `roles`, `description`,
+  `managed_by` and `known`, and the envelope names `local_file`, the file pbo
+  writes. `config set|unset` exit 64 ("not yet").
+- `etc/config.example` is generated by `pbo config template` (same active keys
+  and values as before, so a new install gets the same first config); CI fails
+  when it is stale. Commented lines show each key's default, resolved (as in 0.5)
+  and quoted so that removing the `#` from any one line gives a line the strict
+  reader accepts and bash reads the same, alone or in the example
+  (`HOST_BACKUP_PATHS`, `HOST_BACKUP_EXCLUDES`, which is written out literally
+  now: the reader refuses its old `${RESTIC_PASSWORD_FILE:-...}`).
+- `pbo backup-host` always excludes `RESTIC_PASSWORD_FILE` and
+  `RESTIC_REST_PASSWORD_FILE` as configured, whatever `HOST_BACKUP_EXCLUDES`
+  says, so a literal exclude list cannot let the DR key into the repo after the
+  password file moved.
+
+- `RETENTION_GROUP_BY` (advanced; `guest` by default, or `paths`): `paths` is the
+  0.5 behaviour, kept for one release and removed in 0.7. Any other value is
+  treated as `paths` (prune logs a warning, doctor flags the value), so a typo
+  never turns on the deletions the key exists to opt out of.
+- Doctor names the guests whose snapshots lie under more than one path, with the
+  number of paths, read from the snapshot list it already loads: OK ("retained as
+  one guest each"), a warning with `RETENTION_GROUP_BY=paths` (the old paths are
+  then never pruned), and a warning for a guest that shares a path with another
+  vmid or with snapshots without a vmid tag (pbo never writes that; such a guest
+  stays retained per path). On a host whose offsite is append-only, doctor does
+  not judge the offsite's split guests by the host's setting: the janitor's
+  `RETENTION_GROUP_BY` decides there.
+
+- `pbo config check [--file F [--shared]] [--role host|janitor] [--compare-bash]`
+  (ADR 0009, "Config grammar"): reads the config with pbo's strict reader
+  (`lib/config_parse.sh`: KEY=VALUE lines, quotes, comments, `${KEY}` references
+  to config keys set earlier, nothing run) and lists every error and warning as
+  `file:line`: what the reader refuses (see the migration notes), exec/local-only
+  keys in the cluster-shared file (ignored by pbo, an error here), unknown keys,
+  keys set twice, test hooks, values of the wrong type, keys the role does not
+  use, deprecated keys, a BOM and CR line endings. `--file F` reads F alone.
+  `--compare-bash` (migration debugging) also sources the files as 0.5 did, in a
+  subshell with a clean environment, and names every key bash reads differently
+  and a file bash cannot parse or stops in; it runs the file, so it is never the
+  default. Exit 78 when pbo refuses or ignores a line, 0 otherwise; `--json`
+  gives `{status, ok, errors, warnings, ignored, files:[{file, errors, warnings,
+  valid_bash}], compare_bash:{agree, keys, differences, bash_failed} | null}`. It
+  reports a config every other command stops on, also a broken role config (a
+  bad `PBO_ROLE`, a janitor with `PBO_INTEGRATION` other than standalone or with
+  `OFFSITE_APPEND_ONLY=true`). Its messages never repeat a secret's value. On a
+  janitor, `config check` run as root stays root (the janitor user may read the
+  0640 config but not write it) and writes no log or audit line into the
+  janitor user's `LOG_DIR`; it also asks whether `JANITOR_USER` can read each
+  file (an error, exit 78, when it cannot: a 0600 root:root config stops every
+  other janitor command). Every other command still drops to `JANITOR_USER`,
+  which reads the config again. A role error is reported as one every command
+  stops on, not as a line pbo ignores.
+- Doctor reports what the reader found: a key pbo ignores in the cluster-shared
+  file is a FAIL, the reader's warnings (a key set twice, CR line endings, a BOM,
+  an exported config key, a reference taken from the environment) are WARNs (at
+  most ten, then a count), and an environment switch set in the config is named
+  as ignored.
+- `install.sh` reads the existing config (and the cluster-shared one) with the
+  strict reader of the version it installs before it replaces any file. When the
+  reader refuses a line it lists the lines (with the migration hint when the
+  file is valid bash), says "Nothing was changed" and exits; `--force` installs
+  anyway, with a warning. It reads `PBO_INTEGRATION` with the same reader. The
+  `.deb` postinst runs `pbo config check` and prints its findings; it never
+  fails the install.
+- Permission checks (ADR 0009, "Permissions (M6)"): one rule table
+  (`lib/perms.sh`) of path, owner, group, mode, ACL and class (fix, ask, check)
+  per role, with every path a config value. Doctor reports it: CACHE_DIR closed
+  with an ACL entry per unprivileged CT (as before), the directories above
+  CACHE_DIR, which each CT's mapped root must be able to pass (tested with
+  `setpriv`, a WARN naming the directory, the uid and the CTs), the cache repo's
+  top directory, the PVE spool (0755) and staging (0700, staged files 0600),
+  LOCK_DIR (0700), the logs (0600 in a 0755 LOG_DIR), STATE_DIR (0755), its
+  `runs` (0750), the catalogue (0755/0644), the restic cache (0700), the config
+  directory and file (host 0700/0600 root; janitor 0750/0640 root:<the group
+  named JANITOR_USER, as install.sh and pbo-janitor.service's `Group=` use>),
+  the DR key (0600 or 0400), the rest-server password file (0600 or 0400), the
+  ntfy credentials (no group write, no other access), the mount point's parent
+  (root only) and the metrics directory (root-owned); on a janitor
+  JANITOR_USER's own directories (LOCK_DIR too), logs and DR key (0400). The
+  config directory is only changed when it is pbo's own (`/etc/pbo`): any
+  other one (`PBO_CONFIG=/usr/local/etc/pbo.conf`) is checked only, and named
+  only when group or world can write it. In a cluster, a secret or exec key in
+  `/etc/pve/pbo/config` is named; a config on pmxcfs (an explicit `PBO_CONFIG`
+  below `/etc/pve` too) keeps pmxcfs's modes. A symlink where a directory or
+  file is expected, and a shared system or sticky directory
+  (`LOCK_DIR=/var/lock`), are reported and never changed; a DR key that is a
+  dangling symlink is a FAIL, one whose target others can read is named.
+  CACHE_DIR's ACL entry only counts when the ACL mask lets it through (a `chmod
+  700` masks it). On a filesystem without POSIX ACLs (ZFS `acltype=off`)
+  doctor says so and names the fix (`zfs set acltype=posixacl`). Owners are
+  checked as root and on a janitor.
+- `pbo doctor --fix [--fix-parents] [--perms-only]`: applies the class fix
+  rules, then shows the full report. `--dry-run` (global, or after `doctor`)
+  lists the changes and makes none; each change made is audit-logged (`perms fix
+  <path> mode 0755->0700`, `owner root->restic`, `acl +u:100000:--x`); `--json`
+  adds `changes: [{name, path, change, from, to, applied}]`. `--fix-parents`
+  also adds a traverse-only entry `u:<uid>:--x` to each directory above
+  CACHE_DIR that blocks an unprivileged CT's mapped root (nothing else is ever
+  changed there). `--perms-only` runs the permission section alone. On a
+  janitor started as root the fix runs as root (only root can give a file to
+  JANITOR_USER), then pbo re-execs as JANITOR_USER as before, which audits and
+  reports the changes. Every change goes through a file descriptor opened
+  without following symlinks and checked for type, hard links and path, so a
+  file swapped in between check and change is refused. Nothing is created.
+  Its audit.jsonl command record says `read_only: false` (a dry run: true).
+  With `--perms-only` a DR key that does not exist yet (before `pbo setup`) is
+  a warning, not a failure; full doctor still fails on it.
+- `install.sh` runs `pbo doctor --fix --perms-only` once the files are in
+  place (host and janitor) and shows the result; it never fails the install.
+
+Changed
+- Doctor's permission lines come from the rule table. The DR key line, the
+  CACHE_DIR lines (open, closed, closed without a CT's ACL entry: FAIL) and the
+  world-writable LOCK_DIR warning keep their meaning and wording; a fixable
+  finding ends in "(pbo doctor --fix)". A group-writable CACHE_DIR is now a
+  warning too (at most 0750). The other paths that pass are one line
+  (`permissions: N more path(s) as the rule table wants`). `pbo doctor` refuses
+  unknown arguments (exit 64; it ignored them). The CACHE_DIR closing every
+  backup does (`_cache_dir_protect`) is the CACHE_DIR rule of the table: same
+  order (ACL entries first, never closed without them or without setfacl), and
+  it never changes a shared directory (`CACHE_DIR=/tmp`) or runs in a dry run.
+- Retention per guest (ADR 0009, "Retention per guest"). `forget --group-by
+  paths` made each path a guest of its own, so after a CACHE_DIR move the old
+  path's snapshots would be kept for ever, and `host-<node>` snapshots were kept
+  per path list. pbo now runs the 0.5 forget calls unchanged and adds, for each
+  guest with more than one path, `forget --group-by '' --tag vmid=<id>` with the
+  policy that guest gets (its keep= tag and `KEEP_OVERRIDE_MIN_LAST` on offsite,
+  `RESTIC_KEEP_LAST` on the cache). The host stays out of the grouping, as
+  before. One runner serves the cache tier, offsite, the janitor's bound forget
+  (both passes planned with `--dry-run` and checked) and `pbo list --reasons`, so
+  the plan shown is the plan pruned. The cache tier finds its split guests in the
+  output of its own 0.5 forget (which lists every snapshot of the repo), so it
+  makes no call that 0.5 did not. Snapshots without a vmid tag are
+  treated exactly as in 0.5. Run `pbo --dry-run prune` (or `pbo list --reasons`)
+  before the first prune after the upgrade when doctor lists a guest.
+- The config is read, never sourced (0.6 M3): `load_config` keeps the merge
+  (with `PBO_CONFIG` unset the cluster-shared file, then `/etc/pbo/config`,
+  which wins; with `PBO_CONFIG` that file alone), the precedence (file, then
+  environment, then default; an empty value is the default) and the owner/mode
+  rules. `PBO_CONFIG_LOCAL` is always the local file, whether it exists or not,
+  and is the only file pbo writes: `pbo setup`/the menu (`_cfg_set`) and `pbo
+  integrate` (`PBO_INTEGRATION`) wrote to the cluster-shared file when no local
+  one existed (fixed). `pbo version` and every other start cost no more than the
+  0.5 `source`: the schema is loaded only as far as the loader needs it, and the
+  forks of the old file checks are gone.
+- `pbo config` shows `LOCK_DIR` and the inline-only keys with their values (they
+  were reported as secrets because the old key list missed them). Secrets are the
+  keys the schema flags (`NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN`,
+  `RESTIC_SFTP_COMMAND`) plus any key the schema does not know.
+- Doctor's config check reads the schema: every key's value is checked against
+  its type (a warning names the key and what is wrong), deprecated keys name their
+  replacement, and a key is "unknown" when neither the schema nor the list of
+  environment switches (`PBO_REPO`, `PBO_NO_NOTIFY`, `TMPDIR`, ...) has it
+  (before: when no upper-case word in pbo's code matched it). In a cluster the
+  unknown keys of `/etc/pve/pbo/config` are named too. A space-separated
+  `VZDUMP_STOP_VMIDS` is a warning: pbo splits it on commas only.
+- `pbo setup` offers the configured sftp repo (its path and host label) as the
+  default on a re-run, so accepting the default never starts a new, empty repo.
+  A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
+  every run; the host label is only a name, the ssh command says where to
+  connect).
+
 ## 0.5.0 (unreleased)
 
 Changes behaviour: pbo-web is gone, and the Proxmox integration is new (off by
@@ -41,7 +288,7 @@ Added
   `materialize` stages one archive in `PVE_STAGING_DIR` with `restic dump
   --no-lock` (cache first, offsite for offsite-only archives), or with
   by default as a symlink into `pbo-mount.service` (restic mount of the cache
-  repo, layout verified in spike A of ADR 0006; `PVE_CATALOG_MOUNT=false` for dump only).
+  repo, layout verified in spike A; `PVE_CATALOG_MOUNT=false` for dump only).
   From a GUI request (`--background`) a cache archive is linked through the
   mount inline, waiting at most `CATALOG_MOUNT_BG_WAIT` (10 s), so Show
   Configuration answers on the first click. `release` removes staged
@@ -172,11 +419,6 @@ Changed
   process reads through it: prune and verify wait up to
   `CATALOG_MOUNT_BUSY_WAIT` seconds (900), then exit 75. In standalone they no
   longer look at the mount (no systemctl call).
-- `pbo setup` offers the configured sftp repo (its path and host label) as the
-  default on a re-run, so accepting the default never starts a new, empty repo.
-  A first setup suggests `sftp:storagebox:pbo` (before: one fixed default for
-  every run; the host label is only a name, the ssh command says where to
-  connect).
 
 Fixed
 - CACHE_DIR (pbo's own dump directories and the Proxmox spool) was 0755, so a
@@ -212,9 +454,10 @@ Fixed
 - The question `integrate enable --catalog-only` asks now says what happens to
   `/etc/vzdump.conf`: untouched, or (when downgrading from a full enable) pbo's
   hook line removed. It used to list the file as if the hook were being added.
-- The audit test suite (now tests/audit.sh) used the default LOCK_DIR, so run as
-  root it shared the system's `/run/pbo/pbo.global` and left lock files there;
-  it now uses its own lock directory like the other suites.
+- The regression suite for the 0.4.0 audit fixes (now tests/regressions.sh) ran
+  with the default LOCK_DIR, so as root it could take `/run/pbo/pbo.global` and
+  leave lock files there; it now uses its own lock directory like the other
+  suites.
 - `ingest --pending` ran an unfiltered `restic copy` cache → offsite, which also
   re-uploaded cache snapshots that offsite retention had removed (for example
   old snapshots of a deleted guest). An ingest whose offsite
@@ -228,8 +471,8 @@ Fixed
   Sys.Modify) did not refuse it. A missing line now means privileged; with no
   config sidecar pbo reads the `pct.conf` vzdump puts in the archive. In place
   since the restic engine was added.
-- `pbo --dry-run run-schedule` took real backups (and stopped stop-mode guests):
-  each guest's `backup --queue` child never saw `--dry-run`. It now only logs
+- `pbo --dry-run run-schedule` took REAL backups: each guest's `backup --queue`
+  child never saw `--dry-run` (stop-mode guests were stopped). It now only logs
   and returns `would_backup` without starting anything (also with `--batch`).
 - Doctor and `integrate status` flagged a PVE job with "Keep all backups" as a
   `prune-backups` problem: the API returns `prune-backups` as an object, which is
@@ -378,7 +621,7 @@ Added
 - Metrics: per-guest restore-test time, result and duration, and the last
   `test_restore` run.
 
-Fixed (from an audit)
+Fixed (from a code audit)
 - `rotate-key` could leave the cache repo opening only with a new key it never
   saved (a failed `key list` ended it silently after the cache was rotated; the
   menu then shredded the new key). Now: add and verify the new key on every repo

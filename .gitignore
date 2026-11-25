@@ -25,3 +25,4 @@ venv/
 *.swp
 .DS_Store
 dist/
+/run-testlogs-all.out

@@ -48,8 +48,11 @@ _ago() {
 _hsize() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${1:-0}"; }
 
 # Write/update KEY=VALUE in the config (atomic, 0600) + update in memory.
+# Always the local file (PBO_CONFIG_LOCAL, load_config): never the cluster-shared
+# /etc/pve/pbo/config, which PBO_CONFIG_LOADED names when no local file exists
+# yet (pmxcfs would copy the value to every node). 0.6 M4 replaces this writer.
 _cfg_set() {
-    local k="$1" v="$2" cfg="${PBO_CONFIG_LOADED:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
+    local k="$1" v="$2" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" tmp
     # a fresh install (e.g. the .deb) has no config yet: create it, root only
     if [[ ! -f "$cfg" ]]; then
         install -d -m 0700 "$(dirname "$cfg")" && ( umask 077; printf '# pbo config, written by pbo setup\nPBO_CONFIG_VERSION=%s\n' "${PBO_CONFIG_SCHEMA:-1}" > "$cfg" ) \

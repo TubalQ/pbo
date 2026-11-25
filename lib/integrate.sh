@@ -536,9 +536,11 @@ _integ_write_file() {
     log_info "integrate: $f changed"
 }
 
-# _integ_set_mode <mode>: PBO_INTEGRATION in the config file (and in memory).
+# _integ_set_mode <mode>: PBO_INTEGRATION in the local config file (and in
+# memory). The local file, as _cfg_set writes it (PBO_CONFIG_LOCAL): the mode is
+# per node, and the cluster-shared file is never written.
 _integ_set_mode() {
-    local m="$1" cfg="${PBO_CONFIG_LOADED:-${PBO_CONFIG:-/etc/pbo/config}}" cur
+    local m="$1" cfg="${PBO_CONFIG_LOCAL:-${PBO_CONFIG:-/etc/pbo/config}}" cur
     cur="$( [[ -r "$cfg" ]] && sed -nE 's/^PBO_INTEGRATION=["'"'"']?([a-z]*)["'"'"']?[[:space:]]*$/\1/p' "$cfg" | tail -1 )"
     # already so (a config without the key is standalone)
     if [[ "$cur" == "$m" ]] || [[ -z "$cur" && "$m" == standalone && "$(_integration_mode)" == standalone ]]; then

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # lib/views.sh: read-only views for scripts and monitoring:
-# guests, timers, config, version. Human output by default, the contract with --json.
+# guests, timers, version (config: lib/config.sh). Human output by default, the contract with --json.
 
 # --- guests -----------------------------------------------------------------
 # One entry per guest: identity, policy, newest snapshot, last restore test.
@@ -152,49 +152,7 @@ rdo_timers() {
 }
 
 # --- config -----------------------------------------------------------------
-# The effective configuration: every known key (defaults in lib/common.sh) plus
-# whatever the file sets, with where the value came from. Secrets are never
-# printed (only whether they are set); credentials inside URLs are masked.
-_config_known_keys() {
-    grep -ohE '^[[:space:]]+: "\$\{[A-Z][A-Z0-9_]+:=' "${SELF_DIR}/lib/common.sh" | grep -oE '[A-Z][A-Z0-9_]+'
-}
-# Values are shown only for an ALLOWLIST: keys pbo knows (defaults in
-# lib/common.sh) that cannot carry a credential. Everything else, including any
-# key only the config file has, is reported as {secret:true, set:bool}.
-# NTFY_TOPIC/NTFY_URL: on a public ntfy server the topic is the password.
-# RESTIC_SFTP_COMMAND: may carry e.g. "sshpass -p ...".
-_config_is_secret() {
-    [[ "$1" =~ (TOKEN|PASSWORD|SECRET|PASS|KEY|ACCESS|CREDENTIAL|CREDS|COMMAND|TOPIC)$ ]] && return 0
-    [[ "$1" == NTFY_URL ]] && return 0
-    grep -qx "$1" <<<"$(_config_known_keys)" || return 0   # unknown key: never print it
-    return 1
-}
-# _config_mask_url <value>: drop credentials from anything URL-like: userinfo
-# (with or without a password), query strings, and the user in sftp:user@host.
-_config_mask_url() { _mask_url "$1"; }
-
-rdo_config() {
-    case "${1:-show}" in show) ;; *) die "$EX_USAGE" "config: only 'show' is supported (edit $PBO_CONFIG_LOADED, or run 'pbo setup')";; esac
-    local f="${PBO_CONFIG_LOADED:-}" infile='' k v lines=''
-    [[ -n "$f" && -r "$f" ]] && infile="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=.*/\2/p' "$f" | sort -u)"
-    while read -r k; do
-        [[ -n "$k" ]] || continue
-        v="${!k-}"
-        local src=default; grep -qx "$k" <<<"$infile" && src=config
-        if _config_is_secret "$k"; then
-            lines+="$(jq -cn --arg k "$k" --arg s "$src" --argjson set "$([[ -n "$v" ]] && echo true || echo false)" \
-                '{key:$k, value:null, secret:true, set:$set, source:$s}')"$'\n'
-        else
-            v="$(_config_mask_url "$v")"
-            lines+="$(jq -cn --arg k "$k" --arg v "$v" --arg s "$src" '{key:$k, value:$v, secret:false, source:$s}')"$'\n'
-        fi
-    done < <({ _config_known_keys; printf '%s\n' "$infile"; } | sort -u)
-    local out; out="$(printf '%s' "$lines" | jq -cs --arg f "$f" --arg ver "${PBO_CONFIG_VERSION:-}" --argjson schema "${PBO_CONFIG_SCHEMA:-1}" \
-        '{status:"ok", ok:true, file:(if $f == "" then null else $f end), config_schema:$schema,
-          file_schema:(if $ver == "" then null else ($ver | tonumber? // $ver) end), keys:.}')"
-    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_emit "$out"; return "$EX_OK"; fi
-    jq -r '.keys[] | "\(.key)=\(if .secret then (if .set then "<set>" else "<unset>" end) else .value end)\(if .source == "default" then "   # default" else "" end)"' <<<"$out"
-}
+# `pbo config`: lib/config.sh.
 
 # --- version ----------------------------------------------------------------
 rdo_version() {

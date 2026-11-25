@@ -49,7 +49,8 @@ token/topic and the SFTP command, so keep it out of version control.
 
 ```bash
 pbo status                     # the lock and the latest job
-pbo doctor                     # health check: repo, timer, key perms, per-guest age
+pbo doctor                     # health check: repo, timer, permissions, per-guest age
+pbo --dry-run doctor --fix     # what the permission fix would change (then without --dry-run)
 pbo backup <vmid>              # one guest: dump, store in restic, copy offsite
 pbo --dry-run backup <vmid>    # show the plan without touching anything
 pbo list [vmid]                # what is offsite (restic snapshots)

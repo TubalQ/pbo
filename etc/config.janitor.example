@@ -36,6 +36,9 @@ KEEP_OFFSITE_YEARLY=0
 # Snapshots dated further than this into the future block prune (a writer that
 # backdates or postdates snapshots to game retention).
 #FUTURE_SKEW=3600
+# A guest whose snapshots lie under several paths (its host moved CACHE_DIR) is
+# retained as one guest; paths = 0.5 behaviour, kept for one release, removed in 0.7.
+#RETENTION_GROUP_BY=guest
 
 # Each daily run reads the next 1/30 of the data, so all of it is read about
 # once a month. Cheap here: it's local disk.

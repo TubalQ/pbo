@@ -20,100 +20,39 @@ readonly EX_CANTCREAT=73    # cannot create/open file (lock file, holder)
 readonly EX_CONFIG=78       # configuration error
 
 # ---------------------------------------------------------------------------
-# Default values. Overridden by the config file (KEY=VALUE) sourced afterwards.
+# Default values: the schema's (lib/config_schema.sh), for every key the config
+# and the environment left unset or empty; then the paths pbo derives itself.
 # ---------------------------------------------------------------------------
+# set_defaults: every schema key that is unset or empty gets its default, in
+# table order (a derived default such as ${CACHE_DIR}/repo sees the keys before
+# it; @fn defaults are computed). The same rule as the `: "${...:=default}"`
+# lines of the 0.5 set_defaults (tests/config.sh compares with a frozen copy).
+# It runs on every pbo start: only the core of the schema is loaded
+# (_cs_core: the keys and their raw defaults), a ${REF} is expanded here from
+# the value just assigned, and nothing forks.
 set_defaults() {
-    : "${CACHE_DIR:=/var/cache/pbo}"
-    : "${LOG_DIR:=/var/log/pbo}"
-    : "${STATE_DIR:=/var/lib/pbo}"
-    # locks in a directory only pbo can write: /var/lock is world-writable, and
-    # a local user could pre-create or hold a lock file (fs.protected_regular)
-    if [[ "$(id -u)" == 0 ]]; then : "${LOCK_DIR:=/run/pbo}"; else : "${LOCK_DIR:=${STATE_DIR}/lock}"; fi
-    : "${VZDUMP_MODE:=snapshot}"
-    : "${VZDUMP_STOP_VMIDS:=}"         # these (+ auto-detected fuse CTs) → --mode stop
-    : "${BACKUP_ORDER:=auto}"          # auto = all guests on THIS node; or an explicit csv (critical-first)
-    : "${PRUNE_OWNER:=}"               # cluster: restrict prune to this nodename (empty = any node may prune)
-    : "${GLOBAL_LOCK_TIMEOUT:=7200}"
-    : "${SCHEDULE_LOCK_TIMEOUT:=${GLOBAL_LOCK_TIMEOUT}}"   # how long a queued prune/run-schedule waits for the other
-    : "${KEEP_LOCAL:=2}"
-    : "${KEEP_OFFSITE_DAILY:=7}"
-    : "${KEEP_OFFSITE_WEEKLY:=4}"
-    : "${KEEP_OFFSITE_MONTHLY:=6}"
-    : "${KEEP_OVERRIDE_MIN_LAST:=3}"   # a per-guest keep tag never keeps fewer than this many
-    : "${KEEP_OFFSITE_YEARLY:=0}"      # 0 = no yearly bucket
-    : "${FUTURE_SKEW:=3600}"           # seconds a snapshot may be dated ahead before it counts as "from the future"
-    : "${NTFY_URL:=}"                  # ntfy server (base URL); empty = no notifications
-    : "${NTFY_TOKEN:=}"                # otherwise read from NTFY_CREDS_FILE
-    : "${NTFY_TOPIC:=}"                # otherwise NTFY_TOPIC_WARN from the creds file
-    : "${NTFY_CREDS_FILE:=/etc/ntfy.creds}"
-    : "${NTFY_ON_SUCCESS:=false}"      # deprecated: NOTIFY_LEVEL=all
-    : "${NOTIFY_LEVEL:=}"              # fail | warn | all (empty: fail, or all if NTFY_ON_SUCCESS=true)
-    : "${NOTIFY_PVE:=auto}"            # Proxmox notification system: auto (when no ntfy) | true (also) | false
-    : "${OFFSITE_ENABLED:=true}"       # false = local repo only, no offsite copy
-    : "${PBO_ROLE:=host}"              # host = PVE node that backs up guests | janitor = storage-side box that owns offsite retention
-    : "${JANITOR_USER:=restic}"         # janitor: the user rest-server runs as; root re-execs as this user
-    : "${OFFSITE_APPEND_ONLY:=false}"  # true = offsite refuses deletes (rest-server --append-only); this host never prunes it
-    : "${TR_WAIT_TRIES:=30}"           # test-restore: number of attempts to reach the guest
-    : "${TR_WAIT_SLEEP:=2}"            # test-restore: seconds between attempts
-    : "${TR_PER_RUN:=1}"               # test-restore --scheduled: guests per run
-    : "${TR_MAX_AGE:=1814400}"         # 21 days, doctor warns when the last restore test is older
-    : "${TR_REPORT_DAYS:=90}"          # restore-report / doctor coverage window (days)
-    : "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:=false}"  # confirm that Hetzner snapshots are on
-    : "${DOCTOR_MAX_AGE:=172800}"      # 48h, doctor flags a guest whose newest snapshot is older
-    : "${VERIFY_ROTATE:=12}"           # verify --scheduled reads 1/N of the data per run, all of it every N runs (0 = structure only)
-    : "${VERIFY_MAX_AGE:=3456000}"     # 40 days, doctor warns when the last verify is older
-
-    # --- Proxmox integration (ADR 0006/0007) ---
-    : "${PBO_INTEGRATION:=standalone}"                    # standalone (pbo.timer backs up every guest) | both | integrated
-    : "${PVE_STORAGE_ID:=pbo}"                            # the pbo storage that `pbo integrate` adds to PVE
-    : "${PVE_SPOOL_DIR:=${CACHE_DIR}/spool}"              # where PVE jobs write archives (same filesystem as CACHE_DIR)
-    : "${PVE_STAGING_DIR:=${CACHE_DIR}/staging}"          # archives materialised for a PVE restore
-    : "${PVE_STAGING_TTL:=21600}"                         # seconds a staged archive is kept (6 h)
-    : "${PVE_STAGING_LINK_TTL:=900}"                      # seconds a staged symlink into the mount is kept while nothing reads through it
-    : "${PVE_CATALOG_MOUNT:=true}"                        # true = stage cache archives as symlinks into pbo-mount.service (restic mount); false = restic dump
-    : "${PVE_CATALOG_MOUNT_DIR:=/run/pbo/mnt}"            # where pbo-mount.service mounts the cache repo
-    : "${CATALOG_MOUNT_BUSY_WAIT:=900}"                   # prune/verify wait this long (s) for a restore reading through the mount, then exit 75
-    : "${CATALOG_MAX_AGE:=7200}"                          # doctor warns when the catalogue is older (2 h)
-    : "${VZDUMP_CONF:=/etc/vzdump.conf}"                  # vzdump defaults (storage: for jobs without one)
-    : "${PVE_STORAGE_CFG:=/etc/pve/storage.cfg}"          # read when `pvesh get /storage` fails
-    : "${PBO_CATALOG:=/var/lib/pbo/catalog/index.json}"   # fixed path the storage plugin reads; override only in tests
-    : "${VZDUMP_LOCK:=/var/run/vzdump.lock}"              # vzdump's node lock: `ingest --pending` leaves the spool alone while it is held
-    : "${PBO_PVE_PLUGIN_PATH:=/usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm}"  # where `pbo integrate`/doctor look for the storage plugin
-    : "${PBO_PVE_PLUGIN_CHECK:=}"                         # empty: perl -MPVE::Storage load test of the plugin; else this shell command (tests)
-    : "${PBO_VZDUMP_HOOK:=}"                              # empty: the vzdump-hook next to this pbo (install.sh /usr/local/lib/pbo, package /usr/lib/pbo)
-
-    # --- restic engine ---
-    : "${BACKUP_MODE:=stream}"                            # stream (one-by-one) | batch (dump all→upload), SAME repo
-    : "${RESTIC_BIN:=restic}"                             # override in tests (scratch binary)
-    : "${LOCAL_REPO:=true}"                               # true=cached (local repo+copy), false=offsite-only
-    : "${RESTIC_CACHE_REPO:=${CACHE_DIR}/repo}"           # local restic repo (cache tier)
-    : "${RESTIC_OFFSITE_REPO:=}"                          # sftp:user@host:port/path (native) or local dir (test)
-    : "${RESTIC_PASSWORD_FILE:=/etc/pbo/restic-pass}"  # repo password (DR key), 0600
-    : "${RESTIC_CACHE_DIR:=${STATE_DIR}/restic-cache}"    # restic's own metadata cache
-    : "${RESTIC_KEEP_LAST:=${KEEP_LOCAL}}"               # local repo: keep N latest per guest
-    : "${RESTIC_SFTP_COMMAND:=}"                          # full ssh command for native sftp (port/key); empty=restic default
-    : "${RESTIC_RETRY_LOCK:=10m}"                         # write ops wait this long on a busy repo lock (another node, a manual restic). Empty = fail at once
-    : "${RESTIC_SFTP_CONNECTIONS:=8}"                     # parallel sftp connections (Storage Box ~10 max), speeds up restore considerably
-    : "${RESTIC_REST_USERNAME:=}"                         # rest-server basic auth user (rest: repos); with --private-repos also the first path segment
-    : "${RESTIC_REST_PASSWORD_FILE:=}"                    # file with that user's HTTP password, 0600
-    : "${RESTIC_CACERT:=}"                                # pinned cert/CA for a self-signed rest-server (restic --cacert)
-
-    # --- host backup (config + rebuild metadata, manual: `pbo backup-host`) ---
-    # Curated, space-separated. Missing paths are skipped (not an error).
-    : "${HOST_BACKUP_PATHS:=/etc/pve /etc/network/interfaces /etc/network/interfaces.d /etc/hosts /etc/hostname /etc/resolv.conf /etc/fstab /etc/vzdump.conf /etc/pbo /etc/systemd/system /etc/cron.d /etc/apt/sources.list /etc/apt/sources.list.d}"
-    # SSH keys and the DR key are deliberately excluded (secrets never go in the
-    # repo they protect / the host must keep its own offline key copy).
-    # never into the repo they protect, and no private keys: the DR key, the rest
-    # password, the 0.4 pbo-web TLS key (if left), PVE's private dir (root CA key, authkey, tokens),
-    # node TLS keys, SSH keys
-    : "${HOST_BACKUP_EXCLUDES:=${RESTIC_PASSWORD_FILE} ${RESTIC_REST_PASSWORD_FILE:-/etc/pbo/rest-pass} /etc/pbo/rest-pass /etc/pbo/web-tls /etc/pbo/*.old-* /etc/pve/priv /etc/pve/nodes/*/*.key /etc/pve/local/*.key /etc/pve/*.key /root/.ssh **/.ssh **/id_rsa **/id_ed25519 **/id_ecdsa **/*.key}"
-
-    # Derived paths.
+    _cs_ensure core
+    local _sd_i _sd_k _sd_d _sd_out _sd_ref
+    for _sd_i in "${!CS_ORDER[@]}"; do
+        _sd_k="${CS_ORDER[_sd_i]}"
+        [[ -z "${!_sd_k-}" ]] || continue
+        _sd_d="${_CS_DEFV[_sd_i]}"
+        if [[ "$_sd_d" == @fn ]]; then "_cfgdef_$_sd_k"; _sd_d="$_CS_R"
+        elif [[ "$_sd_d" == *'${'*'}'* ]]; then
+            # ${REF}: an earlier key, assigned above (as _cs_default_r expands it)
+            _sd_out=''
+            while [[ "$_sd_d" == *'${'*'}'* ]]; do
+                _sd_out+="${_sd_d%%\$\{*}"; _sd_d="${_sd_d#*\$\{}"
+                _sd_ref="${_sd_d%%\}*}"; _sd_d="${_sd_d#*\}}"
+                [[ -z "${CS_FLAGS[$_sd_ref]+x}" ]] || _sd_out+="${!_sd_ref-}"
+            done
+            _sd_d="$_sd_out$_sd_d"
+        fi
+        printf -v "$_sd_k" '%s' "$_sd_d"
+    done
+    # Derived paths: not config keys, always below the directories they follow.
     LOG_FILE="${LOG_DIR}/pbo.log"
     AUDIT_FILE="${LOG_DIR}/audit.log"
-    : "${AUDIT_JSON:=${LOG_DIR}/audit.jsonl}"        # one JSON object per line: every command + audit events
-    : "${METRICS_ENABLED:=true}"
-    : "${METRICS_FILE:=${STATE_DIR}/pbo.prom}"       # node_exporter textfile; point it into --collector.textfile.directory
     GLOBAL_LOCK_FILE="${LOCK_DIR}/pbo.global"
     GLOBAL_HOLDER_FILE="${STATE_DIR}/global.holder"
     SCHED_LOCK_FILE="${LOCK_DIR}/pbo.schedule"
@@ -122,36 +61,119 @@ set_defaults() {
 }
 
 # ---------------------------------------------------------------------------
-# Config loading. The file is sourced as code: refused when group-/world-writable
-# or owned by anyone but root (or the user pbo runs as). Keep it 0600: it can hold
-# an ntfy token/topic and the SFTP command.
+# Config loading (0.6 M3, ADR 0009 "Loading"). The files are READ with the
+# strict reader (lib/config_parse.sh), never run as code, and only schema keys
+# become shell variables. The owner and mode rules stay: exec keys still name
+# programs root runs. Keep the file 0600: it can hold an ntfy topic and the
+# SFTP command.
 # ---------------------------------------------------------------------------
-# Source one config file if it exists. Refuse it if group-/world-WRITABLE, it
-# controls what root runs. (Readable by others is fine; it holds no secrets.)
-_source_config_file() {
-    local cfg="$1"
+# _config_file_check <file>: 0 when pbo may read it, 1 when it does not exist, 2
+# when pbo must refuse it (_CFC_MSG says why): group- or world-WRITABLE (it
+# decides what root runs; readable by others is no reason to refuse), or owned
+# by anyone but root or the user pbo runs as (the janitor user on a janitor;
+# /etc/pve files belong to root via pmxcfs).
+_config_file_check() {
+    local cfg="$1" st perms owner grp oth
+    _CFC_MSG=''
     [[ -f "$cfg" ]] || return 1
-    local perms; perms="$(stat -c '%a' "$cfg")"
-    local grp="${perms: -2:1}" oth="${perms: -1:1}"
+    # one stat for both: this runs on every pbo start
+    st="$(stat -c '%a %u' -- "$cfg" 2>/dev/null)" || { _CFC_MSG="cannot stat the config: $cfg"; return 2; }
+    perms="${st% *}"; owner="${st#* }"
+    grp="${perms: -2:1}" oth="${perms: -1:1}"
     if (( (grp & 2) || (oth & 2) )); then
-        printf 'pbo: REFUSING to source group-/world-writable config (%s): %s\n' "$perms" "$cfg" >&2
-        exit "$EX_CONFIG"
+        _CFC_MSG="REFUSING to read a group-/world-writable config ($perms): $cfg"; return 2
     fi
-    # it is sourced as code: it must belong to root or to whoever runs pbo (the
-    # janitor user on a janitor). /etc/pve files are owned by root via pmxcfs.
-    local owner; owner="$(stat -c '%u' "$cfg")"
-    if [[ "$owner" != 0 && "$owner" != "$(id -u)" ]]; then
-        printf 'pbo: REFUSING to source a config owned by uid %s: %s\n' "$owner" "$cfg" >&2
-        exit "$EX_CONFIG"
+    # EUID: what `id -u` prints, without the fork
+    if [[ "$owner" != 0 && "$owner" != "$EUID" ]]; then
+        _CFC_MSG="REFUSING to read a config owned by uid $owner: $cfg"; return 2
     fi
-    # shellcheck disable=SC1090
-    source "$cfg"
     return 0
 }
 
+# _cfg_parse_ensure: the strict reader (lib/config_parse.sh) and the schema
+# loaded; ./pbo sources both, a caller that sourced only this file gets them here.
+_cfg_parse_ensure() {
+    _cs_ensure core
+    if ! declare -F _cfg_parse_file >/dev/null; then
+        local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
+        # shellcheck source=lib/config_parse.sh
+        source "$d/config_parse.sh"
+    fi
+}
+
+# _cfg_apply: what the reader accepted becomes shell variables. Schema keys
+# only: an unknown key is never assigned, so a PATH, IFS, BASH_ENV or one of
+# pbo's own (readonly) names in the file changes nothing. printf -v, as an
+# assignment in a sourced file did: a key the environment exported stays
+# exported with the file's value. The proxy variables the config exports
+# (CFG_EXPORT) are exported to the programs pbo runs.
+_cfg_apply() {
+    local _ca_k
+    for _ca_k in "${!CFG_VAL[@]}"; do
+        [[ -n "${CS_FLAGS[$_ca_k]+x}" ]] || continue
+        printf -v "$_ca_k" '%s' "${CFG_VAL[$_ca_k]}"
+    done
+    for _ca_k in "${!CFG_EXPORT[@]}"; do export "$_ca_k=${CFG_EXPORT[$_ca_k]}"; done
+}
+
+# _config_refuse: the config has lines the reader refuses. pbo stops (78)
+# rather than run on the rest: a lost line would silently fall back to a
+# default (another repo, another retention). The first three errors, the way
+# to see them all, and for a file bash accepts the hint that 0.6 no longer
+# runs it as code. stderr only: the logs are not set up yet.
+_config_refuse() {
+    local e n=0 f
+    printf 'pbo: the config has %d line(s) pbo cannot read:\n' "${#CFG_ERRORS[@]}" >&2
+    for e in "${CFG_ERRORS[@]}"; do
+        (( n++ < 3 )) || break
+        printf '  %s\n' "$(_mask_url "$e")" >&2
+    done
+    printf "pbo: run 'pbo config check' for all of them\n" >&2
+    for f in "${PBO_CONFIG_FILES[@]}"; do
+        [[ " ${CFG_ERRORS[*]}" == *" $f:"* ]] || continue
+        "${BASH:-bash}" -n -- "$f" 2>/dev/null || continue
+        printf 'pbo: %s is valid bash, but pbo 0.6 no longer runs the config as code; see the 0.6.0 migration notes in CHANGELOG.md\n' "$f" >&2
+    done
+    exit "$EX_CONFIG"
+}
+
+# _cfg_test_log: test hook (tests/all.sh sets PBO_TEST_CONFIG_LOG). Every file a
+# test run loads is logged with the reader's verdict and, for a file it accepts,
+# the keys bash reads differently (_cfg_compare_bash), so the whole suite proves
+# the reader agrees with bash on every config the tests write. A file the
+# reader refuses is not compared: it may hold code a test proves pbo never runs.
+# Values are not logged.
+_cfg_test_log() {
+    local f e k
+    declare -ga CFG_DIFF=()
+    (( ${#CFG_ERRORS[@]} )) || _cfg_compare_bash
+    {
+        for f in "${PBO_CONFIG_FILES[@]}"; do printf 'FILE\t%s\n' "$f"; done
+        for e in "${CFG_ERRORS[@]}"; do printf 'ERROR\t%s\n' "$e"; done
+        for k in "${CFG_DIFF[@]}"; do printf 'DIFF\t%s\t%s\n' "${CFG_SRC[$k]#*:}" "$k"; done
+    } >> "$PBO_TEST_CONFIG_LOG" 2>/dev/null || true
+}
+
+# load_config: the config files, merged as 0.5 sourced them: with PBO_CONFIG
+# unset the cluster-shared /etc/pve/pbo/config (a non-secret base replicated by
+# pmxcfs, edited once for the whole cluster), then the local /etc/pbo/config,
+# which wins; with PBO_CONFIG set that file alone. A file value beats the
+# environment, which beats the default; an empty value means the default.
+# Sets:
+#   PBO_CONFIG_LOCAL   the local file (/etc/pbo/config or PBO_CONFIG), whether
+#                      it exists or not: the only file pbo ever writes
+#   PBO_CONFIG_FILES   the files read, in order
+#   PBO_CONFIG_LOADED  the last file read (the shared one when no local file
+#                      exists). Kept for 0.5 callers that only READ it; a writer
+#                      must use PBO_CONFIG_LOCAL, never this
+#   PBO_CONFIG_SHARED_LOADED  the shared file, when it was read
+#   PBO_CONFIG_EXPLICIT       PBO_CONFIG as given (jobs pass it on)
+# plus the reader's results (CFG_VAL, CFG_SRC, CFG_ENV, ...) for config and
+# doctor. PBO_CFG_LENIENT=1 (main(), `pbo config check|template` only): lines
+# the reader refuses are left out instead of stopping pbo, so check can report
+# them.
 load_config() {
-    local cfg="${PBO_CONFIG:-/etc/pbo/config}" loaded=""
-    PBO_CONFIG_EXPLICIT="${PBO_CONFIG:-}"   # jobs pass this on, so they load the same files
+    PBO_CONFIG_EXPLICIT="${PBO_CONFIG:-}"
     # An explicit PBO_CONFIG that isn't there is a mistake, not "use defaults":
     # defaults point at a different repo (a leaked PBO_CONFIG could make a
     # janitor prune the empty default cache repo).
@@ -159,70 +181,148 @@ load_config() {
         printf 'pbo: PBO_CONFIG=%s does not exist\n' "$PBO_CONFIG" >&2
         exit "$EX_CONFIG"
     fi
-    # Cluster: a shared, non-secret base config replicated by pmxcfs (edit once for
-    # the whole cluster). The local config overrides it; secrets stay local only.
-    # Skipped when PBO_CONFIG is set explicitly (that file stands alone).
-    if [[ -z "${PBO_CONFIG:-}" ]] && _source_config_file /etc/pve/pbo/config; then
-        loaded="/etc/pve/pbo/config"
-    fi
-    _source_config_file "$cfg" && loaded="$cfg"
-    PBO_CONFIG_LOADED="$loaded"
+    _cfg_parse_ensure
+    # the schema keys the environment holds, taken before any is assigned: what
+    # a ${KEY} no earlier line set refers to, and config list's source=env
+    _cfg_env_snapshot
+    _cfg_reset
+    _cfg_config_files
+    PBO_CONFIG_LOCAL='' PBO_CONFIG_LOADED='' PBO_CONFIG_SHARED_LOADED=''
+    local _lc_i _lc_f _lc_o _lc_rc
+    for _lc_i in "${!_CFG_FPATH[@]}"; do
+        _lc_f="${_CFG_FPATH[_lc_i]}" _lc_o="${_CFG_FORIGIN[_lc_i]}"
+        [[ "$_lc_o" == shared ]] || PBO_CONFIG_LOCAL="$_lc_f"
+        _lc_rc=0; _config_file_check "$_lc_f" || _lc_rc=$?
+        (( _lc_rc != 1 )) || continue
+        if (( _lc_rc == 2 )); then printf 'pbo: %s\n' "$_CFC_MSG" >&2; exit "$EX_CONFIG"; fi
+        # pmxcfs gives the cluster-shared file root:www-data 0640: a non-root
+        # caller outside that group runs on the rest, as with a local file it
+        # cannot reach (0.5's source failed the same way and went on). Root reads
+        # everything, so a node's backups never skip it.
+        if [[ "$_lc_o" == shared && "$EUID" != 0 && ! -r "$_lc_f" ]]; then
+            printf 'pbo: note: %s is not readable by uid %s (pmxcfs: root:www-data 0640); skipped\n' "$_lc_f" "$EUID" >&2
+            continue
+        fi
+        PBO_CONFIG_FILES+=("$_lc_f")
+        _cfg_parse_file "$_lc_f" "$_lc_o" || true
+        PBO_CONFIG_LOADED="$_lc_f"
+        [[ "$_lc_o" != shared ]] || PBO_CONFIG_SHARED_LOADED="$_lc_f"
+    done
+    [[ -z "${PBO_TEST_CONFIG_LOG:-}" ]] || _cfg_test_log
+    (( ${#CFG_ERRORS[@]} == 0 )) || [[ "${PBO_CFG_LENIENT:-0}" == 1 ]] || _config_refuse
+    _cfg_apply
     set_defaults
     ensure_dirs
 }
 
-# Config schema. Bump when a key is renamed or changes meaning, and teach
-# _config_check about the old name. A config may declare PBO_CONFIG_VERSION.
+# Config schema version. Bump when a key is renamed or changes meaning, and mark
+# the old key deprecated=<NEW> in lib/config_schema.sh. A config may declare
+# PBO_CONFIG_VERSION.
 readonly PBO_CONFIG_SCHEMA=1
 
-# _config_check <file>: lines for doctor. Unknown keys are usually typos
-# (KEEP_OFSITE_DAILY silently falls back to the default), so name them.
-# "Known" = every upper-case identifier pbo's own code mentions.
+# _cs_ensure [core]: the schema (lib/config_schema.sh) loaded, the whole table or
+# (core) just what load_config needs (_cs_core). ./pbo sources the file; a
+# caller that sourced only this file (tests, helpers) gets it here.
+_cs_ensure() {
+    if ! declare -F _cs_load >/dev/null; then
+        local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
+        # shellcheck source=lib/config_schema.sh
+        source "$d/config_schema.sh"
+    fi
+    if [[ "${1:-}" == core ]]; then _cs_core; else _cs_load; fi
+}
+
+# _config_check <file> [<shared file>]: lines for doctor, driven by the schema.
+# Unknown keys are usually typos (KEEP_OFSITE_DAILY silently falls back to the
+# default), so name them, per file: the local one and the cluster-shared one
+# load_config also read. An environment switch set in a file (PBO_REPO=cache)
+# is named as one: pbo 0.5 honoured it (it sourced the file), 0.6 ignores it.
+# The effective values are checked once: a value of the wrong type is named
+# with what pbo does instead; a deprecated key in use names its replacement; a
+# config newer than this pbo says so.
 _config_check() {
-    local f="$1"; CC_LINES=(); CC_WARNS=0
+    local f="$1" sf="${2:-}"; CC_LINES=(); CC_WARNS=0
     [[ -r "$f" ]] || return 0
-    local known keys k unknown=()
-    known="$(grep -ohE '\b[A-Z][A-Z0-9_]{2,}\b' "${SELF_DIR}/pbo" "${SELF_DIR}"/lib/*.sh 2>/dev/null | sort -u)"
-    keys="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=.*/\2/p' "$f" | sort -u)"
-    while read -r k; do
-        [[ -n "$k" ]] || continue
-        grep -qx "$k" <<<"$known" || unknown+=("$k")
-    done <<<"$keys"
-    if (( ${#unknown[@]} )); then
-        CC_LINES+=("unknown config key(s) in $f: ${unknown[*]} (typo? pbo ignores them)"); CC_WARNS=1
-    fi
-    case "${NOTIFY_LEVEL:-}" in
-        ""|fail|warn|all) ;;
-        *) CC_LINES+=("NOTIFY_LEVEL='${NOTIFY_LEVEL}' is not fail|warn|all: only failures are sent"); CC_WARNS=1 ;;
-    esac
-    if [[ "${NTFY_ON_SUCCESS:-false}" == true && -z "${NOTIFY_LEVEL:-}" ]]; then
-        CC_LINES+=("NTFY_ON_SUCCESS is replaced by NOTIFY_LEVEL=fail|warn|all (still honoured: true means all)"); CC_WARNS=1
-    fi
-    case "${PBO_INTEGRATION:-standalone}" in
-        standalone|both|integrated) ;;
-        *) CC_LINES+=("PBO_INTEGRATION='${PBO_INTEGRATION}' is not standalone|both|integrated: treated as standalone (pbo.timer backs up every guest)"); CC_WARNS=1 ;;
-    esac
-    local v="${PBO_CONFIG_VERSION:-$PBO_CONFIG_SCHEMA}"
+    _cs_ensure
+    local keys k v msg unknown=() switches=() cf files=("$f") hasx=0
+    [[ -n "$sf" && "$sf" != "$f" && -r "$sf" ]] && files+=("$sf")
+    # the proxy variables a file exports (CFG_EXPORT, load_config's read) reach
+    # the programs pbo runs: not unknown. A bare HTTPS_PROXY= line still is (the
+    # reader warns about it too). A caller without load_config has none.
+    declare -p CFG_EXPORT >/dev/null 2>&1 && hasx=1
+    for cf in "${files[@]}"; do
+        unknown=() switches=()
+        keys="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=.*/\2/p' "$cf" | sort -u)"
+        while read -r k; do
+            [[ -n "$k" ]] || continue
+            _cs_has "$k" && continue
+            (( hasx )) && [[ -n "${CFG_EXPORT[$k]+x}" ]] && continue
+            if _cs_env_switch "$k"; then switches+=("$k"); else unknown+=("$k"); fi
+        done <<<"$keys"
+        if (( ${#unknown[@]} )); then
+            CC_LINES+=("unknown config key(s) in $cf: ${unknown[*]} (typo? pbo ignores them)"); CC_WARNS=1
+        fi
+        if (( ${#switches[@]} )); then
+            CC_LINES+=("environment switch(es) in $cf: ${switches[*]} (pbo 0.6 ignores them in the config: set them in pbo's environment)"); CC_WARNS=1
+        fi
+    done
+    # Every key's effective value (file, environment or default) against its
+    # type. Defaults are valid by construction (tests/config.sh).
+    for k in "${CS_ORDER[@]}"; do
+        v="${!k-}"
+        [[ -n "$v" ]] || continue
+        [[ "$k" == PBO_CONFIG_VERSION ]] && continue   # below, with its own message
+        _cs_validate "$k" "$v" >/dev/null && continue   # no fork for the common case
+        msg="$(_cs_validate "$k" "$v")" || true   # it fails on purpose; errexit must not end doctor
+        case "$k" in   # what pbo does with the bad value, where it says so
+            NOTIFY_LEVEL)    msg+=": only failures are sent" ;;
+            PBO_INTEGRATION) msg+=": treated as standalone (pbo.timer backs up every guest)" ;;
+            VZDUMP_STOP_VMIDS) msg+=": pbo splits it on commas only, a guest in it may not be forced to --mode stop" ;;
+            RETENTION_GROUP_BY) msg+=": retained per path as in 0.5 (split guests are not pruned)" ;;
+        esac
+        CC_LINES+=("$msg"); CC_WARNS=1
+    done
+    # Deprecated keys that still change something: name the replacement.
+    local new
+    for k in "${CS_ORDER[@]}"; do
+        [[ ",${CS_FLAGS[$k]}" == *",deprecated="* ]] || continue
+        new="$(_cs_flag "$k" deprecated)"
+        _cs_value_r "$k"; v="$_CS_R"; _cs_default_r "$k"
+        [[ "$v" != "$_CS_R" && -z "${!new-}" ]] || continue
+        _cs_validate "$k" "$v" >/dev/null || continue   # named above already
+        msg="$k is replaced by $new"
+        [[ "${CS_TYPE[$new]}" == enum:* ]] && msg+="=$(_cs_enum_values "$new")"
+        [[ "$k" == NTFY_ON_SUCCESS ]] && msg+=" (still honoured: true means all)"
+        CC_LINES+=("$msg"); CC_WARNS=1
+    done
+    v="${PBO_CONFIG_VERSION:-$PBO_CONFIG_SCHEMA}"
     if [[ "$v" =~ ^[0-9]+$ ]] && (( v > PBO_CONFIG_SCHEMA )); then
         CC_LINES+=("$f is written for config schema $v, this pbo knows $PBO_CONFIG_SCHEMA: upgrade pbo"); CC_WARNS=1
+    elif ! msg="$(_cs_validate PBO_CONFIG_VERSION "$v")"; then
+        CC_LINES+=("$msg"); CC_WARNS=1
     fi
     return 0
 }
 
 # Create the directories we own. The log directory falls back to stderr-only
 # if it cannot be created (e.g. isolated dev without a root install).
+# Every pbo start runs this: an existing directory costs no mkdir fork.
 ensure_dirs() {
-    mkdir -p "$STATE_DIR" "$JOBS_DIR" "$CACHE_DIR" 2>/dev/null || true
+    [[ -d "$STATE_DIR" && -d "$JOBS_DIR" && -d "$CACHE_DIR" ]] || mkdir -p "$STATE_DIR" "$JOBS_DIR" "$CACHE_DIR" 2>/dev/null || true
     [[ -d "$LOCK_DIR" ]] || { mkdir -p "$LOCK_DIR" 2>/dev/null && chmod 0700 "$LOCK_DIR"; } || true
     # logs hold repo paths, guest names, errors: root (or the janitor user) only
     # (created here with umask 077; no global umask: vzdump of an unprivileged CT
     # runs tar as the mapped uid and must traverse CACHE_DIR)
+    # A janitor started as root creates none: its LOG_DIR belongs to the
+    # janitor user, and root re-execs as that user or writes no log file at
+    # all (_role_check, lib/appendonly.sh).
     local lf; for lf in "${LOG_FILE:-}" "${AUDIT_FILE:-}"; do
         [[ -n "$lf" ]] || continue
+        [[ "$EUID" != 0 || "${PBO_ROLE:-host}" != janitor || "${PBO_JANITOR_ALLOW_ROOT:-0}" == 1 ]] || break
         [[ -e "$lf" ]] || ( umask 077; : >> "$lf" ) 2>/dev/null || true
         [[ -f "$lf" ]] && chmod 0600 "$lf" 2>/dev/null || true
     done
-    if ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; then
+    if ! { [[ -d "$LOG_DIR" ]] || mkdir -p "$LOG_DIR" 2>/dev/null; } || [[ ! -w "$LOG_DIR" ]]; then
         LOG_FILE=""   # signal: log only to stderr/stdout
         AUDIT_JSON=""
     fi
@@ -250,35 +350,43 @@ _ct_root_uid() {
 # (tested: closed without the entry, the backup fails with "Cannot
 # open: Permission denied"). It covers every CT on this node plus any vmid given.
 # Without setfacl it never closes a directory an unprivileged CT needs; doctor
-# warns instead.
+# warns instead. The CACHE_DIR rule of the permission table (lib/perms.sh) does
+# the work; this keeps the backup paths' contract: only a directory this user
+# owns, never in a dry run, never fails the caller.
 _cache_dir_protect() {
     _is_janitor && return 0
-    local d="${CACHE_DIR%/}" v u m acl
+    [[ "${DRY_RUN:-0}" == 1 ]] && return 0
+    local d="${CACHE_DIR%/}"
     [[ -n "$d" && -d "$d" && ! -L "$d" ]] || return 0
     [[ "$(stat -c %u -- "$d" 2>/dev/null)" == "$(id -u)" ]] || return 0
-    # every CT on this node, plus the ones named: closing the directory must never
-    # lock out a CT whose own backup has not run yet
-    local vids=("$@") lv
-    while IFS= read -r lv; do [[ -n "$lv" ]] && vids+=("$lv"); done \
-        < <(find "${PBO_PVE_LXC_DIR:-/etc/pve/lxc}/" -maxdepth 1 -name '[0-9]*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//')
-    local -A need=()
-    for v in "${vids[@]+"${vids[@]}"}"; do u="$(_ct_root_uid "$v")" && need[$u]=1; done
-    if (( ${#need[@]} )); then
-        if ! command -v setfacl >/dev/null 2>&1 || ! command -v getfacl >/dev/null 2>&1; then
-            log_warn "CACHE_DIR $d stays open to local users: setfacl/getfacl (package acl) are needed to let unprivileged CTs' vzdump through"
-            return 0
-        fi
-        acl="$(getfacl -cpn -- "$d" 2>/dev/null)"
-        for u in "${!need[@]}"; do
-            grep -qE "^user:$u:..x" <<<"$acl" && continue
-            setfacl -m "u:$u:x" -- "$d" 2>/dev/null || { log_warn "CACHE_DIR $d: could not add the ACL entry for uid $u (vzdump of unprivileged CTs), left open"; return 0; }
-        done
-    fi
-    m="$(stat -c %a -- "$d" 2>/dev/null)" || return 0
-    if (( (8#$m & 8#007) != 0 )); then
-        chmod o-rwx -- "$d" 2>/dev/null && log_info "CACHE_DIR $d closed to other users (mode $(stat -c %a -- "$d"); unprivileged CTs pass through an ACL)"
-    fi
+    _perm_ensure
+    # dynamic scope: _perm_ct_uids also lets these vmids' CTs through
+    local PERM_EXTRA_VMIDS=("$@") c f lv n p what from to applied
+    _perm_apply --fix --only CACHE_DIR:dir || return 0
+    for c in "${PERM_CHANGES[@]+"${PERM_CHANGES[@]}"}"; do
+        IFS=$'\t' read -r n p what from to applied <<<"$c"
+        case "$what" in
+            mode) log_info "CACHE_DIR $p closed to other users (mode ${to#0}; unprivileged CTs pass through an ACL)" ;;
+            acl)  log_info "CACHE_DIR $p: ACL entry ${to} added (vzdump of an unprivileged CT runs tar as its mapped root)" ;;
+            *)    log_info "CACHE_DIR $p: $what $from -> $to" ;;
+        esac
+    done
+    for c in "${PERM_FIX_ERRORS[@]+"${PERM_FIX_ERRORS[@]}"}"; do log_warn "$c"; done
+    for f in "${PERM_FINDINGS[@]+"${PERM_FINDINGS[@]}"}"; do
+        lv="${f%%$'\t'*}"
+        [[ "$lv" == ok ]] || log_warn "${f##*$'\t'}"
+    done
     return 0
+}
+
+# _perm_ensure: the permission engine (lib/perms.sh) loaded; ./pbo sources it,
+# a caller that sourced only this file gets it here.
+_perm_ensure() {
+    if ! declare -F _perm_apply >/dev/null; then
+        local d="${SELF_DIR:-}"; [[ -n "$d" ]] && d+=/lib || d="$(dirname -- "${BASH_SOURCE[0]}")"
+        # shellcheck source=lib/perms.sh
+        source "$d/perms.sh"
+    fi
 }
 
 # ---------------------------------------------------------------------------

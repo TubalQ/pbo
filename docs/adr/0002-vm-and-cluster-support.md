@@ -9,7 +9,7 @@
 
 > Example setup: a two-node cluster (**pve1** + **pve2**, quorate) where pve1 runs
 > containers and pve2 runs **a qemu VM, VM 8001**. Before this ADR the tool could
-> **not** reach a VM like that (wrong type + wrong node). The code investigation of the
+> **not** reach such a VM (wrong type + wrong node). The code investigation of the
 > LXC-vs-VM assumptions is in §7.
 
 ---
@@ -90,7 +90,7 @@ the target**:
 ```
 pve1 ─ timer ─ vzdump(local guests) ─ restic ─┐
                                               ├─► sftp:…/pbo         (one repo)
-pve2 ─ timer ─ vzdump(8001) ────────── restic ─┘
+pve2 ─ timer ─ vzdump(8001) ───────── restic ─┘
 ```
 Config shared via pmxcfs (`/etc/pve/pbo/`), secret per node
 (`/etc/pbo/restic-pass`), prune from one `PRUNE_OWNER` node. No cross-node trust.

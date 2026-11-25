@@ -87,6 +87,65 @@ if [[ "$(id -u)" == 0 ]]; then
         && ok "janitor as root re-execs as JANITOR_USER with the same args" || bad "re-exec argv: $(cat "$RUN/runuser.argv" 2>/dev/null)"
     PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$RUN/jan.cfg" JANITOR_USER=root $BIN status >/dev/null 2>&1; rc=$?
     [[ $rc == 78 ]] && ok "JANITOR_USER=root is refused" || bad "root janitor user rc=$rc"
+    # config check|set|unset are about /etc/pbo/config itself, which the janitor
+    # user may read but not write: they stay root (set/unset arrive in 0.6 M4)
+    rm -f "$RUN/runuser.argv"
+    # (runuser is called, but only to ask whether the janitor user can read the file)
+    out="$(PBO_JANITOR_ALLOW_ROOT=0 PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" PBO_CONFIG="$RUN/jan.cfg" JANITOR_USER=nobody $BIN config check 2>&1)"; rc=$?
+    [[ $rc == 0 && "$(cat "$RUN/runuser.argv" 2>/dev/null)" == "-u nobody -- test -r $RUN/jan.cfg" && "$out" == *"pbo config check: 0 error(s)"* ]] \
+        && ok "janitor as root: config check stays root (no re-exec), asks whether JANITOR_USER can read the file" || bad "config check re-exec: rc=$rc $(cat "$RUN/runuser.argv" 2>/dev/null) $out"
+    # root writes nothing into the janitor user's LOG_DIR: not as the command
+    # that stays root (its audit line, at exit), not before a die() on the way
+    # to the re-exec. A file root made there would be root's (the janitor user
+    # locked out of its own log), and one the janitor user planted could be a
+    # symlink root follows.
+    mkdir -p "$RUN/jlog"; chown nobody "$RUN/jlog"
+    sed "s#^LOG_DIR=.*#LOG_DIR=$RUN/jlog#" "$RUN/jan.cfg" > "$RUN/jlog.cfg"; chmod 600 "$RUN/jlog.cfg"
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" PBO_CONFIG="$RUN/jlog.cfg" JANITOR_USER=nobody $BIN config check >/dev/null 2>&1; rc=$?
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$RUN/jlog.cfg" JANITOR_USER=pbo-no-such-user $BIN status >/dev/null 2>&1; rc2=$?
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$RUN/jlog.cfg" JANITOR_USER=nobody PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" $BIN status >/dev/null 2>&1
+    [[ $rc == 0 && $rc2 == 78 && -z "$(ls -A "$RUN/jlog")" ]] \
+        && ok "janitor as root: no audit.jsonl, pbo.log or audit.log in the janitor user's LOG_DIR (config check, a die before the re-exec, the re-exec)" \
+        || bad "root wrote into the janitor LOG_DIR: rc=$rc rc2=$rc2 $(ls -la "$RUN/jlog")"
+    out="$(PBO_JANITOR_ALLOW_ROOT=0 PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" PBO_CONFIG="$RUN/jlog.cfg" JANITOR_USER=pbo-no-such-user $BIN config check 2>&1)"; rc=$?
+    [[ $rc == 78 && "$out" == *"JANITOR_USER 'pbo-no-such-user' does not exist: every other janitor command stops on it"* && "$out" == *"pbo stops on this config"* ]] \
+        && ok "janitor as root: config check names a JANITOR_USER that does not exist (78)" || bad "check missing janitor user: rc=$rc $out"
+    PBO_JANITOR_ALLOW_ROOT=0 PBO_RUNUSER_BIN="$RUN/bin/fake-runuser" PBO_CONFIG="$RUN/jan.cfg" JANITOR_USER=nobody $BIN config get KEEP_LOCAL >/dev/null 2>&1
+    grep -q -- "-u nobody -- .*/pbo config get KEEP_LOCAL" "$RUN/runuser.argv" 2>/dev/null && ok "... every other config subcommand re-execs as JANITOR_USER" || bad "config get re-exec: $(cat "$RUN/runuser.argv" 2>/dev/null)"
+fi
+
+# --- the janitor user reads the config again after the re-exec (real runuser) ---
+# root loads the 0640 root:<group> config, drops to the janitor user, and that
+# pbo reads the same file with the strict reader. A world-readable copy of the
+# tree under /tmp (nobody cannot enter /root). LOCK_DIR is not in the config:
+# its default (/run/pbo as root, STATE_DIR/lock otherwise) shows who answered.
+if [[ "$(id -u)" == 0 ]] && id nobody >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+    jt="$(mktemp -d -p /tmp)"; chmod 0755 "$jt"; cp -a pbo lib "$jt/"; mkdir -p "$jt"/{cache,state,log}
+    chown nobody "$jt"/{cache,state,log}
+    printf 'PBO_ROLE=janitor\nJANITOR_USER=nobody\nLOCAL_REPO=false\nOFFSITE_ENABLED=true\nRESTIC_OFFSITE_REPO=%s/repo\nCACHE_DIR=%s/cache\nSTATE_DIR=%s/state\nLOG_DIR=%s/log\nKEEP_LOCAL=4\n' \
+        "$jt" "$jt" "$jt" "$jt" > "$jt/config"
+    chown root:"$(id -gn nobody)" "$jt/config"; chmod 0640 "$jt/config"; chmod -R a+rX "$jt/pbo" "$jt/lib"
+    # root's own load (before the re-exec, and config check, which stays root)
+    # runs ensure_dirs with the root default LOCK_DIR=/run/pbo: an empty
+    # directory there is all it can leave, removed again if this made it
+    had_rl=0; [[ -d /run/pbo ]] && had_rl=1
+    out="$(cd /tmp && env -u PBO_TEST_CONFIG_LOG PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$jt/config" "$jt/pbo" config get LOCK_DIR 2>&1)"; rc=$?
+    out2="$(cd /tmp && env -u PBO_TEST_CONFIG_LOG PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$jt/config" "$jt/pbo" config get KEEP_LOCAL 2>&1)"
+    out3="$(cd /tmp && env -u PBO_TEST_CONFIG_LOG PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$jt/config" "$jt/pbo" config check 2>&1)"; rc3=$?
+    [[ $rc == 0 && "$out" == "$jt/state/lock" && "$out2" == 4 ]] && ok "janitor: root re-execs as JANITOR_USER, which reads the 0640 root:group config again" || bad "janitor re-read: rc=$rc [$out] [$out2]"
+    [[ $rc3 == 0 && "$out3" == *"0 error(s)"* ]] && ok "janitor: config check as root: 0 errors when the janitor user can read the 0640 file" || bad "janitor check as root: rc=$rc3 $out3"
+    # 0600 root:root (an editor, `install -m 0600`): root reads it, the janitor
+    # user cannot, so every other janitor command stops (78). config check,
+    # still root, says so; re-exec'd as nobody it would fail the read itself
+    # ("cannot read the file" without the JANITOR_USER part).
+    chmod 0600 "$jt/config"; chown root:root "$jt/config"
+    out4="$(cd /tmp && env -u PBO_TEST_CONFIG_LOG PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$jt/config" "$jt/pbo" config check 2>&1)"; rc4=$?
+    out5="$(cd /tmp && env -u PBO_TEST_CONFIG_LOG PBO_JANITOR_ALLOW_ROOT=0 PBO_CONFIG="$jt/config" "$jt/pbo" status 2>&1)"; rc5=$?
+    [[ $rc4 == 78 && "$out4" == *"$jt/config:0: error: JANITOR_USER nobody cannot read the file"* && "$out4" == *"pbo stops on this config"* \
+       && "$out4" != *"valid bash"* && $rc5 == 78 ]] \
+        && ok "janitor: config check stays root and names a 0600 file the janitor user cannot read (78, as every other command)" || bad "janitor 0600: rc=$rc4 $out4 / status rc=$rc5 $out5"
+    rm -rf "$jt"
+    (( had_rl )) || rmdir /run/pbo 2>/dev/null || true
 fi
 
 # --- janitor doctor: freshness per vmid seen in the repo, host-* ignored ---

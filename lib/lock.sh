@@ -13,7 +13,7 @@
 #     Held by run-schedule for the WHOLE run and by prune. run-schedule only takes
 #     the global lock per guest, so it is free for a moment between guests; a
 #     prune slipping in there takes an exclusive restic lock and every following
-#     backup fails (catch-up timers after a long power-off). Prune takes
+#     backup fails (for example catch-up timers after a long power-off). Prune takes
 #     this lock first, then the global lock (so a manual backup can't collide either).
 #
 #   Modes:

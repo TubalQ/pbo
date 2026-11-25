@@ -88,7 +88,69 @@ rm -f "$RUN/etc/config"
 out="$(TTY=1 R '' <<<'7')"; [[ "$out" == *"no such choice"* ]] && ok "mode: terminal, a bad answer stops" || bad "prompt bad: $out"
 printf 'PBO_INTEGRATION=both\n' > "$RUN/etc/config"
 [[ "$(TTY=1 R '' <<<'1' | cut -d'|' -f1)" == "both config" ]] && ok "mode: the config wins over asking" || bad "config vs prompt"
+# inst_config_mode reads with the strict reader: the last accepted line counts,
+# a refused line elsewhere does not hide the key, export is read too
+printf 'PBO_INTEGRATION=both\nCACHE_DIR=$(true)\nexport PBO_INTEGRATION=integrated # last\n' > "$RUN/etc/config"
+[[ "$(R '' </dev/null | cut -d'|' -f1)" == "integrated config" ]] && ok "mode: read by the strict reader (the last accepted line, export too)" || bad "strict mode read: $(R '' </dev/null)"
+printf 'PBO_INTEGRATION=both\nPBO_INTEGRATION=$(echo integrated)\n' > "$RUN/etc/config"
+[[ "$(R '' </dev/null | cut -d'|' -f1)" == "both config" ]] && ok "mode: a refused assignment is not read" || bad "refused line: $(R '' </dev/null)"
 rm -f "$RUN/etc/config"
+
+# --- upgrade guard: the existing config read the way the new version reads it ---------------------------
+G() { S 'inst_config_guard; echo "rc=$?"' 2>&1; }
+printf 'CACHE_DIR=/x\nKEEP_LOCAL=3 # ok\nRESTIC_CACHE_REPO=${CACHE_DIR}/repo\n' > "$RUN/etc/config"
+[[ "$(G)" == "rc=0" ]] && ok "guard: a config the strict reader accepts → silent" || bad "guard clean: $(G)"
+printf 'CACHE_DIR=/x\nKEEP_LOCAL=$(touch %s/pwned)\nexport FOO=1\n' "$RUN" > "$RUN/etc/config"
+out="$(G)"; rc=$?
+[[ $rc != 0 && "$out" == *"$RUN/etc/config:2: command substitution"* && "$out" == *"$RUN/etc/config:3: export FOO is not allowed"* \
+   && "$out" == *"$RUN/etc/config is valid bash, but pbo 0.6 no longer runs the config as code; see the 0.6.0 migration notes in CHANGELOG.md"* \
+   && "$out" == *"install: the installed pbo would refuse this config (above). Nothing was changed."*"--force"* && "$out" != *"rc=0"* && ! -e "$RUN/pwned" ]] \
+    && ok "guard: refused lines named with file:line and the migration hint, the install stops (nothing changed), nothing run" || bad "guard bad: rc=$rc $out"
+out="$(S 'FORCE=1; inst_config_guard; echo "rc=$?"' 2>&1)"
+[[ "$out" == *"$RUN/etc/config:2: command substitution"* && "$out" == *"WARNING: --force: installing anyway. Every pbo command stops on this config (exit 78)"* && "$out" == *"rc=0" ]] \
+    && ok "guard: --force installs anyway, with a warning" || bad "guard --force: $out"
+[[ "$(S 'inst_parse_args --force; echo "$FORCE"' 2>&1)" == 1 && "$(S 'inst_parse_args; echo "$FORCE"' 2>&1)" == 0 ]] && ok "--force is parsed (off by default)" || bad "--force parse"
+printf 'CACHE_DIR="unterminated\n' > "$RUN/etc/config"
+out="$(G)"; [[ "$out" == *"unterminated double quote"* && "$out" != *"valid bash"* && "$out" == *"Nothing was changed"* ]] \
+    && ok "guard: a file bash cannot parse either: refused, without the 'valid bash' hint" || bad "guard nobash: $out"
+printf 'RESTIC_SFTP_COMMAND="ssh -p 23 x"\nCACHE_DIR=/s\n' > "$RUN/shared.cfg"
+printf 'RESTIC_CACHE_REPO=${CACHE_DIR}/repo\n' > "$RUN/etc/config"
+out="$(PBO_INSTALL_SHARED_CFG="$RUN/shared.cfg" G)"
+[[ "$out" == *"lines pbo ignores"*"$RUN/shared.cfg:1: RESTIC_SFTP_COMMAND may not be set in the cluster-shared config"* && "$out" != *"used before it is set"* && "$out" == *"rc=0" ]] \
+    && ok "guard: the shared file first (its keys count for the local file); a key pbo ignores there is named, not refused" || bad "guard shared: $out"
+# a refused line only in the shared file stops the install too: a clean local
+# file does not hide it (pbo on every node would stop on it)
+printf 'KEEP_LOCAL=$(touch %s/pwned)\n' "$RUN" > "$RUN/shared.cfg"
+printf 'KEEP_LOCAL=3\n' > "$RUN/etc/config"
+out="$(PBO_INSTALL_SHARED_CFG="$RUN/shared.cfg" G)"; rc=$?
+[[ $rc != 0 && "$out" == *"$RUN/shared.cfg:1: command substitution"* \
+   && "$out" == *"$RUN/shared.cfg is valid bash, but pbo 0.6 no longer runs the config as code"* \
+   && "$out" != *"$RUN/etc/config is valid bash"* \
+   && "$out" == *"Nothing was changed"* && "$out" != *"rc=0"* && ! -e "$RUN/pwned" ]] \
+    && ok "guard: a refused line in the cluster-shared file stops the install too (a clean local file does not hide it)" || bad "guard shared bad: rc=$rc $out"
+printf 'RESTIC_CACHE_REPO=${CACHE_DIR}/repo\n' > "$RUN/etc/config"
+out="$(G)"; [[ "$out" == *"$RUN/etc/config:1: \${CACHE_DIR} is used before it is set"* && "$out" == *"Nothing was changed"* ]] \
+    && ok "guard: no shared file in test mode unless given; no key taken from install.sh's environment" || bad "guard local only: $out"
+out="$(CACHE_DIR=/from-env G)"; [[ "$out" == *"used before it is set"* ]] && ok "guard: the environment of install.sh is not the one pbo runs in" || bad "guard env: $out"
+# main stops in the guard before anything is installed. main wants root: run
+# only when we are. Every step main takes after the guard is replaced by a stub
+# that says so and exits at once, so even a broken guard installs nothing here.
+if [[ "$(id -u)" == 0 ]]; then
+    printf 'KEEP_LOCAL=a b\n' > "$RUN/etc/config"
+    stubs='for f in inst_resolve_mode inst_version_refusal inst_deps inst_program inst_janitor_units inst_web_remove inst_host_units inst_integration inst_final_message; do eval "$f() { echo STEP-RAN; exit 99; }"; done; SYSTEMCTL=false'
+    out="$(S "$stubs; main" 2>&1)"; rc=$?
+    [[ $rc != 0 && "$out" == *"Nothing was changed"* && "$out" != *STEP-RAN* ]] && ok "main: a refused config stops install.sh before the mode, the deps or any file" || bad "main guard: rc=$rc $out"
+    printf 'KEEP_LOCAL=3\n' > "$RUN/etc/config"
+    out="$(S "$stubs; main" 2>&1)"; rc=$?
+    [[ $rc == 99 && "$out" == *STEP-RAN* ]] && ok "main: ... and a clean one gets past it (the stubs are reached)" || bad "main control: rc=$rc $out"
+fi
+rm -f "$RUN/etc/config" "$RUN/shared.cfg"
+[[ "$(G)" == "rc=0" ]] && ok "guard: no config yet → silent" || bad "guard no config: $(G)"
+# it runs before anything is changed: first in main after the arguments
+body="$(S 'declare -f main')"
+[[ "$(grep -n 'inst_config_guard' <<<"$body" | cut -d: -f1)" -lt "$(grep -n 'inst_deps' <<<"$body" | cut -d: -f1)" \
+   && "$(grep -n 'inst_config_guard' <<<"$body" | cut -d: -f1)" -lt "$(grep -n 'inst_resolve_mode' <<<"$body" | cut -d: -f1)" ]] \
+    && ok "guard: runs before the mode is resolved and before any file is installed" || bad "guard order: $body"
 
 # --- plugin install / remove (files under run/, systemctl mocked) -------------------------------------
 P() { PBO_INSTALL_PLUGIN_CHECK="${CHECK:-true}" S "$1" 2>&1; }

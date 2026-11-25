@@ -65,6 +65,10 @@ rdo_backup_host() {
     paths+=("$stage")
     local expat=() excludes=() e
     read -ra expat <<<"$HOST_BACKUP_EXCLUDES"
+    # the password files this host uses, whatever HOST_BACKUP_EXCLUDES says: a
+    # list written out literally (the generated example does, 0.6) must not let
+    # the DR key into the repo it protects after RESTIC_PASSWORD_FILE moves
+    expat+=("${RESTIC_PASSWORD_FILE:-}" "${RESTIC_REST_PASSWORD_FILE:-}")
     for e in "${expat[@]}"; do [[ -n "$e" ]] && excludes+=(--exclude "$e"); done
 
     local wrepo; wrepo="$(_restic_write_repo)"

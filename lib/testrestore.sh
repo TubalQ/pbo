@@ -163,7 +163,7 @@ _tr_pick_target() {
 # do_test_restore <vmid>, dispatch to the restic engine.
 do_test_restore() { rdo_test_restore "$1"; }
 
-# --- scheduled restore tests + evidence ----------------------------------------
+# --- scheduled restore tests + evidence --------------------------
 # Every test-restore (manual or scheduled) appends one JSON record to the history
 # (TR_HISTORY, default STATE_DIR/restore-tests.jsonl; STATE_DIR is not rotated,
 # the history is the evidence). The scheduled run picks the guest that has gone

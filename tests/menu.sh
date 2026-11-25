@@ -41,7 +41,7 @@ out="$(printf 'x\n' | _pick_index "Pick" 1 alpha bravo 2>/dev/null)"; rc=$?
 
 # --- _hsize: human-readable, with a raw-bytes fallback ---
 eq "_hsize: 0 bytes" "$(_hsize 0)" "0B"
-[[ "$(_hsize 1610612736)" == "1.5GB" ]] && ok "_hsize: 1.5GB" || bad "_hsize GB (got $(_hsize 1610612736))"
+[[ "$(_hsize 1200000000)" == "1.2GB" ]] && ok "_hsize: ~1.2GB" || bad "_hsize GB (got $(_hsize 1200000000))"
 
 # --- _ago: relative age buckets (minutes / hours / days) ---
 now=1000000000
@@ -52,8 +52,8 @@ eq "_ago: future clamps"  "$(_ago $((now+600))   $now)" "0m ago"
 
 # --- the jq pipelines menu_restore feeds the pickers ---
 LIST='{"archives":[
-  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_15-05_00_00.tar","size_bytes":2000000000,"modtime":"2026-01-15T05:00:00Z","snapshot":"aaaa"},
-  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_14-05_00_00.tar","size_bytes":1000000000,"modtime":"2026-01-14T05:00:00Z","snapshot":"bbbb"},
+  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_15-05_00_00.tar","size_bytes":1200000000,"modtime":"2026-01-15T05:00:00Z","snapshot":"aaaa"},
+  {"vmid":"202","archive":"vzdump-lxc-202-2026_01_13-05_00_00.tar","size_bytes":1100000000,"modtime":"2026-01-13T05:00:00Z","snapshot":"bbbb"},
   {"vmid":"201","archive":"vzdump-lxc-201-2026_01_15-04_00_00.tar","size_bytes":100000000,"modtime":"2026-01-15T04:00:00Z","snapshot":"cccc"}
 ]}'
 
@@ -70,7 +70,7 @@ snaps="$(jq -r --arg v 202 '.archives[] | select(.vmid==$v)
     | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
         .size_bytes, .modtime, .snapshot ] | @tsv' <<<"$LIST" | sort -rk3)"
 eq "snapshot pipeline: newest-first ts" "$(head -1 <<<"$snaps" | cut -f1)" "2026_01_15-05_00_00"
-eq "snapshot pipeline: oldest-last ts"  "$(tail -1 <<<"$snaps" | cut -f1)" "2026_01_14-05_00_00"
+eq "snapshot pipeline: oldest-last ts"  "$(tail -1 <<<"$snaps" | cut -f1)" "2026_01_13-05_00_00"
 
 # --- status summary: dedup/compression label math ---
 USAGE='{"physical_bytes":10000000000,"logical_bytes":80000000000,"uncompressed_bytes":25000000000,"compression_ratio":2.5}'

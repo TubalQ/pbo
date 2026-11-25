@@ -17,7 +17,13 @@
 readonly JANITOR_COMMANDS="init doctor list usage verify prune unlock rotate-key status notify-test metrics help guests timers config version"
 
 # _role_check <command>: refuse guest operations on a janitor, and a config that
-# claims both roles. Called from main() after load_config.
+# claims both roles. Called from main() after load_config. Under `pbo config
+# check|template` (PBO_CFG_LENIENT=1, set only by main()) a broken role config
+# is not fatal: check reports it as an error at its line (_cfg_check_values).
+# The janitor drops to JANITOR_USER first, which reads the config again (0640
+# root:<JANITOR_USER>), except for `config check|set|unset` run as root: they
+# are about /etc/pbo/config itself, which the janitor user may read but not
+# write (PBO_SUBCOMMAND, set by main()).
 _role_check() {
     local cmd="$1"
     case "${PBO_ROLE:-host}" in
@@ -26,14 +32,28 @@ _role_check() {
             # Never run the janitor as root. Its state and log dirs belong to the
             # server user, so root writing there could be steered by a symlink;
             # and a root prune leaves repo files rest-server can't read. Re-exec
-            # as JANITOR_USER before anything is written.
+            # as JANITOR_USER before anything is written to its log dir.
             # PBO_JANITOR_ALLOW_ROOT=1 exists for the test suite only.
-            if [[ "$(id -u)" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 ]]; then
+            local stay=0
+            [[ "$cmd" == config ]] && case "${PBO_SUBCOMMAND:-}" in check|set|unset) stay=1 ;; esac
+            if [[ "$EUID" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 ]]; then
+                # root writes nothing into the janitor user's LOG_DIR: not the
+                # audit line of a command that stays root (the EXIT trap), not
+                # the log line of a die() below. A file there can be a symlink the
+                # janitor user planted, and one root creates locks that user out
+                # of its own log (the appends fail silently). stdout and stderr
+                # only; the re-exec'd pbo sets its own. (ensure_dirs created none.)
+                LOG_FILE='' AUDIT_FILE='' AUDIT_JSON=''
+            fi
+            if [[ "$EUID" == 0 && "${PBO_JANITOR_ALLOW_ROOT:-0}" != 1 && "$stay" == 0 ]]; then
                 local ju="${JANITOR_USER:-restic}"
                 id "$ju" >/dev/null 2>&1 || die "$EX_CONFIG" "JANITOR_USER '$ju' does not exist"
                 [[ "$(id -u "$ju")" != 0 ]] || die "$EX_CONFIG" "JANITOR_USER must not be root"
+                # doctor --fix: the owners need root, so that pass runs now (lib/perms.sh)
+                [[ "$cmd" != doctor ]] || _perm_root_pass
                 exec "${PBO_RUNUSER_BIN:-runuser}" -u "$ju" -- "${SELF_DIR}/pbo" "${PBO_ORIG_ARGS[@]+"${PBO_ORIG_ARGS[@]}"}"
             fi
+            if [[ "${PBO_CFG_LENIENT:-0}" == 1 ]]; then return 0; fi
             if [[ "${PBO_INTEGRATION:-standalone}" != standalone ]]; then
                 die "$EX_CONFIG" "PBO_ROLE=janitor with PBO_INTEGRATION=${PBO_INTEGRATION}: a janitor has no Proxmox, only standalone is allowed"
             fi
@@ -43,7 +63,9 @@ _role_check() {
             if [[ " $JANITOR_COMMANDS " != *" $cmd "* ]]; then
                 die "$EX_USAGE" "'$cmd' is not available on a janitor (PBO_ROLE=janitor); allowed: $JANITOR_COMMANDS"
             fi ;;
-        *) die "$EX_CONFIG" "PBO_ROLE must be 'host' or 'janitor', got '${PBO_ROLE}'" ;;
+        *)
+            if [[ "${PBO_CFG_LENIENT:-0}" == 1 ]]; then return 0; fi
+            die "$EX_CONFIG" "PBO_ROLE must be 'host' or 'janitor', got '${PBO_ROLE}'" ;;
     esac
 }
 
