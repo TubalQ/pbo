@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45   # a normal run takes about 12; each suite has its own limit too
     steps:
       - uses: actions/checkout@v4
 

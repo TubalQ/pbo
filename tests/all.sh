@@ -36,11 +36,18 @@ jobs="${PBO_TEST_JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
 logs="$PWD/run-testlogs"; rm -rf "$logs"; mkdir -p "$logs"
 export PBO_TEST_LOGS="$logs"
+# A suite that hangs must not hang the whole run: each one gets
+# PBO_TEST_SUITE_TIMEOUT seconds (default 1200), and a progress line on stderr
+# names every suite as it finishes, so a stuck run shows which one is left.
 _one() {   # _one <suite>: run it into $PBO_TEST_LOGS/<suite>.{log,rc,sec}
-    local s="$1" t0=$SECONDS rc=0
-    bash "tests/$s.sh" > "$PBO_TEST_LOGS/$s.log" 2>&1 || rc=$?
+    local s="$1" t0=$SECONDS rc=0 lim="${PBO_TEST_SUITE_TIMEOUT:-1200}"
+    timeout --kill-after=30 "$lim" bash "tests/$s.sh" > "$PBO_TEST_LOGS/$s.log" 2>&1 || rc=$?
+    if [[ "$rc" == 124 || "$rc" == 137 ]]; then
+        printf '  \033[31mFAIL\033[0m suite %s timed out after %ss (PBO_TEST_SUITE_TIMEOUT)\n' "$s" "$lim" >> "$PBO_TEST_LOGS/$s.log"
+    fi
     printf '%s\n' "$rc" > "$PBO_TEST_LOGS/$s.rc"
     printf '%s\n' "$(( SECONDS - t0 ))" > "$PBO_TEST_LOGS/$s.sec"
+    printf 'tests: %s done (exit %s, %ss)\n' "$s" "$rc" "$(( SECONDS - t0 ))" >&2
 }
 export -f _one
 
