@@ -12,6 +12,10 @@ jobs:
     timeout-minutes: 45   # a normal run takes about 12; each suite has its own limit too
     steps:
       - uses: actions/checkout@v4
+        with:
+          # the release tags: tests/perl.sh compares its frozen copy of the
+          # 0.6.1 plugin with the tagged file (the check itself needs no git)
+          fetch-depth: 0
 
       - name: Install dependencies (shellcheck, jq, zstd, restic)
         run: |

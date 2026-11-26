@@ -477,7 +477,13 @@ The storage is called `pbo` on a single node and `pbo-<node>` in a cluster (see
 In the GUI, under the `pbo` storage:
 
 - **Backups** lists every snapshot in the cache and offsite repos (the catalogue
-  is refreshed every 15 minutes and after each backup).
+  is refreshed every 15 minutes and after each backup). The **Notes** column
+  shows the guest's name and the repos that hold the snapshot, such as
+  `web01 · cache+offsite` (or `offsite only`, `cache only`). The name is the
+  one the guest had when it was backed up: pbo records it in the snapshot. A
+  snapshot made before 0.6.2 records none and shows the guest's current name
+  while that guest still exists, otherwise only the repos (`pbo: cache+offsite`).
+  An archive a job wrote that pbo has not uploaded yet says `pbo: not ingested yet`.
 - **Show Configuration** and **Restore** work on any of them. A cache archive is
   served through a read-only `restic mount` of the cache repo (`pbo-mount.service`,
   started on demand); an offsite-only one is copied out with `restic dump` first,
@@ -488,7 +494,8 @@ In the GUI, under the `pbo` storage:
   mode for guests that need it (fuse, the `pbo-stop` tag); the hook refuses
   anything else.
 - **Remove**, **Prune** and **Protection** are refused: retention belongs to pbo
-  (`pbo prune`, the `pbo-keep-*` tags). Notes are not stored.
+  (`pbo prune`, the `pbo-keep-*` tags). Notes are not stored: a job's notes
+  template is ignored, and the Notes column always shows the recorded name.
 - The per-guest policy is plain Proxmox tags (`pbo-skip`, `pbo-stop`,
   `pbo-keep-*`, see [Per-guest policy](#per-guest-policy)), so it can be edited on the
   guest in the GUI as well.

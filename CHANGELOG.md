@@ -3,6 +3,46 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
+## 0.6.2 (unreleased)
+
+Additions only: every JSON field, exit code, flag and config key of 0.6.1
+stays as it was, and so does retention.
+
+### Added
+
+- **The guest's name in the Proxmox GUI.** The pbo storage's Backups view
+  showed only the repo tiers in its Notes column (`pbo: cache+offsite`); a
+  vzdump storage shows the guest's name there. It now shows both, such as
+  `web01 · cache+offsite`. Each new snapshot records the name the guest had
+  when it was backed up, from the config that is backed up (`hostname:` of a
+  CT, `name:` of a VM), as a restic tag: `name=<name>` for a plain
+  `[A-Za-z0-9._-]` name, `nameb64=<base64>` for any other (restic splits tags
+  on commas). `pbo backup`, `run-schedule` (stream and batch), `pbo ingest`
+  (the vzdump hook, `ingest --pending`) and `backup-host` (the node's name)
+  write it. A name loses its control and invisible formatting characters and
+  is cut to 128 characters; a guest without one gets no tag and is backed up
+  as before.
+- **`name` in the catalogue.** Each index entry has a `name`: the one the
+  snapshot records or, for a snapshot made before 0.6.2, the name in the
+  guest's current config (this node's, or another cluster node's in pmxcfs)
+  while that vmid is still a guest of the same type, else `""`. The index
+  stays version 1: the 0.6.1 plugin ignores the field, and this plugin reads
+  an index without it as "no name". The plugin cleans the name again for the
+  GUI and cuts it to 64 characters. A job's notes-template is still ignored.
+- **`name` in `pbo list`.** `pbo --json list` has a `name` on each archive
+  (the same name, `null` when there is none); the text output has a NAME
+  column, last. The menu's restore and detailed status views show a guest's
+  recorded name when the guest no longer exists, and the restore picker marks
+  a snapshot taken under another name.
+
+### Unchanged
+
+- **Retention.** The name tag is display data: every forget (the cache and
+  offsite tiers, the per-guest pass of a guest with several paths, the
+  janitor's bound forget, `list --reasons`, `RETENTION_GROUP_BY=paths`) groups
+  by paths or by vmid exactly as in 0.6.1, so snapshots with and without the
+  tag, and a guest that was renamed, are retained as one guest.
+
 ## 0.6.1 (2026-11-26)
 
 Fixes to 0.6.0 that change no contract: every JSON field, exit code and flag of

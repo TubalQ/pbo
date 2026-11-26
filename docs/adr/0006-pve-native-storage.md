@@ -618,3 +618,33 @@ the decision text above did not cover. These amendments win over the sections ab
     and the storage stays admin-only); `pbo restore` and `test-restore` keep them
     privileged since 0.5. A privileged CT with fuse runs in stop mode, so it
     belongs in the stop-mode job.
+
+## Amendment in 0.6.2
+
+23. **The Notes column shows the guest's name (amends 9).** A vzdump storage
+    shows the guest name there (a job's default notes-template is
+    `{{guestname}}`); pbo showed only the repo tiers. Now:
+    - each new snapshot records the name the guest had when it was backed up,
+      as a restic tag, from the config that is backed up (`hostname:` of a CT,
+      `name:` of a VM; the host's own backup records its node name): every
+      path that makes a snapshot (`pbo backup`, `run-schedule`, `ingest` with
+      the hook and `--pending`, `backup-host`). restic splits tags on commas,
+      so a name that is not plain `[A-Za-z0-9._-]` goes base64-encoded
+      (`nameb64=`); a name that is empty once cleaned gives no tag, never a
+      failed backup;
+    - the catalogue has a `name` on each entry: the tag, or for a snapshot
+      without one (made before 0.6.2) the name in the guest's current config
+      (this node's, or another cluster node's in pmxcfs: files only, no API
+      call), when that vmid is still a guest of the same type; else empty;
+    - `list_volumes` gives `<name> · <tiers>` as the notes (`pbo: <tiers>`
+      without a name), the name stripped of control and invisible formatting
+      characters and cut to 64 characters. The plugin still reads only the
+      index and the spool.
+    The index stays version 1: the plugin of 0.6.1 checks only `version` and
+    `entries` and ignores the added field, and an index without `name` reads
+    as "no name". A job's notes-template is still accepted and dropped: the
+    Notes column always shows what the snapshot recorded, not the rendered
+    template, and storing per-volume notes stays out of scope. The name is
+    display data only: retention, `restic copy` and restores select snapshots
+    by their `vmid=` and `ts=` tags and group them by paths, so a renamed guest
+    stays one guest.

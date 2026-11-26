@@ -7,11 +7,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 # the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
 # timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
-# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
-# machine's own files: point them into the checkout, at paths nothing creates
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start),
+# PBO_PVE_LXC_DIR and PBO_PVE_QEMU_DIR (a guest's current name, read for a
+# snapshot that records none) are the machine's own files: point them into
+# the checkout, at paths nothing creates
 # (a config line still wins)
 export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
-    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg" \
+    PBO_PVE_LXC_DIR="$PWD/run-none/pve/lxc" PBO_PVE_QEMU_DIR="$PWD/run-none/pve/qemu-server"
 ROOT="$PWD"; BIN=./pbo
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -58,6 +61,8 @@ PVE_STAGING_TTL=3600
 KEEP_LOCAL=5
 VZDUMP_CONF=$RUN/vzdump.conf
 PVE_STORAGE_CFG=$RUN/storage.cfg
+PBO_PVE_LXC_DIR=$RUN/none-lxc
+PBO_PVE_QEMU_DIR=$RUN/none-qemu
 EOF
     for l in "$@"; do echo "$l"; done; } > "$f"; chmod 600 "$f"; }
 mkcfg "$RUN/config"; export PBO_CONFIG="$RUN/config"
@@ -108,6 +113,10 @@ jq -e '.entries[] | select(.vmid == 8002) | .offsite_only == false and .snapshot
 jq -e --arg v "backup/vzdump-qemu-8003-$qts.vma" '.entries[] | select(.vmid == 8003) | .volname == $v and .type == "qemu" and .keep == "d30.w8" and .size > 300000 and (.ctime|type) == "number" and .ctime > 0' "$I" >/dev/null \
     && ok "qemu entry: .vma volname, keep from the keep= tag, size, ctime" || bad "8003: $(jq -c '.entries[] | select(.vmid == 8003)' "$I")"
 jq -e '[.entries[] | select(.vmid != 8003) | .keep] | all(. == "default")' "$I" >/dev/null && ok "untagged snapshots: keep = default" || bad "keep default"
+# 0.6.2: the name pbo backup recorded (hostname: t8001, t8002); the hand-made qemu
+# snapshot has none and no VM config exists here
+jq -e '[.entries[] | {key: "\(.vmid)", value: .name}] | from_entries | .["8001"] == "t8001" and .["8002"] == "t8002" and .["8003"] == ""' "$I" >/dev/null \
+    && ok "entries have a name: from the snapshot's tag, \"\" without one" || bad "names: $(jq -c '[.entries[] | {vmid, name}]' "$I")"
 jq -e '[.entries[] | [.vmid, .ts]] == ([.entries[] | [.vmid, .ts]] | sort)' "$I" >/dev/null && ok "entries sorted by vmid, ts" || bad "sort"
 # the listing helper must not have changed `pbo list`
 lst="$($BIN --json list 2>/dev/null)"
@@ -334,14 +343,14 @@ PBO_CONFIG="$RUN/config-both" $BIN prune >/dev/null 2>&1; PBO_CONFIG="$RUN/confi
 ! grep -qE '^systemctl (stop|start)' "$MOCK_LOG" && ok "inactive mount: prune makes no stop/start call" || bad "calls: $(cat "$MOCK_LOG")"
 
 # --- _catalog_add_entry (ingest): incremental insert, no repo listing ---
-H() { bash -c 'set -uo pipefail; SELF_DIR="$PWD"; for l in common json cluster appendonly ownership restic catalog; do source "lib/$l.sh"; done
+H() { bash -c 'set -uo pipefail; SELF_DIR="$PWD"; for l in common json guest cluster appendonly ownership restic catalog; do source "lib/$l.sh"; done
                load_config; '"$1"; }
 cp "$RUN/good.json" "$RUN/catalog/index.json"
 : > "$MOCK_LOG"; mv "$RUN/repo-cache" "$RUN/repo-cache.away"
 H '_catalog_add_entry 8001 2026_03_04-05_06_07 lxc vzdump-lxc-8001-2026_03_04-05_06_07.tar 1234 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ""' >/dev/null 2>&1; rc=$?
 mv "$RUN/repo-cache.away" "$RUN/repo-cache"
 jq -e '(.entries | length == 5) and (.entries[] | select(.volname == "backup/vzdump-lxc-8001-2026_03_04-05_06_07.tar")
-       | .size == 1234 and .snapshots.cache == ("a" * 64) and .snapshots.offsite == null and .offsite_only == false and .keep == "default")
+       | .size == 1234 and .snapshots.cache == ("a" * 64) and .snapshots.offsite == null and .offsite_only == false and .keep == "default" and .name == "")
        and .tiers.cache.count == 4' "$RUN/catalog/index.json" >/dev/null 2>&1 && [[ $rc == 0 ]] \
     && ok "add_entry: inserted without reading a repo (cache repo moved away)" || bad "add_entry rc=$rc: $(jq -c '.tiers' "$RUN/catalog/index.json")"
 H '_catalog_add_entry 8001 2026_03_04-05_06_07 lxc vzdump-lxc-8001-2026_03_04-05_06_07.tar 1234 "" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >/dev/null 2>&1

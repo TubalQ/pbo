@@ -72,11 +72,14 @@ rdo_backup_host() {
     for e in "${expat[@]}"; do [[ -n "$e" ]] && excludes+=(--exclude "$e"); done
 
     local wrepo; wrepo="$(_restic_write_repo)"
-    log_info "host backup $node: restic backup → $wrepo (tags vmid=$id,type=host,ts=$ts)"
+    # the host's name is its node name, recorded like a guest's (lib/guest.sh)
+    _guest_name_tag "$node"
+    local ntag=(); [[ -n "$GNT_TAG" ]] && ntag=(--tag "$GNT_TAG")
+    log_info "host backup $node: restic backup → $wrepo (tags vmid=$id,type=host,ts=$ts${GNT_TAG:+,$GNT_TAG})"
     local rc=0
     run_stream "$jobfile" "restic-host[$node]" -- \
         _restic_w "$wrepo" backup "${excludes[@]}" \
-            --tag "vmid=$id" --tag "ts=$ts" --tag "type=host" --host "$node" \
+            --tag "vmid=$id" --tag "ts=$ts" --tag "type=host" "${ntag[@]+"${ntag[@]}"}" --host "$node" \
             "${paths[@]}" || rc=$?
     if (( rc == 3 )); then
         log_warn "host backup $node: some files could not be read (restic warning), snapshot still created"

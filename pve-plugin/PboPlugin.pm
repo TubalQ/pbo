@@ -31,7 +31,8 @@ package PVE::Storage::Custom::PboPlugin;
 # Nothing in PVE can delete or change a pbo backup: free_image, prune_backups
 # (real run) and protection changes die; notes are accepted and dropped (a job's
 # notes-template would otherwise warn in every task log); every volume reports
-# protected = 1. Retention is pbo's (`pbo prune`).
+# protected = 1. Retention is pbo's (`pbo prune`). The Notes column shows the
+# guest name the index records for the snapshot, next to its repo tiers.
 #
 # Installed as /usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm by the
 # pbo-pve-storage package or by `install.sh --integration both|integrated`.
@@ -193,13 +194,40 @@ sub _staging_file {
     return "$dir/$name";
 }
 
+# _display_name($n): the guest name of an index entry made safe to show in the
+# GUI, or undef when there is none. pbo cleans it already (lib/guest.sh), but
+# the index is data: control and invisible formatting characters go (a bidi
+# override could make a name read as another), so do the blanks around it,
+# and a long one is cut. Plain character ranges, no Unicode property: no
+# property table is loaded inside pvestatd. An index from pbo 0.6.1 has no
+# name field.
+my $NAME_MAX = 64;
+sub _display_name {
+    my ($n) = @_;
+    return undef if !defined($n) || ref($n);
+    $n = "$n";
+    $n =~ s/[\x00-\x1f\x7f-\x9f\x{200b}-\x{200f}\x{2028}-\x{202e}\x{2060}-\x{206f}\x{feff}]//g;
+    $n =~ s/^\s+//;
+    $n =~ s/\s+$//;
+    return undef if $n eq '';
+    $n = substr($n, 0, $NAME_MAX - 1) . "\x{2026}" if length($n) > $NAME_MAX;
+    return $n;
+}
+
+# _notes_for($e): the Notes column of the Backups view: the guest's name (as
+# a vzdump storage shows it with the default notes-template) and the repo
+# tiers that hold the archive, or the tiers alone without a name. A job's own
+# notes-template is not stored (update_volume_attribute drops it): the name
+# comes from the snapshot pbo made, whatever the job asked for.
 sub _notes_for {
     my ($e) = @_;
     my $snaps = ref($e->{snapshots}) eq 'HASH' ? $e->{snapshots} : {};
     my ($c, $o) = (defined($snaps->{cache}), defined($snaps->{offsite}));
-    return 'pbo: offsite only' if $e->{offsite_only} || (!$c && $o);
-    return 'pbo: cache+offsite' if $c && $o;
-    return 'pbo: cache only';
+    my $tier = ($e->{offsite_only} || (!$c && $o)) ? 'offsite only'
+        : ($c && $o) ? 'cache+offsite'
+        : 'cache only';
+    my $name = _display_name($e->{name});
+    return defined($name) ? "$name \x{b7} $tier" : "pbo: $tier";
 }
 
 sub _archive_ctime {

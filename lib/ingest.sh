@@ -99,7 +99,7 @@ _ingest_snap_id() {
 # _ingest_same_fs <a> <b>: both directories on the same mount, so mv is a rename.
 _ingest_same_fs() { [[ "$(stat -c '%d %m' -- "$1" 2>/dev/null)" == "$(stat -c '%d %m' -- "$2" 2>/dev/null)" ]]; }
 
-# _ingest_catalog <vmid> <ts> <type> <base> <size> <cache_snap> <offsite_snap> <keep>:
+# _ingest_catalog <vmid> <ts> <type> <base> <size> <cache_snap> <offsite_snap> <keep> <name>:
 # the new snapshot in the catalogue. In standalone there may be no index; that is
 # not worth a warning there.
 _ingest_catalog() {
@@ -165,7 +165,7 @@ ingest_archive() {
         # in the cache, not offsite: the loose archive goes, `ingest --pending` copies the snapshot
         rm -f "${dumpdir}"/vzdump-* 2>/dev/null || true
         _ingest_copy_mark "$vmid" "$ts"
-        _ingest_catalog "$vmid" "$ts" "$gtype" "$base" "$size" "$(_ingest_snap_id "$RESTIC_CACHE_REPO" "$vmid" "$ts")" "" "$UD_KEEP"
+        _ingest_catalog "$vmid" "$ts" "$gtype" "$base" "$size" "$(_ingest_snap_id "$RESTIC_CACHE_REPO" "$vmid" "$ts")" "" "$UD_KEEP" "$UD_NAME"
         code="$EX_UNAVAILABLE"; [[ -n "$UD_LOCK" ]] && code="$EX_TEMPFAIL"
         die "$code" "ingest $vmid: $base is in the cache repo, but the copy → offsite failed${UD_LOCK:+: repo locked ($UD_LOCK)}; 'pbo ingest --pending' copies it (see $jobfile)"
     fi
@@ -177,7 +177,7 @@ ingest_archive() {
     else
         os="$(_ingest_snap_id "$RESTIC_OFFSITE_REPO" "$vmid" "$ts")"
     fi
-    _ingest_catalog "$vmid" "$ts" "$gtype" "$base" "$size" "$cs" "$os" "$UD_KEEP"
+    _ingest_catalog "$vmid" "$ts" "$gtype" "$base" "$size" "$cs" "$os" "$UD_KEEP" "$UD_NAME"
     audit_log "ingest vmid=$vmid archive=$base ts=$ts cache=${cs:0:8} offsite=${os:0:8}"
     if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
         json_result "ingested" "true" "vmid" "$vmid" "ts" "$ts" "type" "$gtype" "archive" "$base" "size:n" "$size" \

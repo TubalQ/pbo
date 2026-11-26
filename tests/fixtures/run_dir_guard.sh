@@ -78,15 +78,20 @@ _guard_ok() {
 }
 _guard_stop() { echo "run_dir_guard: $1 is outside $TEST_RUN: pbo stopped before it ran" >&2; exit 99; }
 
-eval "_guard_real_load_config() $(declare -f load_config | tail -n +2)"
-load_config() {
-    _guard_real_load_config
+_guard_check_paths() {
     local f k
     for f in "${PBO_CONFIG_LOCAL:-}" "${PBO_CONFIG_FILES[@]+"${PBO_CONFIG_FILES[@]}"}"; do
         _guard_ok "$f" || _guard_stop "the config file $f"
     done
     for k in $GUARD_KEYS; do _guard_ok "${!k-}" || _guard_stop "$k=${!k}"; done
 }
+eval "_guard_real_load_config() $(declare -f load_config | tail -n +2)"
+load_config() { _guard_real_load_config; _guard_check_paths; }
+# load_config makes pbo's directories (ensure_dirs) before it returns: the
+# paths are checked there first, so a STATE_DIR or CACHE_DIR outside TEST_RUN
+# stops pbo before it is created
+eval "_guard_real_ensure_dirs() $(declare -f ensure_dirs | tail -n +2)"
+ensure_dirs() { _guard_check_paths; _guard_real_ensure_dirs "$@"; }
 eval "_guard_real_cfg_write_locked() $(declare -f _cfg_write_locked | tail -n +2)"
 _cfg_write_locked() { _guard_ok "$1" || _guard_stop "the config write to $1"; _guard_real_cfg_write_locked "$@"; }
 eval "_guard_real_sched_write() $(declare -f _sched_write | tail -n +2)"

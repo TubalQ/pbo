@@ -522,17 +522,18 @@ restic_init() {
 # The upload half of a backup, shared by rdo_backup, rdo_run_batch and ingest
 # (lib/ingest.sh): restic backup of the DIRECTORY <dumpdir> (= $CACHE_DIR/<vmid>,
 # a stable path, so `forget --group-by paths` keeps per guest) into the write
-# repo with the tags vmid/ts/type (+ keep= from the guest's Proxmox tags) and
-# --host <node>; in cached mode a restic copy of that one snapshot to offsite;
+# repo with the tags vmid/ts/type (+ keep= from the guest's Proxmox tags, + the
+# guest's name from <base>.conf, lib/guest.sh) and --host <node>; in cached mode a restic copy of that one snapshot to offsite;
 # then the loose archive is removed (it lives in the repo now). <label> prefixes
 # the progress lines ("backup", "ingest"); empty = quiet (batch).
 # Returns 0 on success. On failure returns 1 and leaves the archive in
 # <dumpdir>, with UD_STAGE=backup|copy (the step that failed) and UD_LOCK (the
-# restic lock holder when the repo was locked, else empty). UD_KEEP = keep tag.
-UD_STAGE="" UD_LOCK="" UD_KEEP=""
+# restic lock holder when the repo was locked, else empty). UD_KEEP = keep tag,
+# UD_NAME = the guest name the snapshot records (name=/nameb64= tag, may be empty).
+UD_STAGE="" UD_LOCK="" UD_KEEP="" UD_NAME=""
 _upload_dumpdir() {
     local vmid="$1" gtype="$2" dumpdir="$3" base="$4" ts="$5" jobfile="$6" label="${7:-}"
-    UD_STAGE="" UD_LOCK="" UD_KEEP=""
+    UD_STAGE="" UD_LOCK="" UD_KEEP="" UD_NAME=""
     local wrepo; wrepo="$(_restic_write_repo)"
     local keep; keep="$(_guest_keep_tag "$vmid")"
     local ktag=(); [[ -n "$keep" ]] && ktag=(--tag "keep=$keep")
@@ -540,10 +541,19 @@ _upload_dumpdir() {
     if [[ -n "$base" && ! -f "${dumpdir}/${base}" ]]; then
         UD_STAGE=backup; log_warn "upload $vmid: $base is not in $dumpdir"; return 1
     fi
-    [[ -n "$label" ]] && log_info "$label $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts${keep:+,keep=$keep})"
+    # the guest's name as backed up (the sidecar), for the views (lib/guest.sh);
+    # display data only, no name is no tag
+    local gname=""
+    [[ -n "$base" ]] && gname="$(_conf_guest_name "$gtype" "${dumpdir}/${base}.conf")"
+    [[ -n "$gname" ]] || gname="$(_guest_current_name "$vmid" "$gtype")"
+    _guest_name_tag "$gname"
+    local ntag=(); [[ -n "$GNT_TAG" ]] && ntag=(--tag "$GNT_TAG")
+    UD_NAME="$GNT_NAME"
+    [[ -n "$label" ]] && log_info "$label $vmid: restic backup → $wrepo (tags vmid=$vmid,ts=$ts${keep:+,keep=$keep}${GNT_TAG:+,$GNT_TAG})"
     if ! run_stream "$jobfile" "restic-backup[$vmid]" -- \
             _restic_w "$wrepo" backup "$dumpdir" \
-                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" "${ktag[@]+"${ktag[@]}"}" --host "$(_local_node)"; then
+                --tag "vmid=$vmid" --tag "ts=$ts" --tag "type=$gtype" "${ktag[@]+"${ktag[@]}"}" "${ntag[@]+"${ntag[@]}"}" \
+                --host "$(_local_node)"; then
         UD_STAGE=backup; UD_LOCK="$(_restic_lock_msg "$jobfile")" || true
         return 1
     fi
@@ -631,7 +641,8 @@ rdo_backup() {
 # list, emit the SAME envelope as the tar engine ({archives:[...]}) so the UI is untouched.
 # ---------------------------------------------------------------------------
 # _list_archives_json <repo> [vmid] [extra:0|1]: the repo's guest snapshots as a
-# JSON array of archives (the `list` fields). extra=1 appends the fields the
+# JSON array of archives (the `list` fields; name is the guest name the snapshot
+# records, null when it has none, lib/guest.sh). extra=1 appends the fields the
 # catalogue (lib/catalog.sh) needs: path (the snapshot's backed-up directory),
 # epoch (snapshot time, seconds) and keep_tag (the per-guest keep= tag or null).
 # LIST_NO_LOCK=1 reads with --no-lock (the catalogue never leaves a lock behind).
@@ -645,7 +656,7 @@ _list_archives_json() {
     jq -e 'type=="array"' >/dev/null 2>&1 <<<"$snaps" || return 2
     local now; now="$(date +%s)"
     local xb=false; [[ "$extra" == 1 ]] && xb=true
-    printf '%s' "$snaps" | jq -c --arg only "$only" --argjson now "$now" --argjson x "$xb" '
+    printf '%s' "$snaps" | jq -c --arg only "$only" --argjson now "$now" --argjson x "$xb" "$PBO_JQ_NAME"'
         def ts: (capture("^(?<d>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
                  | ((.d + "Z") | fromdateiso8601)
                    - (if .z == "Z" then 0 else ((if .s == "+" then 1 else -1 end) * ((.h|tonumber)*3600 + (.m|tonumber)*60)) end))? // null;
@@ -658,7 +669,7 @@ _list_archives_json() {
               archive:("vzdump-\($typ)-\($vmid)-\($ts)." + (if $typ=="qemu" then "vma" else "tar" end)),
               size_bytes:((.summary.total_bytes_processed) // (.summary.data_added) // 0),
               modtime:.time, age_seconds:((.time | ts) as $e | if $e then $now - $e else null end),
-              snapshot:.short_id, id:.id, ts:$ts, type:$typ }
+              snapshot:.short_id, id:.id, ts:$ts, type:$typ, name:pbo_name }
             + (if $x then { path:((.paths // [])[0] // null), epoch:(.time | ts),
                             keep_tag:((.tags // []) | map(select(startswith("keep="))) | .[0] // null | if . then sub("keep=";"") else null end) }
                else {} end) ]' 2>/dev/null || { printf '[]'; return 3; }
@@ -676,6 +687,7 @@ rdo_list() {
         1) die "$EX_UNAVAILABLE" "list: repo $(_mask_url "$repo") not readable" ;;
         2) die "$EX_UNAVAILABLE" "list: repo $(_mask_url "$repo") returned no snapshot list" ;;
     esac
+    archives="$(_archives_name_fill "$archives")"
     # Optional: annotate each snapshot with the retention bucket(s) keeping it
     # (daily/weekly/monthly/…) and whether the next prune would drop it. Runs a
     # dry-run forget with THIS repo's policy (cache=keep-last, offsite=GFS) and
@@ -726,9 +738,22 @@ rdo_list() {
         # on stdin, not --argjson: a list of hundreds of snapshots overflows argv
         printf '%s' "$archives" | jq -c '{status:"ok", ok:true, archives:.}' | json_emit
     else
-        printf '%-6s  %-42s  %12s  %s\n' VMID ARCHIVE SIZE SNAP
-        printf '%s' "$archives" | jq -r '.[] | "\(.vmid)  \(.archive)  \(.size_bytes)  \(.snapshot)"'
+        # NAME last: it is the one column that may hold blanks
+        printf '%-6s  %-42s  %12s  %-8s  %s\n' VMID ARCHIVE SIZE SNAP NAME
+        printf '%s' "$archives" | jq -r '.[] | "\(.vmid)  \(.archive)  \(.size_bytes)  \(.snapshot)  \(.name // "-")"'
     fi
+}
+
+# _archives_name_fill <archives-json> → the same archives, where one records no
+# guest name (a snapshot from before 0.6.2) with the name of the guest as it is
+# now, when it still exists (lib/guest.sh _guest_names_fallback). Unchanged on
+# any failure: a name is never worth a failed listing.
+_archives_name_fill() {
+    local fb; fb="$(_guest_names_fallback "$1")"
+    if [[ -z "$fb" || "$fb" == '{}' ]]; then printf '%s' "$1"; return 0; fi
+    printf '%s' "$1" | jq -c --argjson fb "$fb" \
+        'map(if .name == null then . + {name: ($fb["\(.vmid)/\(.type)"] // null)} else . end)' 2>/dev/null \
+        || printf '%s' "$1"
 }
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,51 @@ is_deeply([sort map { $_->{volid} } $P->list_volumes('pbo', $cat, 101, ['backup'
     ["pbo:backup/$A1", "pbo:backup/$A2"], 'vmid filter');
 is_deeply($P->list_volumes('pbo', $cat, 999, ['backup']), [], 'vmid filter: no match is an empty list');
 is_deeply($P->list_volumes('pbo', $cat, undef, ['images', 'rootdir']), [], 'non-backup content: empty');
+ok(!grep({ exists $_->{name} } $index->{entries}->@*), 'the fixture index has no name field (written by pbo 0.6.1): it loads, notes are the tiers alone');
+
+# --- the guest name in the Notes column (0.6.2) ---------------------------------
+{
+    my $long = 'n' x 200;
+    my %names = (
+        "backup/$A1" => 'web01',
+        "backup/$A2" => "  db\x{7}\x{1b}[31m-\x{202e}main\n ",   # control, escape, bidi override, blanks
+        "backup/$A3" => "caf\x{e9} \x{1f600},x",                 # unicode, a blank and a comma
+    );
+    my $named = JSON::PP->new->decode(encode_json($index));
+    $_->{name} = $names{$_->{volname}} // '' for $named->{entries}->@*;
+    push $named->{entries}->@*,
+        { volname => 'backup/vzdump-lxc-104-2026_01_13-05_00_00.tar', vmid => 104, type => 'lxc', ts => '2026_01_13-05_00_00',
+          ctime => 1768280400, size => 1, snapshots => { cache => 'eeeeeeee', offsite => 'ffffffff' }, keep => 'default',
+          offsite_only => JSON::PP::false, name => $long },
+        { volname => 'backup/vzdump-lxc-105-2026_01_13-05_00_00.tar', vmid => 105, type => 'lxc', ts => '2026_01_13-05_00_00',
+          ctime => 1768280400, size => 1, snapshots => { cache => 'eeeeeeee', offsite => undef }, keep => 'default',
+          offsite_only => JSON::PP::false, name => { not => 'a string' } },
+        { volname => 'backup/vzdump-lxc-106-2026_01_13-05_00_00.tar', vmid => 106, type => 'lxc', ts => '2026_01_13-05_00_00',
+          ctime => 1768280400, size => 1, snapshots => { cache => undef, offsite => 'ffffffff' }, keep => 'default',
+          offsite_only => JSON::PP::true, name => "\x{7}\x{200b} " };
+    mkdir("$tmp/named");
+    spew("$tmp/named/index.json", JSON::PP->new->utf8->encode($named));
+    local $PVE::Storage::Custom::PboPlugin::CATALOG = "$tmp/named/index.json";
+    my %n = map { $_->{volid} => $_->{notes} } $P->list_volumes('pbo', $cat, undef, ['backup'])->@*;
+    is($n{"pbo:backup/$A1"}, "web01 \x{b7} cache+offsite", 'notes: the name, then the tiers as before');
+    is($n{"pbo:backup/$A2"}, "db[31m-main \x{b7} offsite only", 'notes: control characters, the bidi override and the outer blanks are gone');
+    is($n{"pbo:backup/$A3"}, "caf\x{e9} \x{1f600},x \x{b7} cache only", 'notes: unicode, a blank and a comma are shown as they are');
+    my $n4 = $n{'pbo:backup/vzdump-lxc-104-2026_01_13-05_00_00.tar'};
+    is($n4, ('n' x 63) . "\x{2026} \x{b7} cache+offsite", 'notes: a long name is cut to 64 characters');
+    is($n{'pbo:backup/vzdump-lxc-105-2026_01_13-05_00_00.tar'}, 'pbo: cache only', 'notes: a name that is not a string counts as none');
+    is($n{'pbo:backup/vzdump-lxc-106-2026_01_13-05_00_00.tar'}, 'pbo: offsite only', 'notes: a name that is empty once cleaned counts as none');
+    is(scalar(keys %n), 6, 'an index with name fields lists every valid entry');
+    is(PVE::Storage::Custom::PboPlugin::_notes_for({ snapshots => { cache => 'a', offsite => 'b' } }), 'pbo: cache+offsite',
+        '_notes_for without a name: the tiers alone, as in 0.6.1');
+    is(PVE::Storage::Custom::PboPlugin::_notes_for({ snapshots => { cache => 'a', offsite => 'b' }, name => '' }), 'pbo: cache+offsite',
+        '_notes_for with an empty name: the tiers alone');
+    is(PVE::Storage::Custom::PboPlugin::_notes_for({ snapshots => { cache => undef, offsite => 'b' }, name => 'web01' }), "web01 \x{b7} offsite only",
+        '_notes_for with a name: <name> · <tiers>');
+    my $r = eval { $P->update_volume_attribute($cat, 'pbo', "backup/$A1", 'notes', '{{guestname}} by a job'); 1 };
+    ok($r, 'a job notes-template is still accepted and dropped');
+    %n = map { $_->{volid} => $_->{notes} } $P->list_volumes('pbo', $cat, 101, ['backup'])->@*;
+    is($n{"pbo:backup/$A1"}, "web01 \x{b7} cache+offsite", 'notes after a notes write: still the name from the index');
+}
 
 $l = $P->list_volumes('pbo', $spl, undef, ['backup']);
 is(scalar(@$l), 4, 'with a path: index entries plus one spool archive');

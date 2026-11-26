@@ -145,6 +145,59 @@ _menu_guests_tsv() {
     pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
         | jq -r 'sort_by(.vmid)[] | "\(.vmid)\t\(.name // "-")\t\(.type)\t\(.node)\t\(.status)"' 2>/dev/null
 }
+# The menu's rows are fields joined with a tab by hand, never jq's @tsv: @tsv
+# escapes a backslash (and tab, newline) that `read -r` keeps, so a name such
+# as db\prod would arrive with its backslash doubled. A field that may hold a
+# tab or newline has them blanked first, so it cannot split the row; null is
+# an empty field, as @tsv made it.
+PBO_JQ_ROW='def row: map(if . == null then "" else tostring end) | join("\t");'
+# _menu_archive_guests <list-json> → one line per guest in a `pbo --json list`:
+# vmid, number of snapshots, newest modtime, and the name its newest snapshot
+# records (last: may be empty), tab-separated. The newest is the youngest by
+# age_seconds, which list computes from the time with its UTC offset: the
+# modtime strings do not sort by time when the offset changed between
+# snapshots (a timezone change, the end of DST). An age it could not compute
+# sorts last; among those (and on equal ages) the larger modtime wins.
+_menu_archive_guests() {
+    jq -r "$PBO_JQ_ROW"' .archives | group_by(.vmid)[]
+        | (sort_by(.modtime) | reverse | sort_by(.age_seconds // 1e18) | .[0]) as $n
+        | [ .[0].vmid, length, $n.modtime, (($n.name // "") | tostring | gsub("[\t\n\r]"; " ")) ] | row' <<<"$1" 2>/dev/null
+}
+# _menu_guest_snapshots <list-json> <vmid> → the snapshots of one guest for the
+# restore picker, tab-separated: ts, size, modtime, short id, the retention
+# code ("-" for none: an empty field would let read shift the name into it),
+# and the name the snapshot records (last: may be empty). Sorted by modtime,
+# newest first.
+_menu_guest_snapshots() {
+    jq -r --arg v "$2" "$PBO_JQ_ROW"' .archives[] | select(.vmid==$v)
+        | (.reasons // []) as $r
+        | ( [ (if any($r[];test("daily"))   then "d" else empty end),
+              (if any($r[];test("weekly"))  then "w" else empty end),
+              (if any($r[];test("monthly")) then "m" else empty end),
+              (if any($r[];test("yearly"))  then "y" else empty end),
+              (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
+        | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
+            .size_bytes, .modtime, .snapshot, ($code | if . == "" then "-" else . end),
+            ((.name // "") | tostring | gsub("[\t\n\r]"; " ")) ] | row' <<<"$1" | sort -t $'\t' -rk3,3
+}
+# _menu_taken_as <snapshot name> <guest name> <vmid> → " · as <name>" when a
+# guest's snapshot records another name than the one the picker shows (the
+# guest was renamed since), else nothing. Not for a host backup.
+_menu_taken_as() {
+    [[ -n "$1" && "$1" != "$2" && "$3" != host-* ]] && printf ' · as %s' "$1"
+    return 0
+}
+# _menu_guest_name <vmid> <names-tsv> <recorded name> → the name to show: the
+# guest's current one (the resource view, <names-tsv> from _menu_guests_tsv),
+# else the one its newest snapshot records (a guest that is gone, or a host
+# restoring after a loss), else empty. A host backup is "host config".
+_menu_guest_name() {
+    local nm
+    if [[ "$1" == host-* ]]; then printf 'host config'; return 0; fi
+    nm="$(awk -F'\t' -v v="$1" '$1==v{print $2; exit}' <<<"$2")"
+    [[ -n "$nm" && "$nm" != - ]] || nm="$3"
+    printf '%s' "$nm"
+}
 _is_protected() { local v="$1"; [[ ",${BACKUP_ORDER//[[:space:]]/}," == *",$v,"* ]]; }
 
 # --- header ---
@@ -258,11 +311,10 @@ _menu_status_detail_tier() {    # <label> <cache|offsite>
     fi
     local now; now="$(date +%s)"
     local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
-    local vmid nsnap nm modt size snap code keep
-    while IFS=$'\t' read -r vmid nsnap; do
+    local vmid nsnap nm modt size snap code keep newest aname
+    while IFS=$'\t' read -r vmid nsnap newest aname; do
         [[ -n "$vmid" ]] || continue
-        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
-        [[ "$vmid" == host-* ]] && nm="host config"
+        nm="$(_menu_guest_name "$vmid" "$names" "$aname")"
         printf '    %s%-14s%s %-18s %s(%s)%s\n' "$C_C" "$vmid" "$C_0" "${nm:-–}" "$C_D" "$nsnap" "$C_0"
         while IFS=$'\t' read -r modt size snap code keep; do
             [[ -n "$modt" ]] || continue
@@ -283,7 +335,7 @@ _menu_status_detail_tier() {    # <label> <cache|offsite>
                   (if any($r[];test("yearly"))  then "y" else empty end),
                   (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
             | [.modtime,.size_bytes,.snapshot,$code,(.keep//true)]|@tsv' | sort -r)
-    done < <(printf '%s' "$ls" | jq -r '.archives|group_by(.vmid)[]|[.[0].vmid,length]|@tsv' | sort)
+    done < <(_menu_archive_guests "$ls" | sort)
     printf '\n'
 }
 
@@ -1899,16 +1951,14 @@ menu_restore() {
     local names; names="$(_menu_guests_tsv | awk -F'\t' '{print $1"\t"$2}')"
 
     # --- STEP 1: pick a guest (vmid · name · #snapshots · newest age) ---
-    local gv=() glabel=() vmid nsnap newest nm
-    while IFS=$'\t' read -r vmid nsnap newest; do
+    local gv=() glabel=() gname=() vmid nsnap newest nm aname
+    while IFS=$'\t' read -r vmid nsnap newest aname; do
         [[ -n "$vmid" ]] || continue
-        nm="$(awk -F'\t' -v v="$vmid" '$1==v{print $2}' <<<"$names")"
-        [[ "$vmid" == host-* ]] && nm="host config"
-        gv+=("$vmid")
+        nm="$(_menu_guest_name "$vmid" "$names" "$aname")"
+        gv+=("$vmid"); gname+=("$nm")
         glabel+=("$(printf '%-14s %-18s %2d snapshots · newest %s' \
             "$vmid" "${nm:-–}" "$nsnap" "$(_ago "$newest" "$now")")")
-    done < <(jq -r '.archives | group_by(.vmid)[]
-        | [ .[0].vmid, length, ([.[].modtime]|max) ] | @tsv' <<<"$listing")
+    done < <(_menu_archive_guests "$listing")
 
     printf '\n  %sGuests with backups:%s\n' "$C_B" "$C_0"
     local gi; gi="$(_pick_index "Guest" 1 "${glabel[@]}")" || { _pause; return; }
@@ -1917,25 +1967,21 @@ menu_restore() {
     # --- STEP 2: pick a snapshot of that guest (newest first) ---
     # The [code] shows which retention bucket keeps it: d/w/m/y=daily/weekly/
     # monthly/yearly, L=keep-last. Empty = the next prune would drop it.
-    local sv=() slabel=() ts size modt snap code
-    while IFS=$'\t' read -r ts size modt snap code; do
+    # A snapshot whose recorded name differs from the guest's (renamed since)
+    # says which name it was taken under.
+    local sv=() slabel=() ts size modt snap code sname gnm="${gname[gi-1]}"
+    while IFS=$'\t' read -r ts size modt snap code sname; do
         [[ -n "$ts" ]] || continue
+        [[ "$code" == - ]] && code=""   # "-": no bucket (an empty field would let read shift the name into it)
         sv+=("$ts")
-        slabel+=("$(printf '%-9s · %7s · %s · %s' \
-            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "[${code:-–}]")")
-    done < <(jq -r --arg v "$src" '.archives[] | select(.vmid==$v)
-        | (.reasons // []) as $r
-        | ( [ (if any($r[];test("daily"))   then "d" else empty end),
-              (if any($r[];test("weekly"))  then "w" else empty end),
-              (if any($r[];test("monthly")) then "m" else empty end),
-              (if any($r[];test("yearly"))  then "y" else empty end),
-              (if any($r[];test("last"))    then "L" else empty end) ] | join("") ) as $code
-        | [ (.archive|capture("(?<t>[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2})").t),
-            .size_bytes, .modtime, .snapshot, $code ] | @tsv' <<<"$listing" | sort -rk3)
+        local was; was="$(_menu_taken_as "$sname" "$gnm" "$src")"
+        slabel+=("$(printf '%-9s · %7s · %s · %s%s' \
+            "$(_ago "$modt" "$now")" "$(_hsize "$size")" "$(sed 's/T/ /;s/\..*//' <<<"$modt")" "[${code:-–}]" "$was")")
+    done < <(_menu_guest_snapshots "$listing" "$src")
     [[ ${#sv[@]} -gt 0 ]] || { echo "  ${C_R}No snapshots for $src.${C_0}"; _pause; return; }
 
     printf '\n  %sSnapshots of %s · %s (newest first):%s\n' \
-        "$C_B" "$src" "$(awk -F'\t' -v v="$src" '$1==v{print $2}' <<<"$names")" "$C_0"
+        "$C_B" "$src" "${gnm:-–}" "$C_0"
     local si; si="$(_pick_index "Snapshot" 1 "${slabel[@]}")" || { _pause; return; }
     local ts="${sv[si-1]}"
 

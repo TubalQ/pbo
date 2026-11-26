@@ -13,11 +13,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 # the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
 # timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
-# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
-# machine's own files: point them into the checkout, at paths nothing creates
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start),
+# PBO_PVE_LXC_DIR and PBO_PVE_QEMU_DIR (a guest's current name, read for a
+# snapshot that records none) are the machine's own files: point them into
+# the checkout, at paths nothing creates
 # (a config line still wins)
 export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
-    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
+    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg" \
+    PBO_PVE_LXC_DIR="$PWD/run-none/pve/lxc" PBO_PVE_QEMU_DIR="$PWD/run-none/pve/qemu-server"
 
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -83,6 +86,58 @@ snaps="$(jq -r --arg v 8202 '.archives[] | select(.vmid==$v)
         .size_bytes, .modtime, .snapshot ] | @tsv' <<<"$LIST" | sort -rk3)"
 eq "snapshot pipeline: newest-first ts" "$(head -1 <<<"$snaps" | cut -f1)" "2026_01_15-05_00_00"
 eq "snapshot pipeline: oldest-last ts"  "$(tail -1 <<<"$snaps" | cut -f1)" "2026_01_13-05_00_00"
+
+# the guest rows with the name the newest snapshot records (0.6.2), and the name shown
+NLIST='{"archives":[
+  {"vmid":"8202","archive":"vzdump-lxc-8202-2026_01_15-05_00_00.tar","modtime":"2026-01-15T05:00:00Z","name":"web new"},
+  {"vmid":"8202","archive":"vzdump-lxc-8202-2026_01_13-05_00_00.tar","modtime":"2026-01-13T05:00:00Z","name":"web-old"},
+  {"vmid":"8201","archive":"vzdump-lxc-8201-2026_01_15-04_00_00.tar","modtime":"2026-01-15T04:00:00Z","name":null},
+  {"vmid":"host-pve1","archive":"vzdump-host-pve1-h1.tar","modtime":"2026-01-15T03:00:00Z","name":"pve1"}
+]}'
+rows="$(_menu_archive_guests "$NLIST")"
+eq "guest rows: one per vmid" "$(wc -l <<<"$rows")" "3"
+eq "guest rows: the newest snapshot's name, last" "$(awk -F'\t' '$1=="8202"{print $4}' <<<"$rows")" "web new"
+IFS=$'\t' read -r v n nw an < <(grep '^8201' <<<"$rows")
+eq "guest rows: no recorded name is an empty last field" "$v|$n|$nw|${an:-}" "8201|1|2026-01-15T04:00:00Z|"
+gnames=$'8202\tweb-live\n8201\t-'
+eq "guest name: the current one first" "$(_menu_guest_name 8202 "$gnames" "web new")" "web-live"
+eq "guest name: a guest without a current name shows the recorded one" "$(_menu_guest_name 8201 "$gnames" "gone-ct")" "gone-ct"
+eq "guest name: a guest that is gone shows the recorded one" "$(_menu_guest_name 8203 "$gnames" "old-ct")" "old-ct"
+eq "guest name: nothing known is empty" "$(_menu_guest_name 8203 "$gnames" "")" ""
+eq "guest name: a host backup" "$(_menu_guest_name host-pve1 "$gnames" "pve1")" "host config"
+# a recorded name with a backslash reads back as it is (jq's @tsv doubled it,
+# and every snapshot of the guest then said it was taken under another name)
+blist='{"archives":[
+  {"vmid":"8301","archive":"vzdump-lxc-8301-2026_01_15-05_00_00.tar","size_bytes":10,"modtime":"2026-01-15T05:00:00Z","age_seconds":100,"snapshot":"s1","reasons":["daily snapshot"],"name":"db\\prod"},
+  {"vmid":"8301","archive":"vzdump-lxc-8301-2026_01_14-05_00_00.tar","size_bytes":10,"modtime":"2026-01-14T05:00:00Z","age_seconds":86500,"snapshot":"s2","name":"db\\prod"},
+  {"vmid":"8301","archive":"vzdump-lxc-8301-2026_01_13-05_00_00.tar","size_bytes":10,"modtime":"2026-01-13T05:00:00Z","age_seconds":172900,"snapshot":"s3","name":"db\\old\tx"}
+]}'
+IFS=$'\t' read -r v n nw an < <(_menu_archive_guests "$blist")
+eq "guest rows: a backslash in the recorded name is kept as it is" "$an" 'db\prod'
+gnm="$(_menu_guest_name 8301 "" "$an")"
+eq "guest name: a guest that is gone shows its name with the backslash" "$gnm" 'db\prod'
+marks=(); codes=()
+while IFS=$'\t' read -r ts size modt snap code sname; do
+    marks+=("$ts=$(_menu_taken_as "$sname" "$gnm" 8301)"); codes+=("$code")
+done < <(_menu_guest_snapshots "$blist" 8301)
+eq "snapshot rows: newest first, no false 'as' marker under the same name, the renamed one marked" \
+    "${marks[*]}" '2026_01_15-05_00_00= 2026_01_14-05_00_00= 2026_01_13-05_00_00= · as db\old x'
+eq "snapshot rows: the retention code, '-' for none" "${codes[*]}" "d - -"
+eq "taken as: never for a host backup" "$(_menu_taken_as "pve1" "host config" host-pve1)" ""
+# the newest snapshot by time, not by its modtime string: the UTC offset
+# changed between the two (07:00+01:00 is 06:00Z, older than 06:30Z); one
+# whose age list could not compute never counts as the newest
+olist='{"archives":[
+  {"vmid":"8302","archive":"vzdump-lxc-8302-2026_01_15-07_00_00.tar","modtime":"2026-01-15T07:00:00+01:00","age_seconds":3600,"name":"old-ct"},
+  {"vmid":"8302","archive":"vzdump-lxc-8302-2026_01_15-06_30_00.tar","modtime":"2026-01-15T06:30:00Z","age_seconds":1800,"name":"new-ct"},
+  {"vmid":"8302","archive":"vzdump-lxc-8302-2026_01_15-09_00_00.tar","modtime":"2026-01-15T09:00:00+05:00","age_seconds":null,"name":"bad-age"},
+  {"vmid":"8303","archive":"vzdump-lxc-8303-2026_01_15-05_00_00.tar","modtime":"2026-01-15T05:00:00Z","name":"one"},
+  {"vmid":"8303","archive":"vzdump-lxc-8303-2026_01_16-05_00_00.tar","modtime":"2026-01-16T05:00:00Z","name":"two"}
+]}'
+rows="$(_menu_archive_guests "$olist")"
+eq "guest rows: the newest by age across a UTC offset change: its time and name" \
+    "$(awk -F'\t' '$1=="8302"{print $3"|"$4}' <<<"$rows")" "2026-01-15T06:30:00Z|new-ct"
+eq "guest rows: without ages, the larger modtime" "$(awk -F'\t' '$1=="8303"{print $2"|"$3"|"$4}' <<<"$rows")" "2|2026-01-16T05:00:00Z|two"
 
 # --- status summary: dedup/compression label math ---
 USAGE='{"physical_bytes":10000000000,"logical_bytes":80000000000,"uncompressed_bytes":25000000000,"compression_ratio":2.5}'

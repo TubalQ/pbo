@@ -16,7 +16,14 @@
 #    entries:[{volname:"backup/vzdump-<lxc|qemu>-<vmid>-<YYYY_MM_DD-HH_MM_SS>.<tar|vma>",
 #              vmid:<number>, type, ts, ctime:<epoch>, size:<bytes>,
 #              snapshots:{cache:<id|null>, offsite:<id|null>},
-#              keep:<reason>, offsite_only:<bool>}]}
+#              keep:<reason>, offsite_only:<bool>, name:<guest name or "">}]}
+# name (0.6.2) is the guest's name the snapshot records (its name=/nameb64= tag,
+# lib/guest.sh; the cache tier's first), for a snapshot without one the name in
+# the guest's current config when that vmid still exists as a guest of the same
+# type, else "". The plugin shows it in the Notes column. It is an added field,
+# not a new version: the 0.6.1 plugin checks only version and entries and reads
+# the fields it knows, and an index without name (written by 0.6.1) reads as
+# "no name" in this plugin.
 # staging_dir is where materialize puts archives: the plugin's path() for a volume
 # not in the spool is <staging_dir>/<archive>, so it never parses pbo's config.
 # spool_dir (PVE_SPOOL_DIR) is informational: the plugin takes the spool from the
@@ -125,8 +132,12 @@ catalog_refresh() {
         oj="$(_catalog_read_tier "$RESTIC_OFFSITE_REPO")" \
             || die "$EX_UNAVAILABLE" "catalog: offsite repo $(_mask_url "$RESTIC_OFFSITE_REPO") not readable; $out left unchanged"
     fi
+    # names for the snapshots that record none (taken before 0.6.2): the guest's
+    # current config, when it still exists (files only, lib/guest.sh)
+    local fb; fb="$(_guest_names_fallback "$(jq -cs 'add // []' <(printf '%s' "$cj") <(printf '%s' "$oj") 2>/dev/null)")"
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$fb" || fb='{}'
     local idx
-    idx="$(jq -cn --slurpfile c <(printf '%s' "$cj") --slurpfile o <(printf '%s' "$oj") \
+    idx="$(jq -cn --slurpfile c <(printf '%s' "$cj") --slurpfile o <(printf '%s' "$oj") --argjson fb "$fb" \
         --argjson cen "$cen" --argjson oen "$oen" --argjson now "$(date +%s)" --argjson v "$CATALOG_VERSION" \
         --arg node "$(_local_node)" --arg sid "$(_pve_storage_id)" --arg stg "${PVE_STAGING_DIR:-}" --arg spool "${PVE_SPOOL_DIR:-}" \
         --arg re "$CATALOG_BASENAME_RE" '
@@ -140,7 +151,8 @@ catalog_refresh() {
             | { volname:("backup/" + $p.archive), vmid:($p.vmid | tonumber), type:$p.type, ts:$p.ts,
                 ctime:(($p.epoch // 0) | floor), size:($p.size_bytes // 0),
                 snapshots:{cache:($ce.id // null), offsite:($oe.id // null)},
-                keep:($p.keep_tag // "default"), offsite_only:($ce == null) } ]
+                keep:($p.keep_tag // "default"), offsite_only:($ce == null),
+                name:($ce.name // $oe.name // $fb["\($p.vmid)/\($p.type)"] // "") } ]
         | sort_by(.vmid, .ts) as $e
         | {version:$v, generated:$now, updated:$now, node:$node, storage_id:$sid, staging_dir:$stg, spool_dir:$spool,
            tiers:{cache:{enabled:$cen, ok:(if $cen then true else null end), count:([$e[] | select(.snapshots.cache != null)] | length)},
@@ -157,18 +169,20 @@ catalog_refresh() {
     fi
 }
 
-# _catalog_add_entry <vmid> <ts> <type> <basename> <size> <cache_snap> <offsite_snap> [keep]
+# _catalog_add_entry <vmid> <ts> <type> <basename> <size> <cache_snap> <offsite_snap> [keep] [name]
 # Insert or update one entry without listing a repo (ingest, M4). An empty snap
-# id keeps what the index already has for that tier. Needs an existing index: on
-# a missing one it adds nothing and returns 1 (a one-entry index would hide every
-# other backup; the next refresh writes a full one).
+# id keeps what the index already has for that tier, an empty name the entry's
+# name, else the guest's current one (as a refresh would). Needs an existing
+# index: on a missing one it adds nothing and returns 1 (a one-entry index would
+# hide every other backup; the next refresh writes a full one).
 _catalog_add_entry() {
-    local vmid="$1" ts="$2" typ="$3" base="$4" size="${5:-0}" cs="${6:-}" os="${7:-}" keep="${8:-}"
+    local vmid="$1" ts="$2" typ="$3" base="$4" size="${5:-0}" cs="${6:-}" os="${7:-}" keep="${8:-}" name="${9:-}"
     if ! is_vmid "$vmid" || [[ "$typ" != lxc && "$typ" != qemu ]] || ! [[ "$base" =~ $CATALOG_BASENAME_RE ]] \
        || [[ "$base" != "vzdump-${typ}-${vmid}-${ts}."* ]]; then
         log_warn "catalog: refusing entry vmid=$vmid ts=$ts type=$typ archive=$base"; return 1
     fi
     [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    local cur=""; [[ -n "$name" ]] || cur="$(_guest_current_name "$vmid" "$typ")"
     _catalog_lock || { log_warn "catalog: lock busy, $base not added (the next refresh adds it)"; return 1; }
     if ! _catalog_valid "$PBO_CATALOG"; then
         _catalog_unlock
@@ -176,14 +190,15 @@ _catalog_add_entry() {
     fi
     local idx rc=0
     idx="$(jq -c --arg vol "backup/$base" --arg vmid "$vmid" --arg ts "$ts" --arg typ "$typ" --argjson size "$size" \
-        --arg cs "$cs" --arg os "$os" --arg keep "$keep" --argjson now "$(date +%s)" '
+        --arg cs "$cs" --arg os "$os" --arg keep "$keep" --arg name "$name" --arg cur "$cur" --argjson now "$(date +%s)" "$PBO_JQ_NAME"'
         (first(.entries[] | select(.volname == $vol)) // null) as $old
         | ((if $cs != "" then $cs else ($old.snapshots.cache // null) end)) as $c
         | ((if $os != "" then $os else ($old.snapshots.offsite // null) end)) as $o
         | .entries = ([.entries[] | select(.volname != $vol)]
             + [{volname:$vol, vmid:($vmid | tonumber), type:$typ, ts:$ts, ctime:($old.ctime // $now),
                 size:$size, snapshots:{cache:$c, offsite:$o},
-                keep:(if $keep != "" then $keep else ($old.keep // "default") end), offsite_only:($c == null)}]
+                keep:(if $keep != "" then $keep else ($old.keep // "default") end), offsite_only:($c == null),
+                name:([($name | pbo_clean), ($old.name // "" | strings), ($cur | pbo_clean)] | map(select(. != "")) | .[0] // "")}]
             | sort_by(.vmid, .ts))
         | .updated = $now
         | .tiers.cache.count = ([.entries[] | select(.snapshots.cache != null)] | length)
@@ -206,7 +221,7 @@ catalog_show() {
     jq -r --argjson now "$(date +%s)" '
         "catalog \(.storage_id) on \(.node): \(.entries|length) archive(s), refreshed \($now - .generated)s ago"
         + " (cache \(if .tiers.cache.enabled then .tiers.cache.count else "off" end), offsite \(if .tiers.offsite.enabled then .tiers.offsite.count else "off" end))",
-        (.entries[] | "  \(.volname)  \(.size)  cache:\(.snapshots.cache // "-" | .[0:8])  offsite:\(.snapshots.offsite // "-" | .[0:8])\(if .offsite_only then "  (offsite only)" else "" end)")' "$PBO_CATALOG"
+        (.entries[] | "  \(.volname)  \(.size)  cache:\(.snapshots.cache // "-" | .[0:8])  offsite:\(.snapshots.offsite // "-" | .[0:8])\(if .offsite_only then "  (offsite only)" else "" end)\(if ((.name // "") | type) == "string" and (.name // "") != "" then "  " + .name else "" end)")' "$PBO_CATALOG"
 }
 
 # ---------------------------------------------------------------------------
