@@ -47,8 +47,17 @@ it was. Every change goes through `pbo config set`.
   takes snapshots (`STORAGE_BOX_SNAPSHOTS_CONFIRMED`). Replacing a repo asks first:
   pbo moves no snapshot, the old ones stay where they are. ssh options of your own
   in `RESTIC_SFTP_COMMAND` (a `ProxyJump`, `-F`) stay when you keep the host.
+- **DR key.** The targets are checked first (read only). A repo that exists there
+  is never given a new key: the wizard asks for its key (a password file, an export
+  with a `RESTIC_PASSWORD=` line, or typed) and writes it only once it opens the
+  repo. A target that cannot be reached is asked about ("does it hold a repo
+  already?", yes by default); a key that cannot be checked there can be taken
+  unchecked, or dropped for a generated one when there is no repo after all. A key
+  file that does not open the repo stops setup.
 - **Timers.** A timer that is off is offered with yes on a first setup and with no
   on a re-run, so Enter never turns on one you left off.
+- **Short input.** The end of the input stops the wizard at that question (exit 64);
+  it never takes a default for an answer it did not get.
 - **Numbers and schedules** are checked against the schema and asked again until
   they are valid; a schedule is written with its timer drop-in.
 - **Last**, `pbo doctor --fix` applies the permission table and shows the report.

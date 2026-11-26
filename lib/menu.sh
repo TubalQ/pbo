@@ -341,38 +341,87 @@ menu_status() {
 # written again. Config changes go through the writer (_cfg_set, and `pbo
 # config set CACHE_DIR` for the cache move); the files of its own the wizard
 # writes (the DR key, a rest-server password, RESTIC_ENV_FILE, the pinned host
-# keys) go through _setup_write_file. The prompts read with _ask_r, which
-# reports the end of the input (SETUP_EOF): a question that re-asks until the
-# answer is valid stops there instead of asking for ever.
+# keys) go through _setup_write_file. Every question reads through
+# _setup_read (yes/no, a value, a choice, a secret), in this shell: the end of
+# the input stops the wizard there (_setup_eof, exit 64). An answer nobody
+# gave is never taken as the default, and nothing after that question is
+# written.
 
-SETUP_EOF=0 SETUP_FIX_PARENTS=0 SETUP_PARENTS_HINT=0 SETUP_RERUN=0
+SETUP_EOF=0 SETUP_FIX_PARENTS=0 SETUP_PARENTS_HINT=0 SETUP_RERUN=0 SETUP_STEP='' SETUP_RC=0
+SETUP_FAILS=()
 _SP_EXTRA=()
 # filesystems the cache step suggests: disk filesystems (mount types as findmnt
 # and df print them); everything else (tmpfs, network, FUSE, vfat, ...) is
 # left out of the list (the cache move refuses or warns about most of them)
 SETUP_FS_DISK=' ext2 ext3 ext4 xfs btrfs zfs f2fs jfs reiserfs bcachefs '
 
-# _ask_r PROMPT [DEFAULT] → _A: the answer, or DEFAULT for an empty one.
-# Returns 1 at the end of the input (stdin closed).
+# _ask_r PROMPT [DEFAULT] → _A: the answer, or DEFAULT for an empty one;
+# _A_RAW: the line as read. Returns 1 at the end of the input (stdin closed).
 _ask_r() {
     local a rc=0
     read -r -p "$1${2:+ [$2]}: " a || rc=1
-    _A="${a:-${2:-}}"
+    _A_RAW="$a" _A="${a:-${2:-}}"
     return "$rc"
 }
 
-# _setup_yn PROMPT DEFAULT(y|n): yes or no (the end of the input: the default).
-_setup_yn() { _ask_r "$1 (y/n)" "${2:-n}" || SETUP_EOF=1; [[ "$_A" == [yYjJ]* ]]; }
+# _setup_eof PROMPT: the input ended at PROMPT. The wizard stops here with 64
+# (a usage error: the answers were short), in this shell: a default is never
+# taken for an answer nobody gave, so a script piping too few answers cannot
+# set up a host with defaults it did not choose. What earlier questions wrote
+# stays (each step writes as it goes), nothing after PROMPT is changed.
+_setup_eof() {
+    printf '\n  %sThe input ended at the question "%s": setup stops in the %s step (exit 64).%s\n' \
+        "$C_R" "$1" "${SETUP_STEP:-first}" "$C_0"
+    printf '  What the answers before it set is written; nothing after this question was changed. Run pbo setup again to go on.\n'
+    exit "${EX_USAGE:-64}"
+}
+
+# _setup_read PROMPT [DEFAULT] → _A (as _ask_r): the end of the input stops
+# the wizard (_setup_eof). A last line without a newline is still an answer:
+# the question after it stops.
+_setup_read() {
+    (( ! SETUP_EOF )) || _setup_eof "$1"
+    if ! _ask_r "$1" "${2:-}"; then
+        [[ -n "$_A_RAW" ]] || _setup_eof "$1"
+        SETUP_EOF=1
+    fi
+    return 0
+}
+
+# _setup_askpw PROMPT → _A: a secret, read without echo (as _setup_read).
+_setup_askpw() {
+    local a rc=0
+    (( ! SETUP_EOF )) || _setup_eof "$1"
+    read -r -s -p "$1: " a || rc=1
+    echo >&2
+    if (( rc )); then [[ -n "$a" ]] || _setup_eof "$1"; SETUP_EOF=1; fi
+    _A="$a"
+}
+
+# _setup_pick PROMPT DEFAULT LABEL... → _PI: a numbered list of the labels,
+# then the chosen 1-based index (Enter: DEFAULT). Returns 1 on an answer that
+# is no choice. The wizard's _pick_index: it reads in this shell, so the end of
+# the input stops the wizard instead of choosing the default.
+_setup_pick() {
+    local prompt="$1" def="$2" i=1 lbl
+    shift 2
+    for lbl in "$@"; do printf '    %s[%d]%s %s\n' "$C_B" "$i" "$C_0" "$lbl"; i=$((i+1)); done
+    _setup_read "$prompt" "$def"
+    _PI="$_A"
+    [[ "$_PI" =~ ^[0-9]+$ ]] && (( 10#$_PI >= 1 && 10#$_PI <= $# ))
+}
+
+# _setup_yn PROMPT DEFAULT(y|n): yes or no.
+_setup_yn() { _setup_read "$1 (y/n)" "${2:-n}"; [[ "$_A" == [yYjJ]* ]]; }
 
 # _setup_ask PROMPT DEFAULT CHECK → _SV: ask until `CHECK ANSWER` accepts it
-# (it prints why not). Returns 1 when the input ends on an answer CHECK refuses.
+# (it prints why not).
 _setup_ask() {
     local p="$1" d="$2" chk="$3" msg
     while true; do
-        _ask_r "$p" "$d" || SETUP_EOF=1
+        _setup_read "$p" "$d"
         if msg="$("$chk" "$_A")"; then _SV="$_A"; return 0; fi
         printf '  %s%s: try again%s\n' "$C_Y" "$msg" "$C_0"
-        if (( SETUP_EOF )); then printf '  %sthe input ended%s\n' "$C_R" "$C_0"; return 1; fi
     done
 }
 
@@ -382,11 +431,10 @@ _setup_ask_keep() {
     local p="$1" cur="$2" chk="$3" msg
     [[ -z "$cur" ]] || p+=" (Enter keeps the current one)"
     while true; do
-        _ask_r "$p" "" || SETUP_EOF=1
+        _setup_read "$p" ""
         [[ -n "$_A" ]] || _A="$cur"
         if msg="$("$chk" "$_A")"; then _SV="$_A"; return 0; fi
         printf '  %s%s: try again%s\n' "$C_Y" "$msg" "$C_0"
-        if (( SETUP_EOF )); then printf '  %sthe input ended%s\n' "$C_R" "$C_0"; return 1; fi
     done
 }
 
@@ -734,7 +782,7 @@ _setup_cache_dir() {
         fi
         if (( rc != 0 )); then
             printf '  %spbo would not change CACHE_DIR to %s (see above).%s\n' "$C_Y" "$p" "$C_0"
-            if (( ! SETUP_EOF )) && _setup_yn "Choose another directory?" y; then fp=(); continue; fi
+            if _setup_yn "Choose another directory?" y; then fp=(); continue; fi
             printf '  CACHE_DIR stays %s.\n' "$cur"; return 0
         fi
         if ! _setup_yn "Change CACHE_DIR to $p as shown?" y; then printf '  CACHE_DIR stays %s.\n' "$cur"; return 0; fi
@@ -908,7 +956,7 @@ _setup_sftp_needs_cmd() {
     return 0
 }
 
-# _setup_is_storagebox HOST: a Hetzner Storage Box (its checks: port 23, the
+# _setup_is_storagebox HOST: a Storage Box (its checks: port 23, the
 # user is the (sub-)account, a chrooted relative path, the provider's snapshots).
 _setup_is_storagebox() { [[ "${1,,}" == *.your-storagebox.de ]]; }
 
@@ -959,14 +1007,14 @@ _setup_repo_describe() {
 # restic backend, or (with a local cache repo) none.
 _setup_offsite_step() {
     printf '\n%s— Offsite target —%s\n' "$C_B" "$C_0"
-    local cur="${RESTIC_OFFSITE_REPO:-}" kind pi def=1
+    local cur="${RESTIC_OFFSITE_REPO:-}" kind def=1
     local -a labels=()
     kind="$(_setup_repo_kind "$cur")"
     if [[ -n "$cur" ]]; then
         printf '  Configured: %s\n' "$(_setup_repo_describe)"
         [[ "${OFFSITE_ENABLED:-true}" == true ]] || printf '  %s(OFFSITE_ENABLED=false: nothing is copied there now)%s\n' "$C_Y" "$C_0"
-        pi="$(_pick_index "Offsite" 1 "keep it (the offsite steps are skipped)" "change the target")" || pi=1
-        if [[ "$pi" == 1 ]]; then printf '  Keeping the offsite repo.\n'; return 0; fi
+        _setup_pick "Offsite" 1 "keep it (the offsite steps are skipped)" "change the target" || _PI=1
+        if [[ "$_PI" == 1 ]]; then printf '  Keeping the offsite repo.\n'; return 0; fi
     elif [[ "${OFFSITE_ENABLED:-true}" != true ]]; then
         printf '  None (OFFSITE_ENABLED=false: the local cache repo only).\n'
     fi
@@ -977,10 +1025,10 @@ _setup_offsite_step() {
     [[ "${LOCAL_REPO:-true}" == true ]] && labels+=("none: the local cache repo only")
     case "$kind" in rest) def=2 ;; dir) def=3 ;; other) def=4 ;; esac
     [[ -n "$cur" || "${OFFSITE_ENABLED:-true}" == true || "${LOCAL_REPO:-true}" != true ]] || def=5
-    if ! pi="$(_pick_index "Type of target" "$def" "${labels[@]}")"; then
+    if ! _setup_pick "Type of target" "$def" "${labels[@]}"; then
         printf '  %sNo such choice: the offsite target is unchanged.%s\n' "$C_Y" "$C_0"; return 0
     fi
-    case "$pi" in
+    case "$((10#$_PI))" in
         1) _setup_offsite_sftp "$kind" ;;
         2) _setup_offsite_rest "$kind" ;;
         3) _setup_offsite_dir "$kind" ;;
@@ -1159,7 +1207,7 @@ _setup_sftp_test() {
         if _pbo_sftp_probe "$@" </dev/null; then printf '%sOK%s\n' "$C_G" "$C_0"; return 0; fi
         printf '%sFAILED%s\n' "$C_R" "$C_0"
         printf '  The key is not accepted yet, or the host, port or key is wrong.\n'
-        if (( SETUP_EOF )) || ! _setup_yn "Retry the connection?" y; then
+        if ! _setup_yn "Retry the connection?" y; then
             printf '  %sGoing on without a verified connection: fix it before the first backup (pbo init, pbo doctor).%s\n' "$C_Y" "$C_0"
             return 0
         fi
@@ -1200,7 +1248,7 @@ _setup_offsite_rest() {
             _setup_write_file "$pf" 600 < <(printf '%s\n' "$dpw") || return 1
             printf '  %swritten: %s (0600)%s\n' "$C_G" "$pf" "$C_0"
         else
-            pw="$(_askpw "Password of $user on the rest-server (not shown)")"
+            _setup_askpw "Password of $user on the rest-server (not shown)"; pw="$_A"
             if [[ -z "$pw" ]]; then
                 printf '  %sNo password given: put it in %s (0600) before the first backup.%s\n' "$C_Y" "$pf" "$C_0"
             elif _setup_write_file "$pf" 600 < <(printf '%s\n' "$pw"); then
@@ -1312,8 +1360,9 @@ _setup_envfile() {
     fi
     for row in "${bvars[@]}"; do
         IFS='|' read -r n need what <<<"$row"
-        if [[ -n "${have[$n]+x}" ]]; then v="$(_askpw "  $n (Enter keeps the value in the file)")"
-        else v="$(_askpw "  $n ($need)")"; fi
+        if [[ -n "${have[$n]+x}" ]]; then _setup_askpw "  $n (Enter keeps the value in the file)"
+        else _setup_askpw "  $n ($need)"; fi
+        v="$_A"
         if [[ -n "$v" ]]; then
             [[ -n "${_SETUP_ENV_WANT[$n]+x}" ]] || order+=("$n")
             _SETUP_ENV_WANT[$n]="$v"
@@ -1322,19 +1371,18 @@ _setup_envfile() {
         fi
     done
     while true; do
-        _ask_r "Another variable for restic (its name; Enter when done)" "" || SETUP_EOF=1
+        _setup_read "Another variable for restic (its name; Enter when done)" ""
         n="$_A"
         [[ -n "$n" ]] || break
         if ! msg="$(_setup_chk_envname "$n")"; then
             printf '  %s%s%s\n' "$C_Y" "$msg" "$C_0"
         else
-            v="$(_askpw "  $n")"
+            _setup_askpw "  $n"; v="$_A"
             if [[ -n "$v" ]]; then
                 [[ -n "${_SETUP_ENV_WANT[$n]+x}" ]] || order+=("$n")
                 _SETUP_ENV_WANT[$n]="$v"
             fi
         fi
-        (( ! SETUP_EOF )) || break
     done
     if (( ${#order[@]} == 0 )); then
         printf '  %s is not changed.\n' "$f"
@@ -1371,25 +1419,152 @@ _setup_envfile_check() {
 
 # --- the other steps ---
 
-# _setup_drkey_step: the repo password (DR key). An existing one is never
-# replaced (the repos it opens would be lost without it; menu → Rotate DR key
-# changes it).
+# _setup_repo_targets: the repos `pbo init` creates or opens, "tier<TAB>repo"
+# per line (the cache repo with LOCAL_REPO, the offsite one when it is on).
+_setup_repo_targets() {
+    [[ "${LOCAL_REPO:-true}" != true || -z "${RESTIC_CACHE_REPO:-}" ]] || printf 'cache\t%s\n' "$RESTIC_CACHE_REPO"
+    [[ "${OFFSITE_ENABLED:-true}" != true || -z "${RESTIC_OFFSITE_REPO:-}" ]] || printf 'offsite\t%s\n' "$RESTIC_OFFSITE_REPO"
+    return 0
+}
+
+# _setup_probe_all MODE [VALUE] → SETUP_PROBE: what the targets hold, from a
+# read-only probe of each repo (_restic_probe, lib/restic.sh). MODE: none (no
+# key: is a repo there?), file VALUE (a password file), key VALUE (a key, held
+# in no file). SETUP_PROBE is wrongkey (the key does not open a repo there:
+# SETUP_PROBE_BAD names it), exists (a repo is there; with a key: each one
+# opens with it), unknown (a target cannot be checked: SETUP_PROBE_MSG), or
+# absent (no repo anywhere).
+_setup_probe_all() {
+    local mode="$1" val="${2:-}" tier repo any=0 unk='' bad='' what
+    SETUP_PROBE=absent SETUP_PROBE_MSG='' SETUP_PROBE_BAD=''
+    if ! declare -F _restic_probe >/dev/null; then SETUP_PROBE=unknown SETUP_PROBE_MSG='no probe loaded'; return 0; fi
+    while IFS=$'\t' read -r tier repo; do
+        [[ -n "$repo" ]] || continue
+        case "$mode" in
+            file) _restic_probe "$repo" "$val" </dev/null ;;
+            key)  _restic_probe "$repo" <(printf '%s\n' "$val") </dev/null ;;
+            *)    _restic_probe "$repo" "" </dev/null ;;
+        esac
+        case "$RPROBE" in
+            exists)   any=1; what='a repo is there'; [[ "$mode" == none ]] || what='a repo is there, the key opens it' ;;
+            wrongkey) any=1; bad+="${bad:+, }the $tier repo $(_mask_url "$repo")"; what='a repo is there, the key does NOT open it' ;;
+            absent)   what='no repo yet' ;;
+            *)        unk+="${unk:+; }$tier: $RPROBE_MSG"; what="cannot tell ($RPROBE_MSG)" ;;
+        esac
+        printf '  %s repo %s: %s\n' "$tier" "$(_mask_url "$repo")" "$what"
+    done < <(_setup_repo_targets)
+    if [[ -n "$bad" ]]; then SETUP_PROBE=wrongkey SETUP_PROBE_BAD="$bad"
+    elif (( any )); then SETUP_PROBE=exists
+    elif [[ -n "$unk" ]]; then SETUP_PROBE=unknown SETUP_PROBE_MSG="$unk"
+    fi
+    return 0
+}
+
+# _setup_key_from_file FILE: the DR key FILE holds: the value of its
+# RESTIC_PASSWORD= line (an export of the menu), else the whole file (a
+# password file, as restic reads one).
+_setup_key_from_file() {
+    local l
+    # || [[ -n $l ]]: an edited export may lack its final newline, and read
+    # fails on that last line although it filled l
+    while IFS= read -r l || [[ -n "$l" ]]; do
+        l="${l#"${l%%[![:space:]]*}"}"
+        if [[ "$l" == RESTIC_PASSWORD=* ]]; then printf '%s' "${l#RESTIC_PASSWORD=}"; return 0; fi
+    done < "$1"
+    cat -- "$1"
+}
+
+# _setup_drkey_existing: the key of the repo the target holds already: from a
+# file (a password file or an export) or typed without echo. It is written to
+# RESTIC_PASSWORD_FILE (0600) only once it opens every repo the target holds;
+# a key that does not is refused and asked again, and nothing is written.
+# When the target cannot be reached, the key is taken unchecked only when the
+# operator picks that (init then checks it before it creates anything).
+# _setup_drkey_existing unknown: called after the operator said a target that
+# cannot be checked holds a repo; a key that cannot be checked then also
+# offers the way back ("there is no repo there"), returning 2 with nothing
+# written so the caller generates a key. Without it (a repo was found) a new
+# key is never offered: no new key opens that repo.
+_setup_drkey_existing() {
+    local pf="${RESTIC_PASSWORD_FILE:-}" src key how="${1:-}"
+    printf '  %sGive the DR key that repo was made with (the export of the first host, or its password file).%s\n' "$C_D" "$C_0"
+    while true; do
+        _setup_ask "File with the DR key (Enter: type the key instead)" "" _setup_chk_abs_opt
+        src="$_SV"
+        if [[ -n "$src" ]]; then
+            if [[ ! -f "$src" || ! -r "$src" ]]; then printf '  %s%s is not a readable file: try again%s\n' "$C_Y" "$src" "$C_0"; continue; fi
+            key="$(_setup_key_from_file "$src")"
+        else
+            _setup_askpw "The DR key (the repo password; not shown)"; key="$_A"
+        fi
+        [[ -n "$key" ]] || { printf '  %san empty key: try again%s\n' "$C_Y" "$C_0"; continue; }
+        _setup_probe_all key "$key"
+        case "$SETUP_PROBE" in
+            exists|absent) break ;;
+            wrongkey) printf '  %sThat key does not open %s: not written, try again.%s\n' "$C_Y" "$SETUP_PROBE_BAD" "$C_0" ;;
+            *)
+                if [[ "$how" != unknown ]]; then
+                    if _setup_yn "The key cannot be checked now ($SETUP_PROBE_MSG). Use it unchecked (pbo init checks it before it creates anything)?" n; then break; fi
+                    continue
+                fi
+                printf '  %sThe key cannot be checked now (%s).%s\n' "$C_Y" "$SETUP_PROBE_MSG" "$C_0"
+                _setup_pick "What now" 1 "give another key" "use this key unchecked (pbo init checks it before it creates anything)" \
+                    "there is no repo there: make a new key instead" || _PI=1
+                case "$_PI" in
+                    2) break ;;
+                    3) return 2 ;;
+                esac ;;
+        esac
+    done
+    _setup_write_file "$pf" 600 < <(printf '%s\n' "$key") || return 1
+    printf '  %swritten: %s (0600)%s\n' "$C_G" "$pf" "$C_0"
+}
+
+# _setup_drkey_step: the repo password (DR key). The targets are probed first
+# (read only): a repo that is there already has a key, and only that key opens
+# it, so a new one is never offered for it (the second node of a cluster, a
+# host restoring after a loss); the wizard asks for that key and checks it.
+# A new target: generating one is the default. A probe that cannot tell (the
+# target unreachable) asks whether a repo is there, yes by default; a key
+# that cannot be checked there either can still be dropped for a new one
+# (the operator says there is no repo after all). An
+# existing key file is never replaced (the repos it opens would be lost
+# without it; menu → Rotate DR key changes it); setup stops when it does not
+# open a repo the target holds.
 _setup_drkey_step() {
     printf '\n%s— DR key (repo password) —%s\n' "$C_B" "$C_0"
     local pass='' pf="${RESTIC_PASSWORD_FILE:-}"
     if [[ -s "$pf" ]]; then
+        _setup_probe_all file "$pf"
+        if [[ "$SETUP_PROBE" == wrongkey ]]; then
+            printf '  %sThe DR key in %s does not open %s: only the key it was made with does. Put that key in %s, or choose the target this key belongs to; nothing was changed.%s\n' \
+                "$C_R" "$pf" "$SETUP_PROBE_BAD" "$pf" "$C_0"
+            return 1
+        fi
         printf '  %sKeeping the existing DR key in %s%s (to change it: menu → Rotate DR key).\n' "$C_G" "$pf" "$C_0"; return 0
     fi
+    _setup_probe_all none
+    case "$SETUP_PROBE" in
+        exists)
+            printf '  %sA repo exists there already: it has its DR key, and no new key can open it.%s\n' "$C_Y" "$C_0"
+            _setup_drkey_existing; return ;;
+        unknown)
+            printf '  %sWhether a repo exists there cannot be told now (%s).%s\n' "$C_Y" "$SETUP_PROBE_MSG" "$C_0"
+            if _setup_yn "Does the target hold a repo already (made by another node, or an earlier install)?" y; then
+                # 2: the operator took that back (no repo there): a new key below
+                local rc=0
+                _setup_drkey_existing unknown || rc=$?
+                (( rc == 2 )) || return "$rc"
+            fi ;;
+    esac
     if _setup_yn "Generate a random repo password (recommended)?" y; then
         pass="$(openssl rand -base64 30 2>/dev/null || head -c22 /dev/urandom | base64)"
         printf '  Generated: export it afterwards (menu → Export DR key) and store it safely.\n'
     else
         while true; do
-            read -r -s -p "Enter the restic repo password (this IS your DR key): " pass || SETUP_EOF=1
-            echo >&2
+            _setup_askpw "Enter the restic repo password (this IS your DR key)"; pass="$_A"
             [[ -z "$pass" ]] || break
             printf '  %san empty password: try again%s\n' "$C_Y" "$C_0"
-            (( ! SETUP_EOF )) || { printf '  %sthe input ended%s\n' "$C_R" "$C_0"; return 1; }
         done
     fi
     _setup_write_file "$pf" 600 < <(printf '%s\n' "$pass") || return 1
@@ -1431,14 +1606,14 @@ _setup_retention_step() {
 # changed or turned off; nothing is written when the operator keeps it.
 _setup_ntfy_step() {
     printf '\n%s— Notifications —%s\n' "$C_B" "$C_0"
-    local pi url topic lvl="${NOTIFY_LEVEL-}"
+    local url topic lvl="${NOTIFY_LEVEL-}"
     # an empty NOTIFY_LEVEL is fail, or all with the deprecated NTFY_ON_SUCCESS=true (lib/notify.sh)
     if [[ -z "$lvl" ]]; then lvl=fail; [[ "${NTFY_ON_SUCCESS-}" != true ]] || lvl=all; fi
     if [[ -n "${NTFY_URL:-}" ]]; then
         printf '  ntfy: %s, topic %s, notify on: %s\n' "$(_mask_url "$NTFY_URL")" \
             "$( [[ -n "${NTFY_TOPIC:-}" ]] && printf '<set>' || printf '<none>')" "$lvl"
-        pi="$(_pick_index "ntfy" 1 "keep it" "change it" "turn ntfy off")" || pi=1
-        case "$pi" in
+        _setup_pick "ntfy" 1 "keep it" "change it" "turn ntfy off" || _PI=1
+        case "$((10#$_PI))" in
             1) return 0 ;;
             3) _setup_change unset NTFY_URL unset NTFY_TOPIC || return 1; printf '  ntfy off.\n'; return 0 ;;
         esac
@@ -1517,14 +1692,14 @@ _setup_schedule_step() {
 }
 
 # _setup_doctor_step: `pbo doctor --fix` (the permission table applied: the
-# config, the DR key, the cache, the credentials files) and its report.
+# config, the DR key, the cache, the credentials files) and its report; its
+# exit status (69: doctor found a problem).
 _setup_doctor_step() {
     printf '\n%s— Health check (pbo doctor --fix) —%s\n' "$C_B" "$C_0"
     local -a fp=()
     if (( SETUP_FIX_PARENTS )); then fp=(--fix-parents)
     elif (( SETUP_PARENTS_HINT )) && _setup_yn "Let doctor add the traverse-only ACL entries the cache step named (--fix-parents)?" y; then fp=(--fix-parents); fi
     "$PBO_BIN" doctor --fix "${fp[@]+"${fp[@]}"}" </dev/null
-    return 0
 }
 
 # --- SETUP WIZARD (used by `pbo setup`, install.sh, and the menu) ---
@@ -1534,13 +1709,19 @@ _setup_doctor_step() {
 # backup mode, retention, ntfy, the repos, the guest set, the Proxmox
 # integration, the schedule and the timers, and last `pbo doctor --fix`. Run
 # again, it changes only what the operator changes.
+# Exit status: 0 only when every step worked. A step that cannot go on stops
+# the wizard (1, the init's own status when the repos cannot be made, 64 when
+# the input ends); a failed integration step or a doctor that found problems
+# lets the steps after it run, and the wizard ends with the status of the
+# first of them and says what failed instead of "Setup complete".
 run_setup_wizard() {
     set +e +u
-    SETUP_EOF=0 SETUP_FIX_PARENTS=0 SETUP_PARENTS_HINT=0 SETUP_RERUN=0
+    SETUP_EOF=0 SETUP_FIX_PARENTS=0 SETUP_PARENTS_HINT=0 SETUP_RERUN=0 SETUP_STEP='' SETUP_RC=0
+    SETUP_FAILS=()
     # the steps run pbo of their own (the cache move, init, doctor --fix) and
     # write files: a global --dry-run would reach none of them
     if [[ "${DRY_RUN:-0}" == 1 ]]; then
-        printf "pbo: setup has no --dry-run: it shows what each step changes and asks first (or try a change with 'pbo --dry-run config set KEY VALUE')\n" >&2
+        printf "pbo: setup has no --dry-run: it shows what each step changes and asks first (or try a change with 'pbo --dry-run config set KEY VALUE', and 'pbo --dry-run init' for the repos)\n" >&2
         return "$EX_USAGE"
     fi
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for the setup (apt install jq)\n' >&2; return 1; }
@@ -1548,8 +1729,9 @@ run_setup_wizard() {
     _setup_rerun_check && SETUP_RERUN=1
     printf '\n%s=== PBO · Proxmox Backup Offsite, setup ===%s\n' "$C_B" "$C_0"
     printf '%sEvery question offers the current setting: Enter keeps it, so running setup again changes only what you change.%s\n' "$C_D" "$C_0"
-    local step
+    local step rc
     for step in cache offsite; do
+        SETUP_STEP="$step"
         "_setup_${step}_step" || { _setup_stopped "$step"; return 1; }
     done
     if [[ "${LOCAL_REPO:-true}" != true && ( "${OFFSITE_ENABLED:-true}" != true || -z "${RESTIC_OFFSITE_REPO:-}" ) ]]; then
@@ -1557,23 +1739,57 @@ run_setup_wizard() {
         _setup_stopped offsite; return 1
     fi
     for step in drkey mode retention ntfy; do
+        SETUP_STEP="$step"
         "_setup_${step}_step" || { _setup_stopped "$step"; return 1; }
     done
 
+    SETUP_STEP=init
     printf '\n%s— Repo init —%s\n' "$C_B" "$C_0"
     printf '  Creating/verifying the restic repo(s)…\n'
-    _setup_pbo init || { printf '  %sinit failed: fix the target above and run pbo setup again (it keeps what is set).%s\n' "$C_R" "$C_0"; return 1; }
+    _setup_pbo init; rc=$?
+    if (( rc != 0 )); then
+        printf '  %sinit failed (exit %s): fix the target above and run pbo setup again (it keeps what is set).%s\n' "$C_R" "$rc" "$C_0"
+        _setup_stopped init; return "$rc"
+    fi
 
+    SETUP_STEP=guests
     _setup_guests_step || { _setup_stopped guests; return 1; }
     # --- Proxmox integration (ADR 0007) ---
-    _setup_integration_step
+    SETUP_STEP=integration
+    _setup_integration_step; rc=$?
+    (( rc == 0 )) || _setup_fail "$rc" "the Proxmox integration: ${SETUP_INTEG_FAIL:-the step failed} (exit $rc)"
+    SETUP_STEP=schedule
     _setup_schedule_step || { _setup_stopped schedule; return 1; }
-    _setup_doctor_step
+    SETUP_STEP=doctor
+    _setup_doctor_step; rc=$?
+    if (( rc != 0 )); then
+        local why="pbo doctor found problems (exit $rc, the FAIL lines above)"
+        # (a guest is a FAIL until its first snapshot: expected right after a first setup)
+        (( SETUP_RERUN )) || why+="; a guest with no snapshot yet stays a FAIL until the first backup ran"
+        _setup_fail "$rc" "the health check: $why"
+    fi
 
+    if (( ${#SETUP_FAILS[@]} )); then
+        printf '\n  %sSetup ran to the end, but not everything worked:%s\n' "$C_R" "$C_0"
+        local f; for f in "${SETUP_FAILS[@]}"; do printf '    - %s\n' "$f"; done
+        printf '  Fix that, then run pbo setup again (it keeps what is set) or pbo doctor.\n'
+        printf '  %sExport your DR key%s → password manager (menu → Export DR key): without it, a restore on a new host is impossible.\n' "$C_B" "$C_0"
+        # the list above says what failed: no "stopped unexpectedly" from
+        # pbo's exit on top (and no alert); in the menu the session goes on
+        [[ "${PBO_COMMAND:-}" != setup ]] || PBO_ERROR_LOGGED=1
+        return "$SETUP_RC"
+    fi
     printf '\n%s  Setup complete.%s Recommended next step:\n' "$C_G" "$C_0"
     printf '    %sExport your DR key%s → password manager (menu → Export DR key).\n' "$C_B" "$C_0"
     printf '    Without it, a restore on a new host is impossible.\n'
     return 0
+}
+
+# _setup_fail RC WHAT: a step that failed but let the wizard go on: named in
+# the closing text, and the wizard's exit status is the first such RC.
+_setup_fail() {
+    (( SETUP_RC != 0 )) || SETUP_RC="$1"
+    SETUP_FAILS+=("$2")
 }
 
 # _setup_stopped STEP: what a stop in STEP leaves (each step wrote its own
@@ -1585,44 +1801,55 @@ _setup_stopped() {
 # _setup_integration_step: the wizard's "Proxmox integration" step. Choose
 # standalone | both | integrated (default: the current mode, or the one install.sh
 # was given, PBO_SETUP_INTEGRATION). Without the storage plugin it says how to
-# install it and stays standalone. Otherwise it shows the dry run of
-# `pbo integrate enable|disable` and applies it after a yes.
+# install it on this layout (_integ_install_hint) and stays as it is.
+# Otherwise it shows the dry run of `pbo integrate enable|disable` and
+# applies it after a yes. Returns non-zero (SETUP_INTEG_FAIL says what) when
+# the mode chosen could not be set: the plugin is missing, or enable or
+# disable failed; a no to the dry run is no failure.
 _setup_integration_step() {
     printf '\n%s— Proxmox integration —%s\n' "$C_B" "$C_0"
     printf '%sstandalone: pbo.timer backs up every guest (as before).\n' "$C_D"
     printf 'both:       a PVE backup job (Datacenter -> Backup) to the pbo storage owns the guests it selects, pbo.timer backs up the rest.\n'
     printf 'integrated: only PVE backup jobs back up guests; pbo still prunes, verifies and tests restores.%s\n' "$C_0"
-    local cur want def=1 pi m
+    local cur want def=1 m rc
+    SETUP_INTEG_FAIL=''
     cur="$(_integration_mode)"; want="${PBO_SETUP_INTEGRATION:-$cur}"
     case "$want" in both) def=2 ;; integrated) def=3 ;; esac
-    if ! pi="$(_pick_index "Mode" "$def" "standalone$([[ $cur == standalone ]] && echo ' (current)')" \
-            "both$([[ $cur == both ]] && echo ' (current)')" "integrated$([[ $cur == integrated ]] && echo ' (current)')")"; then
+    if ! _setup_pick "Mode" "$def" "standalone$([[ $cur == standalone ]] && echo ' (current)')" \
+            "both$([[ $cur == both ]] && echo ' (current)')" "integrated$([[ $cur == integrated ]] && echo ' (current)')"; then
         echo "  ${C_Y}No such choice, keeping $cur.${C_0}"; return 0
     fi
-    m="$(case "$pi" in 1) echo standalone ;; 2) echo both ;; 3) echo integrated ;; esac)"
+    case "$((10#$_PI))" in 1) m=standalone ;; 2) m=both ;; *) m=integrated ;; esac
     if [[ "$m" == standalone ]]; then
         if [[ "$cur" == standalone ]]; then echo "  Standalone: pbo.timer backs up every guest."; return 0; fi
-        "$PBO_BIN" --dry-run integrate disable
-        if _yn "Turn the Proxmox integration off (as shown above)?" n; then
-            "$PBO_BIN" integrate disable --yes && { PBO_INTEGRATION=standalone; echo "  ${C_G}Standalone.${C_0}"; } \
-                || echo "  ${C_Y}'pbo integrate disable' did not finish, still $cur (see above).${C_0}"
+        "$PBO_BIN" --dry-run integrate disable </dev/null
+        if _setup_yn "Turn the Proxmox integration off (as shown above)?" n; then
+            "$PBO_BIN" integrate disable --yes </dev/null; rc=$?
+            if (( rc == 0 )); then PBO_INTEGRATION=standalone; echo "  ${C_G}Standalone.${C_0}"
+            else
+                echo "  ${C_Y}'pbo integrate disable' did not finish, still $cur (see above).${C_0}"
+                SETUP_INTEG_FAIL="'pbo integrate disable' did not finish, still $cur"; return "$rc"
+            fi
         fi
         return 0
     fi
     if [[ ! -f "$(_integ_plugin_path)" ]]; then
         echo "  ${C_Y}The pbo storage plugin is not installed ($(_integ_plugin_path)), staying $cur.${C_0}"
         echo "  Install it, then run 'pbo setup' or 'pbo integrate enable $m':"
-        echo "    ./install.sh --integration $m        (from the pbo source tree)"
-        echo "    apt install pbo-pve-storage            (package hosts)"
-        return 0
+        if declare -F _integ_install_hint >/dev/null; then echo "    $(_integ_install_hint "$m")"
+        else echo "    install.sh --integration $m (an install.sh host), or apt install pbo-pve-storage (a package host)"; fi
+        SETUP_INTEG_FAIL="the storage plugin is not installed, still $cur"
+        return "${EX_UNAVAILABLE:-69}"
     fi
-    "$PBO_BIN" --dry-run integrate enable "$m"
-    if _yn "Apply this (adds the pbo storage to PVE, the hook to /etc/vzdump.conf, pbo-catalog.timer)?" y; then
-        if "$PBO_BIN" integrate enable "$m" --yes; then
+    "$PBO_BIN" --dry-run integrate enable "$m" </dev/null
+    if _setup_yn "Apply this (adds the pbo storage to PVE, the hook to /etc/vzdump.conf, pbo-catalog.timer)?" y; then
+        "$PBO_BIN" integrate enable "$m" --yes </dev/null; rc=$?
+        if (( rc == 0 )); then
             PBO_INTEGRATION="$m"
             echo "  ${C_G}Proxmox integration: $m.${C_0} Add backup jobs to the storage '${PVE_STORAGE_ID:-pbo}' in Datacenter -> Backup (compression none)."
         else
             echo "  ${C_Y}'pbo integrate enable $m' did not finish, still $cur (see above).${C_0}"
+            SETUP_INTEG_FAIL="'pbo integrate enable $m' did not finish, still $cur"; return "$rc"
         fi
     else
         echo "  Not applied, still $cur."
@@ -1806,15 +2033,16 @@ menu_help() {
     printf '  %sConcepts%s\n' "$B" "$Z"
     printf '    %sTiers%s     Local = a cache repo on fast local disk; Offsite = the remote\n' "$D" "$Z"
     printf '              restic repo (SFTP, rest-server, ...). Cached mode backs up locally, then copies offsite.\n'
-    printf '    %sDR key%s    The restic repo password (%s/etc/pbo/restic-pass%s). It is the ONLY\n' "$D" "$Z" "$D" "$Z"
+    printf '    %sDR key%s    The restic repo password (%s%s%s). It is the ONLY\n' "$D" "$Z" "$D" "${RESTIC_PASSWORD_FILE-}" "$Z"
     printf '              thing that can decrypt the offsite data. Lose it and the backup is gone.\n'
     printf '    %sSnapshot%s  One backup of one guest at one time, tagged by vmid. Restores never\n' "$D" "$Z"
     printf '              overwrite: a guest is always restored to a NEW vmid.\n\n'
 
     printf '  %sMain menu%s\n' "$B" "$Z"
     printf '    %s1 Setup%s        Guided wizard: cache, offsite target (SFTP, rest-server, a directory\n' "$B" "$Z"
-    printf '                  or another restic backend), DR key, mode, retention, ntfy, schedule,\n'
-    printf '                  then creates the repo. Safe to run again: Enter keeps each setting.\n'
+    printf '                  or another restic backend), DR key (the key of a repo that exists\n'
+    printf '                  already), mode, retention, ntfy, the repos, guests, the Proxmox\n'
+    printf '                  integration, schedule, doctor --fix. Safe to run again: Enter keeps each setting.\n'
     printf '    %s2 Guests%s       Scan the cluster and choose which guests are backed up\n' "$B" "$Z"
     printf '                  (writes BACKUP_ORDER). "protected" = included in the nightly run.\n'
     printf '    %s3 Back up%s      Run a backup now: all protected guests (stream/batch), a single\n' "$B" "$Z"

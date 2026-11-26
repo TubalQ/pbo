@@ -5,7 +5,8 @@
 #   pbo-pve-storage_<version>_all.deb  the Proxmox integration (ADR 0006/0007)
 # Layout: /usr/lib/pbo (program + lib), /usr/sbin/pbo, systemd units in
 # /usr/lib/systemd/system. The config is never shipped as a conffile: postinst
-# creates /etc/pbo and leaves it to `pbo setup`, the way install.sh does.
+# creates /etc/pbo and leaves the config to `pbo setup`, the way install.sh
+# does (the examples are in /usr/share/doc/pbo/examples).
 set -Eeuo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$SRC/dist}"
@@ -59,7 +60,6 @@ set -e
 if [ "$1" = configure ]; then
     install -d -m 0700 /etc/pbo
     install -d -m 0755 /var/log/pbo /var/lib/pbo /var/lib/pbo/jobs
-    [ -e /etc/pbo/config.example ] || cp /usr/share/doc/pbo/examples/config.example /etc/pbo/config.example
     # pbo 0.6 reads the config instead of sourcing it: name the lines it
     # refuses (every command then stops with 78) or warns about. Reported only:
     # dpkg cannot stop an upgrade that is already unpacked (install.sh refuses
@@ -78,6 +78,16 @@ if [ "$1" = configure ]; then
     if [ -f /etc/pbo/config ]; then
         rc=0; out="$(/usr/sbin/pbo timers apply 2>&1)" || rc=$?
         [ "$rc" = 0 ] || { echo "pbo: 'pbo timers apply' (exit $rc):"; printf '%s\n' "$out" | sed 's/^/    /'; }
+    fi
+    # the permission table on the files an earlier install left (an existing
+    # config, the DR key, the directories), as install.sh does: through
+    # `pbo doctor --fix --perms-only`, only when a config exists (without one
+    # there is nothing of the operator's to fix yet). Reported only: it never
+    # fails the install (pbo doctor --fix can run any time).
+    if [ -f /etc/pbo/config ]; then
+        rc=0; out="$(/usr/sbin/pbo doctor --fix --perms-only 2>&1)" || rc=$?
+        [ -z "$out" ] || { echo "pbo: 'pbo doctor --fix --perms-only':"; printf '%s\n' "$out" | sed 's/^/    /'; }
+        [ "$rc" = 0 ] || echo "pbo: the permission check reported problems (exit $rc); fix them, then run 'pbo doctor --fix'."
     fi
     # Proxmox notification templates, cluster-wide via pmxcfs (plain cp, no chmod)
     if [ -d /etc/pve ]; then

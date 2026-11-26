@@ -181,11 +181,207 @@ _restic_pf() {
     # the program, its options and the cache, taken from the config before
     # anything of RESTIC_ENV_FILE is read
     local bin="$RESTIC_BIN" cache="$RESTIC_CACHE_DIR" opts=("${RESTIC_OPTS[@]+"${RESTIC_OPTS[@]}"}")
+    # _RESTIC_WRAP: a command restic runs under (the probe's timeout); empty
+    # for every other call
     ( _restic_env_export || exit "$EX_CONFIG"
       _restic_rest_env
       exec env -- "${_RENV_ARGS[@]+"${_RENV_ARGS[@]}"}" \
           RESTIC_PASSWORD_FILE="$pf" RESTIC_FROM_PASSWORD_FILE="$pf" RESTIC_CACHE_DIR="$cache" \
-          "$bin" -r "$1" "${opts[@]+"${opts[@]}"}" "${@:2}" )
+          "${_RESTIC_WRAP[@]+"${_RESTIC_WRAP[@]}"}" "$bin" -r "$1" "${opts[@]+"${opts[@]}"}" "${@:2}" )
+}
+_RESTIC_WRAP=()
+
+# _restic_probe REPO [PASSWORD_FILE] → RPROBE, RPROBE_MSG: is there a restic
+# repo at REPO, and does the key open it? RPROBE is
+#   exists    the repo is there and PASSWORD_FILE opens it (without
+#             PASSWORD_FILE: the repo is there; a throwaway key was tried)
+#   wrongkey  the repo is there, PASSWORD_FILE does not open it
+#   absent    there is no repo at REPO
+#   unknown   it cannot be told (the target unreachable, a timeout, a
+#             refused RESTIC_ENV_FILE); RPROBE_MSG says why
+# Read only: `cat config` with --no-lock and --no-cache (no lock file in the
+# repo, no cache directory made), under a timeout (a rest-server that is down
+# is retried for minutes). restic >= 0.17 exits 10 for a missing repo and 12
+# for a wrong password; 0.14 to 0.16 exit 1 for both and say which on stderr:
+# "wrong password or no key found", or "unable to open config file:" (then
+# "Is there a repository at the following location?") with the backend's
+# not-exist error: a directory "stat <repo>/config: no such file or
+# directory", SFTP "Lstat: file does not exist", a rest-server
+# "<config/> does not exist" (or "404 Not Found"). The "Is there a
+# repository" line alone decides nothing: restic prints it after a refused
+# login or a network error too.
+# When neither the exit status nor the message decides:
+#  - a rest-server is asked itself: a HEAD of <url>/config with the login
+#    restic gets; 404 is absent, any other answer leaves it unknown. With
+#    restic older than 0.17 that is asked first, since its backend retries
+#    the 404 until the probe's timeout;
+#  - a directory repo is judged by its config file (restic writes it first on
+#    init, removes it never), but only on a real ENOENT: the directory (or its
+#    nearest existing parent) searchable and readable, and no access or
+#    transport error from restic (permission denied, a stale NFS handle, an
+#    I/O error, a dead mount). Anything else proves nothing: an NFS export
+#    with root_squash fails the same stat for a repo that is there;
+#  - another backend stays unknown, and the caller asks instead of guessing.
+_restic_probe() {
+    local repo="$1" pf="${2:-}" rc=0 err loc d v heads=0 tmo=0
+    local -a wrap=()
+    RPROBE=unknown RPROBE_MSG=''
+    [[ -n "$repo" ]] || { RPROBE_MSG='no repo configured'; return 0; }
+    if [[ "$repo" == rest:http://* || "$repo" == rest:https://* ]]; then
+        v="$(_restic_version)"
+        if [[ -n "$v" ]] && ! _version_ge "$v" 0.17; then
+            heads=1
+            [[ "$(_restic_rest_head_config "$repo")" != 404 ]] || { RPROBE=absent; return 0; }
+        fi
+    fi
+    command -v timeout >/dev/null 2>&1 && wrap=(timeout -k 5 "$RESTIC_PROBE_TIMEOUT")
+    if [[ -n "$pf" ]]; then
+        err="$(_RESTIC_WRAP=("${wrap[@]+"${wrap[@]}"}"); _restic_pf "$pf" "$repo" --no-lock --no-cache cat config 2>&1 >/dev/null)" || rc=$?
+    else
+        # a key no repo has: restic gets as far as the key check only when the
+        # repo's config file is there. Never written to a file.
+        err="$(_RESTIC_WRAP=("${wrap[@]+"${wrap[@]}"}")
+               _restic_pf <(printf 'pbo-probe-%s-%s-%s\n' "${SRANDOM:-$RANDOM}" "${SRANDOM:-$RANDOM}" "$$") \
+                   "$repo" --no-lock --no-cache cat config 2>&1 >/dev/null)" || rc=$?
+    fi
+    # a found repo without a key to try is "exists": the throwaway key is
+    # expected to fail
+    local found=wrongkey; [[ -n "$pf" ]] || found=exists
+    case "$rc" in
+        0|11) RPROBE=exists; return 0 ;;   # 11: the lock failed, after the key opened the repo
+        10) RPROBE=absent; return 0 ;;
+        12) RPROBE="$found"; return 0 ;;
+        124|137) tmo=1 ;;
+    esac
+    if (( ! tmo )); then
+        if [[ "$err" == *"wrong password or no key found"* ]]; then RPROBE="$found"; return 0; fi
+        if [[ "$err" == *"unable to open config file"* ]] \
+           && [[ "$err" == *"no such file or directory"* || "$err" == *"file does not exist"* \
+                 || "$err" == *"<config/> does not exist"* || "$err" == *"404 Not Found"* ]]; then
+            RPROBE=absent; return 0
+        fi
+    fi
+    case "$repo" in
+        rest:http://*|rest:https://*)
+            # also after a timeout: restic 0.14 to 0.16 retry the 404 until then
+            if (( ! heads )) && [[ "$(_restic_rest_head_config "$repo")" == 404 ]]; then RPROBE=absent; return 0; fi ;;
+        /*|local:/*)
+            # not after a timeout (a hung mount hangs the stat as well), nor
+            # after an access or transport error: the stat below would fail
+            # the same way for a repo that is there
+            loc="${repo#local:}"
+            while [[ "$loc" == */ && "$loc" != / ]]; do loc="${loc%/}"; done
+            if (( ! tmo )) && [[ "$err" != *[Pp]ermission\ denied* && "$err" != *[Ss]tale* && "$err" != *[Ii]nput/output\ error* \
+                                 && "$err" != *"not connected"* && "$err" != *[Tt]ransport\ endpoint* && "$err" != *[Hh]ost\ is\ down* ]]; then
+                # the nearest existing directory, climbing only past names
+                # that are not there (ENOENT); another stat error proves nothing
+                d="$loc"
+                while [[ ! -e "$d" && ! -L "$d" ]]; do
+                    _restic_enoent "$d" || { d=''; break; }
+                    if [[ "$d" == /*/* ]]; then d="${d%/*}"; else d=/; fi
+                done
+                if [[ -n "$d" && -d "$d" && -x "$d" && -r "$d" ]] \
+                   && { [[ "$d" != "$loc" ]] || { [[ ! -e "$loc/config" && ! -L "$loc/config" ]] && _restic_enoent "$loc/config"; }; }; then
+                    RPROBE=absent; return 0
+                fi
+            fi ;;
+    esac
+    if (( tmo )); then RPROBE_MSG="restic did not answer within ${RESTIC_PROBE_TIMEOUT}s"; return 0; fi
+    RPROBE_MSG="$(_mask_url "$(grep -m1 -v '^[[:space:]]*$' <<<"$err")")"
+    [[ -n "$RPROBE_MSG" ]] || RPROBE_MSG="restic exited $rc"
+    return 0
+}
+
+# _restic_enoent PATH: the stat of PATH fails with ENOENT (no such file or
+# directory), not with EACCES, ESTALE, EIO or another error that says nothing
+# about whether it is there. stat's message, in the C locale.
+_restic_enoent() {
+    local e
+    e="$(LC_ALL=C stat -- "$1" 2>&1 >/dev/null)" && return 1
+    [[ "$e" == *"No such file or directory"* ]]
+}
+
+# _restic_rest_head_config REPO → the HTTP status of a HEAD of <url>/config on
+# the rest-server REPO names ("000": no answer). The REST API answers 404 for
+# a repo without a config file. The login is the one restic gets: the
+# configured RESTIC_REST_USERNAME and its password file, else the user and
+# password in the URL; handed to curl on stdin (-K -), never on its command
+# line (ps), and the URL curl gets carries none.
+_restic_rest_head_config() {
+    local url="${1#rest:}" base user='' pw='' ui q
+    local -a args=(-s -o /dev/null -I -w '%{http_code}' -m 10)
+    command -v curl >/dev/null 2>&1 || { printf '000'; return 0; }
+    base="$(_rest_base_url "$1")"
+    [[ -n "$base" ]] || { printf '000'; return 0; }
+    [[ -n "${RESTIC_CACERT:-}" ]] && args+=(--cacert "$RESTIC_CACERT")
+    if [[ -n "${RESTIC_REST_USERNAME:-}" ]]; then
+        # _rest_password stops pbo on an unreadable file: here that is no answer
+        [[ -z "${RESTIC_REST_PASSWORD_FILE:-}" || -r "$RESTIC_REST_PASSWORD_FILE" ]] || { printf '000'; return 0; }
+        user="$RESTIC_REST_USERNAME"; pw="$(_rest_password)"
+    elif [[ "$url" =~ ^https?://([^/@]+)@ ]]; then
+        # percent-encoded in the URL, as restic decodes it (a backslash kept)
+        ui="${BASH_REMATCH[1]//\\/\\\\}"; ui="$(printf '%b' "${ui//%/\\x}")"
+        user="${ui%%:*}"; [[ "$ui" != *:* ]] || pw="${ui#*:}"
+    fi
+    if [[ -n "$user" ]]; then
+        # a quoted value in curl's config: \ and " escaped
+        q="$user:$pw"; q="${q//\\/\\\\}"; q="${q//\"/\\\"}"
+        printf 'user = "%s"\n' "$q" | curl "${args[@]}" -K - "$base/config" 2>/dev/null || true
+    else
+        curl "${args[@]}" "$base/config" 2>/dev/null || true
+    fi
+    return 0
+}
+# how long the probe waits for restic (seconds): long enough for a slow SFTP
+# login, short enough that a target that is down does not stall setup
+readonly RESTIC_PROBE_TIMEOUT=60
+
+# _restic_init_plan: `pbo --dry-run init`: what `pbo init` would do with each
+# repo, from _restic_probe, and nothing written (main() starts it without
+# ensure_dirs, log or audit files; restic runs with --no-lock and --no-cache).
+# The exit status is the one init would end with where the probe can tell:
+# 78 without a readable DR key or with a key that does not open a repo, 75
+# while a cache move is unfinished or where its guard would refuse the
+# repo, 69 when a repo cannot be checked, else 0.
+_restic_init_plan() {
+    declare -F _cm_block >/dev/null && _cm_block "restic init"
+    local pf="$RESTIC_PASSWORD_FILE" haskey=1 rc=0 tier repo how act st
+    local -a rows=() tiers=()
+    [[ -r "$pf" ]] || haskey=0
+    [[ "${LOCAL_REPO:-true}" == true ]] && tiers+=(cache)
+    [[ "${OFFSITE_ENABLED:-true}" == true && -n "${RESTIC_OFFSITE_REPO:-}" ]] && tiers+=(offsite)
+    (( haskey )) || { log_warn "[dry-run] init: no readable DR key $pf: init would stop (exit $EX_CONFIG)"; rc=$EX_CONFIG; }
+    for tier in "${tiers[@]+"${tiers[@]}"}"; do
+        if [[ "$tier" == cache ]]; then repo="$RESTIC_CACHE_REPO" how='restic init'
+        else
+            repo="$RESTIC_OFFSITE_REPO" how='restic init'
+            [[ "${LOCAL_REPO:-true}" != true ]] || how+=" --copy-chunker-params --from-repo $(_mask_url "$RESTIC_CACHE_REPO")"
+        fi
+        if (( haskey )); then _restic_probe "$repo" "$pf"; else _restic_probe "$repo"; fi
+        st="$RPROBE"
+        case "$st" in
+            exists)   if (( haskey )); then act="kept (it exists, the DR key opens it)"
+                      else act="a repo exists there: init needs its DR key in $pf"; fi ;;
+            wrongkey) act="init would fail: a repo exists there, and the DR key in $pf does not open it"; rc=$EX_CONFIG ;;
+            absent)
+                act="would be created ($how)"
+                if declare -F _cm_init_guard >/dev/null && ! _cm_init_guard "$repo" >/dev/null 2>&1; then
+                    act="would not be created: ${CM_INIT_MSG:-refused}"; st=refused; rc=$EX_TEMPFAIL
+                fi ;;
+            *)        act="cannot be checked: $RPROBE_MSG"; (( rc )) || rc=$EX_UNAVAILABLE ;;
+        esac
+        rows+=("$tier"$'\x1f'"$repo"$'\x1f'"$st"$'\x1f'"$act")
+        [[ "${JSON_OUTPUT:-0}" == 1 ]] || log_info "[dry-run] init: $tier repo $(_mask_url "$repo"): $act"
+    done
+    (( ${#tiers[@]} )) || { [[ "${JSON_OUTPUT:-0}" == 1 ]] || log_info "[dry-run] init: no repo configured (LOCAL_REPO=${LOCAL_REPO:-true}, no offsite repo)"; }
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then
+        json_emit "$(printf '%s\n' "${rows[@]+"${rows[@]}"}" | jq -R -s -c --argjson rc "$rc" --argjson key "$( ((haskey)) && echo true || echo false )" '
+            split("\n") | map(select(length > 0) | split("\u001f") | {tier: .[0], repo: .[1], state: .[2], action: .[3]})
+            | {status: (if $rc == 0 then "dry_run" else "failed" end), ok: ($rc == 0), engine: "restic", dr_key: $key, repos: .}')"
+    fi
+    # each repo's line above says why: no "stopped unexpectedly" on top
+    (( rc == 0 )) || PBO_ERROR_LOGGED=1
+    return "$rc"
 }
 # _restic_bin <args...>: restic without a repo (version, --help): no
 # credentials, no backend environment.
@@ -1324,7 +1520,7 @@ rdo_doctor() {
     if _is_janitor; then :
     elif (( AO_VERIFIED )); then :
     elif [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" ]]; then lines+=("$ok  provider snapshots confirmed")
-    else lines+=("$warn  no ransomware backstop: offsite is not append-only and STORAGE_BOX_SNAPSHOTS_CONFIRMED=false"); warns=$((warns+1)); fi
+    else lines+=("$warn  no ransomware backstop: offsite is not append-only and no snapshots of the target's provider are confirmed (STORAGE_BOX_SNAPSHOTS_CONFIRMED=false)"); warns=$((warns+1)); fi
 
     # Janitor: repo files must stay owned by the rest-server user.
     if _is_janitor && [[ "$repo" != *:* ]]; then
@@ -1356,11 +1552,15 @@ rdo_doctor() {
     _ntfy_doctor "$ok" "$bad" "$warn"
     lines+=("${NTD_LINES[@]+"${NTD_LINES[@]}"}"); warns=$((warns+NTD_WARNS))
 
-    # Alerting: someone has to hear about a failed backup.
+    # The Proxmox notification templates pbo ships (lib/notify.sh; --fix
+    # installs them again), then alerting: someone has to hear about a failed
+    # backup.
+    _doctor_templates "$ok" "$bad" "$warn"
+    lines+=("${DTP_LINES[@]+"${DTP_LINES[@]}"}"); warns=$((warns+DTP_WARNS))
     if [[ "${PBO_NO_NOTIFY:-0}" != 1 ]]; then
         local nb=(); _ntfy_configured && nb+=(ntfy); _notify_use_pve && nb+=(proxmox)
         if (( ${#nb[@]} == 0 )); then lines+=("$warn  no alerting: no ntfy configured and Proxmox notifications unavailable (NOTIFY_PVE=${NOTIFY_PVE:-auto})"); warns=$((warns+1))
-        elif [[ " ${nb[*]} " == *" proxmox "* ]] && ! _pve_templates_installed; then lines+=("$warn  Proxmox notifications on but pbo templates missing in $PVE_TEMPLATE_DIR (run install.sh)"); warns=$((warns+1))
+        elif [[ " ${nb[*]} " == *" proxmox "* && "$DTP_STATE" == skip ]] && ! _pve_templates_installed; then lines+=("$warn  Proxmox notifications on but pbo templates missing in $PVE_TEMPLATE_DIR (pbo doctor --fix installs them)"); warns=$((warns+1))
         else lines+=("$ok  alerts via ${nb[*]}"); fi
     fi
 

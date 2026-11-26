@@ -398,5 +398,30 @@ P -V; [[ $rc == 0 && "$out" == "pbo "* ]] || errs+="-V rc=$rc; "
 P --version; [[ $rc == 0 ]] || errs+="--version rc=$rc; "
 [[ -z "$errs" ]] && ok "the global flags pbo help names (--json, --dry-run, -h/--help, -V/--version) are accepted" || bad "global flags: $errs"
 
+# The minimum PVE versions of the Proxmox integration are stated in five
+# places: the pbo-pve-storage Depends (what apt enforces), install.sh's and
+# integrate.sh's checks (what refuses), and README's two sentences (what an
+# operator reads). One that drifts makes a host pass one check and fail
+# another: each pair must name the same versions.
+pvemin() {   # pvemin <label> <pve-manager> <libpve-storage-perl>: one place's pair, "label pm ls"
+    printf '%s %s %s\n' "$1" "${2:-?}" "${3:-?}"
+}
+mins="$(
+    pvemin build-deb "$(sed -nE 's/^Depends: pbo .*pve-manager \(>= ([0-9.]+)\).*/\1/p' packaging/build-deb.sh)" \
+                     "$(sed -nE 's/^Depends: pbo .*libpve-storage-perl \(>= ([0-9.]+)\).*/\1/p' packaging/build-deb.sh)"
+    pvemin install.sh "$(sed -nE 's/^MIN_PVE_MANAGER=([0-9.]+)$/\1/p' install.sh)" "$(sed -nE 's/^MIN_LIBPVE_STORAGE=([0-9.]+)$/\1/p' install.sh)"
+    pvemin integrate.sh "$(sed -nE 's/^readonly INTEG_MIN_PVE_MANAGER=([0-9.]+)$/\1/p' lib/integrate.sh)" \
+                        "$(sed -nE 's/^readonly INTEG_MIN_LIBPVE_STORAGE=([0-9.]+)$/\1/p' lib/integrate.sh)"
+    pvemin README-requirements "$(grep -oE 'needs pve-manager >= [0-9.]+[0-9] and libpve-storage-perl >= [0-9.]+[0-9]' README.md | head -1 | awk '{print $4}')" \
+                               "$(grep -oE 'needs pve-manager >= [0-9.]+[0-9] and libpve-storage-perl >= [0-9.]+[0-9]' README.md | head -1 | awk '{print $8}')"
+    pvemin README-gui "$(grep -oE 'On Proxmox VE [0-9.]+[0-9] or later \(libpve-storage-perl [0-9.]+[0-9]\)' README.md | head -1 | awk '{print $4}')" \
+                      "$(grep -oE 'On Proxmox VE [0-9.]+[0-9] or later \(libpve-storage-perl [0-9.]+[0-9]\)' README.md | head -1 | sed -E 's/.*perl ([0-9.]+)\)$/\1/')"
+)"
+if [[ "$(awk '{print $2, $3}' <<<"$mins" | sort -u | wc -l)" == 1 && "$mins" != *'?'* ]]; then
+    ok "the minimum PVE versions agree everywhere they are stated ($(head -1 <<<"$mins" | awk '{print "pve-manager " $2 ", libpve-storage-perl " $3}'))"
+else
+    bad "the minimum PVE versions differ (or one place was not found): $(tr '\n' ';' <<<"$mins")"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

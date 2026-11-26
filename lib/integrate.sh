@@ -131,6 +131,41 @@ _integ_plugin_loads() {
     "${t[@]}" perl -MPVE::Storage -e 'PVE::Storage::Plugin->lookup("pbo") or die' >/dev/null 2>&1
 }
 
+# _integ_id_valid ID: a storage id PVE takes: PVE::JSONSchema::parse_id (the
+# check behind the pve-storage-id format): at least 2 characters, a letter
+# first, then letters, digits, '-', '_' and '.', and a letter or digit last,
+# in either case (so pbo.node1 is one, pbo- and pbo. are not).
+readonly INTEG_ID_RULE='at least 2 characters: a letter, then letters, digits, - _ or ., and a letter or digit last'
+_integ_id_valid() { [[ ${#1} -ge 2 && "$1" =~ ^[A-Za-z][A-Za-z0-9_.-]*[A-Za-z0-9]$ ]]; }
+
+# _integ_layout → how this pbo is installed, from where it runs: deb (the
+# package, /usr/lib/pbo), install.sh (/usr/local/lib/pbo), or source (a
+# checkout). The next steps pbo prints are the ones of that layout.
+_integ_layout() {
+    case "${SELF_DIR:-}" in
+        */usr/lib/pbo) printf deb ;;
+        */usr/local/lib/pbo) printf install.sh ;;
+        *) printf source ;;
+    esac
+}
+# _integ_install_hint MODE → how to install the integration's files (the
+# storage plugin, the vzdump hook, the units) on this layout
+_integ_install_hint() {
+    case "$(_integ_layout)" in
+        deb) printf 'apt install pbo-pve-storage' ;;
+        install.sh) printf 'run install.sh --integration %s from the pbo source tree' "$1" ;;
+        *) printf '%s/install.sh --integration %s' "${SELF_DIR:-.}" "$1" ;;
+    esac
+}
+# _integ_remove_hint → how to remove the storage plugin on this layout
+_integ_remove_hint() {
+    case "$(_integ_layout)" in
+        deb) printf 'apt remove pbo-pve-storage' ;;
+        install.sh) printf 'run install.sh --integration standalone from the pbo source tree' ;;
+        *) printf '%s/install.sh --integration standalone' "${SELF_DIR:-.}" ;;
+    esac
+}
+
 # _integ_hook_path → the hook vzdump.conf should name: PBO_VZDUMP_HOOK, else the
 # one next to this pbo (install.sh: /usr/local/lib/pbo, package: /usr/lib/pbo),
 # else the repo's lib/vzdump-hook.
@@ -672,7 +707,7 @@ _integ_storage_other_node() {
 # _integ_timer_on / _integ_timer_off: pbo-catalog.timer enabled and running, or neither.
 _integ_timer_on() {
     if systemctl is-enabled "$PBO_CATALOG_TIMER" >/dev/null 2>&1 && systemctl is-active --quiet "$PBO_CATALOG_TIMER" 2>/dev/null; then return 0; fi
-    _integ_run systemctl enable --now "$PBO_CATALOG_TIMER" || die "$EX_UNAVAILABLE" "integrate: could not enable $PBO_CATALOG_TIMER (is it installed? run install.sh --integration ...)"
+    _integ_run systemctl enable --now "$PBO_CATALOG_TIMER" || die "$EX_UNAVAILABLE" "integrate: could not enable $PBO_CATALOG_TIMER (is it installed? $(_integ_install_hint "${mode:-both}"))"
 }
 _integ_timer_off() {
     if ! systemctl is-enabled "$PBO_CATALOG_TIMER" >/dev/null 2>&1 && ! systemctl is-active --quiet "$PBO_CATALOG_TIMER" 2>/dev/null; then return 0; fi
@@ -717,12 +752,15 @@ integrate_enable() {
     [[ "$mode" == integrated && "$co" == 1 ]] && die "$EX_USAGE" "integrate enable integrated --catalog-only: in integrated mode only PVE jobs back up, and a catalogue-only storage is no backup target; use 'both --catalog-only'"
     INTEG_CATALOG_ONLY=false; (( co )) && INTEG_CATALOG_ONLY=true
     _integ_require_change_rights enable
+    local id spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}" node
+    # an id PVE refuses stops here, before the lock file, a directory or the
+    # catalogue is made
+    id="$(_pve_storage_id)"
+    _integ_id_valid "$id" || die "$EX_CONFIG" "PVE_STORAGE_ID '$id' is not a valid PVE storage id ($INTEG_ID_RULE)"
+    [[ "$spool" == /* ]] || die "$EX_CONFIG" "PVE_SPOOL_DIR must be an absolute path (got '$spool')"
     _integ_lock
     command -v jq >/dev/null 2>&1 || die "$EX_UNAVAILABLE" "jq required for integrate"
-    local id spool="${PVE_SPOOL_DIR%/}" conf="${VZDUMP_CONF:-/etc/vzdump.conf}" node
-    id="$(_pve_storage_id)"; node="$(_local_node)"
-    [[ "$id" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]] || die "$EX_CONFIG" "PVE_STORAGE_ID '$id' is not a valid PVE storage id"
-    [[ "$spool" == /* ]] || die "$EX_CONFIG" "PVE_SPOOL_DIR must be an absolute path (got '$spool')"
+    node="$(_local_node)"
 
     # 1. preflight: read only, every failure at once
     local fails=() vj why sj hj
@@ -730,7 +768,7 @@ integrate_enable() {
     why="$(_integ_versions_refusal "$vj")"; [[ -z "$why" ]] || fails+=("$why")
     local pp; pp="$(_integ_plugin_path)"
     if [[ ! -f "$pp" ]]; then
-        fails+=("the storage plugin $pp is not installed (./install.sh --integration $mode, or apt install pbo-pve-storage)")
+        fails+=("the storage plugin $pp is not installed ($(_integ_install_hint "$mode"))")
     elif ! _integ_plugin_loads; then
         fails+=("the storage plugin $pp does not load into PVE::Storage (perl -MPVE::Storage -e 'PVE::Storage::Plugin->lookup(\"pbo\")')")
     fi
@@ -757,7 +795,7 @@ integrate_enable() {
     [[ -z "$why_other" ]] || fails+=("$why_other")
     # a script: line naming a missing hook fails every vzdump on the node
     if (( ! co )) && [[ ! -x "$(_integ_hook_path)" ]]; then
-        fails+=("the vzdump hook $(_integ_hook_path) is missing or not executable (./install.sh --integration $mode, or apt install pbo-pve-storage)")
+        fails+=("the vzdump hook $(_integ_hook_path) is missing or not executable ($(_integ_install_hint "$mode"))")
     fi
     hj="$(_integ_hook_json)"
     local foreign; foreign="$(jq -r '.foreign_script // empty' <<<"$hj")"
@@ -958,9 +996,7 @@ integrate_disable() {
 
     _integ_result disable standalone
     if [[ "${JSON_OUTPUT:-0}" != 1 && "${DRY_RUN:-0}" != 1 ]]; then
-        printf '%s\n' "The storage plugin is still installed (harmless while no storage uses it). To remove it:" \
-            "  ./install.sh --integration standalone    (install.sh hosts)" \
-            "  apt remove pbo-pve-storage               (package hosts)"
+        printf '%s\n' "The storage plugin is still installed (harmless while no storage uses it). To remove it: $(_integ_remove_hint)"
     fi
 }
 
@@ -999,7 +1035,7 @@ _doctor_integration_setup() {
     local nv; nv="$(jq -r '[.[] | select(.newer_than_tested) | "\(.package) \(.installed) (tested \(.tested))"] | join(", ")' <<<"$vj")"
     [[ -z "$nv" ]] || _di_warn "PVE is newer than the set the plugin was tested with: $nv; run tests/integration/pve-storage.sh --load-only"
     local pp; pp="$(_integ_plugin_path)"
-    if [[ ! -f "$pp" ]]; then _di_bad "storage plugin $pp missing (install.sh --integration $mode, or apt install pbo-pve-storage)"
+    if [[ ! -f "$pp" ]]; then _di_bad "storage plugin $pp missing ($(_integ_install_hint "$mode"))"
     elif ! _integ_plugin_loads; then _di_bad "storage plugin $pp does not load into PVE::Storage (journalctl -u pvedaemon)"
     else DI_LINES+=("$ok  storage plugin loaded ($pp)"); fi
 

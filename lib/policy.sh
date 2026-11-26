@@ -180,7 +180,7 @@ _split_guests() {
 # pass only forgets what the guest pass forgets anyway, the guest pass then
 # keeps exactly the per-guest set, and with no split guest the restic calls are
 # the 0.5 ones. Only RETENTION_GROUP_BY=guest (the default) runs the guest pass:
-# paths is 0.5 (removed in 0.7), and so is any other value. The key exists to
+# paths is 0.5 (deprecated, removed in 0.8), and so is any other value. The key exists to
 # opt out of the deletions the guest pass makes, so a typo must not opt in.
 _RET_PASS=""
 _FORGET_RAW_FILE=""

@@ -99,7 +99,7 @@ KEEP_OFFSITE_MONTHLY|int:0:|6|retention|host,janitor||offsite: monthly snapshots
 KEEP_OFFSITE_YEARLY|int:0:|0|retention|host,janitor||0 = no yearly bucket
 KEEP_OVERRIDE_MIN_LAST|int:0:|3|retention|host,janitor|advanced|a per-guest keep tag never keeps fewer than this many snapshots
 FUTURE_SKEW|int:0:|3600|retention|host,janitor|advanced|janitor: snapshots dated further ahead than this (s) block prune
-RETENTION_GROUP_BY|enum:guest,paths|guest|retention|host,janitor|advanced|guest | paths (paths = 0.5 behaviour, kept for one release, removed in 0.7)
+RETENTION_GROUP_BY|enum:guest,paths|guest|retention|host,janitor|advanced|guest | paths (paths = 0.5 behaviour, deprecated: removed in 0.8)
 NTFY_URL|url||notifications|host,janitor|secret|ntfy server (base URL); empty = no ntfy
 NTFY_TOPIC|string||notifications|host,janitor|secret|on a public ntfy server the topic is the password: keep this file 0600
 NTFY_TOKEN|string||notifications|host,janitor|secret,advanced|access token (sent to curl on stdin, never on its command line)
@@ -339,7 +339,7 @@ EOF
     fi
     cat <<'EOF'
 /etc/pbo/config, KEY=VALUE. chmod 600, root:root.
-This is the example/template, copied by install.sh. It contains no secrets
+An example: no install copies it into place (pbo setup writes the config). No secrets
 (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
 Generated from lib/config_schema.sh by `pbo config template`; `pbo config list`
 shows the effective values. A line starting with # shows the default (or an

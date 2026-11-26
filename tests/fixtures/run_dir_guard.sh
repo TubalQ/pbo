@@ -104,3 +104,26 @@ eval "_guard_real_setup_write_file() $(declare -f _setup_write_file | tail -n +2
 _setup_write_file() { _guard_ok "$1" || _guard_stop "the file $1"; _guard_real_setup_write_file "$@"; }
 eval "_guard_real_setup_keygen() $(declare -f _setup_keygen | tail -n +2)"
 _setup_keygen() { _guard_ok "$1" || _guard_stop "the key $1"; _guard_real_setup_keygen "$@"; }
+# TEST_GUARD_NO_WRITE=1: the command under test must write nothing at all
+# (`pbo --dry-run init`): each of pbo's writers stops pbo (99) when it runs:
+# the directories it makes at start, a repo init, the locks, the config, the
+# drop-ins, the wizard's files, the cache move's journal, the metrics, and a
+# log, audit or JSON marker file that is set (an empty one writes nothing).
+# The test compares the run directory before and after as well: this only
+# names the writer.
+if [[ "${TEST_GUARD_NO_WRITE:-0}" == 1 ]]; then
+    _guard_wrote() { echo "run_dir_guard: $1 ran, but this command must write nothing" >&2; exit 99; }
+    for _guard_f in ensure_dirs restic_init _restic_ensure acquire_global_lock acquire_vmid_lock acquire_schedule_lock \
+                    acquire_cache_lock _integ_lock _cfg_write_locked _sched_write _sched_remove _setup_write_file \
+                    _setup_keygen _integ_write_file _cm_jsave _metrics_write _metrics_event json_open; do
+        declare -F "$_guard_f" >/dev/null || continue
+        eval "$_guard_f() { _guard_wrote $_guard_f; }"
+    done
+    unset _guard_f
+    eval "_guard_real_audit_json() $(declare -f _audit_json | tail -n +2)"
+    _audit_json() { [[ -z "${AUDIT_JSON:-}" ]] || _guard_wrote "_audit_json ($AUDIT_JSON)"; _guard_real_audit_json "$@"; }
+    eval "_guard_real_log() $(declare -f _log | tail -n +2)"
+    _log() { [[ -z "${LOG_FILE:-}" ]] || _guard_wrote "_log ($LOG_FILE)"; _guard_real_log "$@"; }
+    eval "_guard_real_audit_log() $(declare -f audit_log | tail -n +2)"
+    audit_log() { [[ -z "${AUDIT_FILE:-}" ]] || _guard_wrote "audit_log ($AUDIT_FILE)"; _guard_real_audit_log "$@"; }
+fi

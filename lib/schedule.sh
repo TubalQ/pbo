@@ -6,13 +6,39 @@
 # lock (so manual runs can't collide). One CT's failure doesn't stop
 # the rest; the whole run alerts (ntfy and/or Proxmox notifications) if anything went wrong.
 
+# _offsite_is_storagebox: the offsite repo is an SFTP login on a Storage Box
+# (recognised by its host name, in the repo or, for a repo whose host is only a
+# label, in RESTIC_SFTP_COMMAND: lib/menu.sh _setup_sftp_parse).
+_offsite_is_storagebox() {
+    [[ "${OFFSITE_ENABLED:-true}" == true && "${RESTIC_OFFSITE_REPO:-}" == sftp:* ]] || return 1
+    declare -F _setup_sftp_parse >/dev/null && declare -F _setup_is_storagebox >/dev/null || return 1
+    _setup_sftp_parse "$RESTIC_OFFSITE_REPO" "${RESTIC_SFTP_COMMAND:-}"
+    _setup_is_storagebox "$_SP_HOST" || _setup_is_storagebox "$_SP_LABEL"
+}
+
+# _storagebox_reminder: a Storage Box target whose own snapshots (the
+# provider's snapshot plan, which this host cannot delete) are not confirmed
+# is the one case without a backstop against a host that deletes its
+# backups, and the operator can fix it in the provider's console: one WARN a
+# day in the log (a stamp in STATE_DIR), not one per run. Other targets get no
+# reminder here: an append-only server or a target of another kind is doctor's
+# ransomware-backstop line, in provider-neutral words. A dry run writes no stamp.
+_storagebox_reminder() {
+    [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" != true && "${OFFSITE_APPEND_ONLY:-false}" != true ]] || return 0
+    _offsite_is_storagebox || return 0
+    local stamp="${STATE_DIR%/}/storagebox-reminder.day" today
+    today="$(date +%F)"
+    [[ "$(cat -- "$stamp" 2>/dev/null)" != "$today" ]] || return 0
+    log_warn "run-schedule: the offsite target is a Storage Box and its own snapshots are not confirmed: a compromised host can delete the offsite copies. Turn on the box's snapshot plan in the provider's console, then 'pbo config set STORAGE_BOX_SNAPSHOTS_CONFIRMED true' (this reminder: once a day)."
+    [[ "${DRY_RUN:-0}" == 1 ]] || { printf '%s\n' "$today" > "$stamp"; } 2>/dev/null || true
+    return 0
+}
+
 # do_run_schedule, run backup for each vmid in BACKUP_ORDER, sequentially.
 do_run_schedule() {
     _guest_meta_load   # guest tags/names once for the whole run (lib/policy.sh)
     [[ "${DRY_RUN:-0}" == 1 ]] || _cache_dir_protect   # plaintext dumps: CACHE_DIR closed to local users
-    # Ransomware protection: SFTP provides no append-only. Remind about Storage Box snapshots.
-    [[ "${STORAGE_BOX_SNAPSHOTS_CONFIRMED:-false}" == "true" || "${OFFSITE_APPEND_ONLY:-false}" == "true" ]] || \
-        log_warn "run-schedule: Storage Box snapshots NOT confirmed, a compromised host can delete offsite. Enable Hetzner's snapshots and set STORAGE_BOX_SNAPSHOTS_CONFIRMED=true."
+    _storagebox_reminder
     local self="${PBO_SELF_BIN:-${SELF_DIR}/pbo}"
     # The guests that live on THIS node: BACKUP_ORDER=auto → all local; an explicit
     # list → the listed vmids that live here (cluster-aware, no-op on one node).

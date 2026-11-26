@@ -3,15 +3,34 @@ export PBO_NO_NOTIFY=1   # tests must never reach a real ntfy server
 # tests/schedule.sh: step 9 (run-schedule + status), fake backup binary.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$PWD"
 # the schema defaults of RESTIC_ENV_FILE, NTFY_CREDS_FILE, PBO_SYSTEMD_DIR (the
 # timer drop-ins), PBO_PVE_CFS_DIR and PVE_STORAGE_CFG (pmxcfs: the derived
-# PVE_STORAGE_ID reads its member list and storage.cfg on every start) are the
-# machine's own files: point them into the checkout, at paths nothing creates
-# (a config line still wins)
-export RESTIC_ENV_FILE="$PWD/run-none/restic.env" NTFY_CREDS_FILE="$PWD/run-none/ntfy.env" PBO_SYSTEMD_DIR="$PWD/run-none/systemd" \
-    PBO_PVE_CFS_DIR="$PWD/run-none/pve" PVE_STORAGE_CFG="$PWD/run-none/pve/storage.cfg"
-BIN=./pbo; ROOT="$PWD"
-rm -rf "$ROOT/run/schedule"; mkdir -p "$ROOT/run/schedule/state/jobs" "$ROOT/run/schedule/bin" "$ROOT/run/schedule/conf"
+# PVE_STORAGE_ID reads its member list and storage.cfg on every start) and the
+# other PVE paths (the guest configs and their tags, storage.cfg, vzdump.conf
+# and its lock) are the machine's own files: point them into the run
+# directory, at paths nothing creates (a config line still wins), so that
+# what run-schedule selects never depends on the host's guests
+N="$ROOT/run/schedule/none"
+export RESTIC_ENV_FILE="$N/restic.env" NTFY_CREDS_FILE="$N/ntfy.env" PBO_SYSTEMD_DIR="$N/systemd" \
+    PBO_PVE_CFS_DIR="$N/pve" PVE_STORAGE_CFG="$N/pve/storage.cfg" PBO_PVE_STORAGE_CFG="$N/pve/storage.cfg" \
+    PBO_PVE_LXC_DIR="$N/pve/lxc" PBO_PVE_QEMU_DIR="$N/pve/qemu-server" VZDUMP_CONF="$N/vzdump.conf" VZDUMP_LOCK="$N/vzdump.lock" \
+    PVE_CATALOG_MOUNT_DIR="$N/mnt" PBO_PERMS_CONFIG_DIR="$N/etc" PBO_PVE_TEMPLATE_DIR="$N/pve/notification-templates"
+rm -rf "$ROOT/run/schedule"; mkdir -p "$ROOT/run/schedule/state/jobs" "$ROOT/run/schedule/bin" "$ROOT/run/schedule/conf" "$ROOT/run/schedule/tree"
+# pbo runs as a copy of the entry point that sources
+# tests/fixtures/run_dir_guard.sh: it stops (99) before any command when a
+# path it resolved (config, directories, PVE paths) lies outside run/schedule
+if [[ "$(tail -n 1 pbo)" != 'main "$@"' ]]; then
+    echo "  FAIL the entry point no longer ends in main \"\$@\": the harness needs a new hook"; exit 1
+fi
+{ sed '$d' pbo; printf '%s\n' 'source "$SELF_DIR/../../../tests/fixtures/run_dir_guard.sh"'; tail -n 1 pbo; } > "$ROOT/run/schedule/tree/pbo"
+chmod 755 "$ROOT/run/schedule/tree/pbo"; ln -s "$ROOT/lib" "$ROOT/run/schedule/tree/lib"
+export TEST_RUN="$ROOT/run/schedule"
+GBIN="$ROOT/run/schedule/tree/pbo"
+# gpbo ARGS: the guarded pbo; a stop of the guard (99) is recorded, and the
+# suite fails on it at the end whatever the test around it checked
+gpbo() { local r=0; "$GBIN" "$@" || r=$?; (( r != 99 )) || printf '%s\n' "$*" >> "$ROOT/run/schedule/guard-hits"; return "$r"; }
+BIN=gpbo
 # Proxmox mocked: the test must not see the real host's guests (on a PVE node the
 # real pvesh/pct would answer for these vmids, in CI they are missing).
 install -m 0755 tests/mocks/pct tests/mocks/qm tests/mocks/vzdump tests/mocks/pvesh tests/mocks/pvesm "$ROOT/run/schedule/bin/"
@@ -20,7 +39,7 @@ for id in 101 102 103; do printf 'arch: amd64\nhostname: t%s\nrootfs: teststore:
 pass=0; fail=0
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
-mkcfg() { local f="$1"; shift; { echo "CACHE_DIR=$ROOT/run/schedule/cache"; echo "LOG_DIR=$ROOT/run/schedule/log"; echo "STATE_DIR=$ROOT/run/schedule/state"; echo "LOCK_DIR=$ROOT/run/schedule/lock"; echo "NTFY_URL="; echo "NTFY_CREDS_FILE=/nonexistent"
+mkcfg() { local f="$1"; shift; { echo "CACHE_DIR=$ROOT/run/schedule/cache"; echo "LOG_DIR=$ROOT/run/schedule/log"; echo "STATE_DIR=$ROOT/run/schedule/state"; echo "LOCK_DIR=$ROOT/run/schedule/lock"; echo "NTFY_URL="; echo "NTFY_CREDS_FILE=$N/ntfy.env"
     # the catalogue refresh after run-schedule (integration on) reads these: never the host's
     echo "RESTIC_CACHE_REPO=$ROOT/run/schedule/norepo"; echo "RESTIC_PASSWORD_FILE=$ROOT/run/schedule/nopass"; echo "RESTIC_CACHE_DIR=$ROOT/run/schedule/rcache"
     echo "PBO_CATALOG=$ROOT/run/schedule/catalog/index.json"
@@ -64,7 +83,8 @@ out="$(PBO_CONFIG=$ROOT/run/schedule/cfg $BIN --json status 2>/dev/null)"
 jq -e '.locks.global.state == "stale"' >/dev/null 2>&1 <<<"$out" && ok "D: dead pid → stale holder" || bad "D stale ($out)"
 
 # --- E-G: Proxmox integration (ADR 0007): guests a PVE job owns are left to it ---
-node="$(jq -r '.nodename // empty' /etc/pve/.members 2>/dev/null)"; [[ -n "$node" ]] || node="$(hostname -s)"
+# the node pbo sees: no member list in the run directory's pmxcfs, so its host name
+node="$(hostname -s)"
 printf '[{"vmid":101,"node":"%s","type":"lxc"},{"vmid":102,"node":"%s","type":"lxc"},{"vmid":103,"node":"%s","type":"lxc"}]\n' "$node" "$node" "$node" > "$ROOT/run/schedule/res.json"
 printf '[{"storage":"pbo","type":"pbo"}]\n' > "$ROOT/run/schedule/storage.json"
 printf '[{"id":"backup-nightly","vmid":"102","storage":"pbo","enabled":1}]\n' > "$ROOT/run/schedule/jobs.json"
@@ -106,6 +126,43 @@ jq -e '.status == "dry_run" and .would_backup == "101 102 103"' >/dev/null 2>&1 
 # batch runs in-process (no fake binary): the dry-run line proves it returned before rdo_run_batch
 : > "$FAKE_LOG"; out="$(PBO_CONFIG=$ROOT/run/schedule/cfgH $BIN --dry-run run-schedule --batch 2>&1)"; rc=$?
 [[ $rc == 0 && ! -s "$FAKE_LOG" ]] && grep -q 'dry-run\] run-schedule would back up: 101 102 103 (mode batch)' <<<"$out" && ! compgen -G "$ROOT/run/schedule/cache/*/vzdump-*" >/dev/null && ok "H: --dry-run run-schedule --batch starts no backup" || bad "H batch ($rc)"
+
+# --- I: the Storage Box reminder: a Storage Box target only, once a day ---
+SBW='the offsite target is a Storage Box and its own snapshots are not confirmed'
+sbrun() {
+    out="$(PBO_CONFIG="$1" FAILV="" $BIN run-schedule 2>&1)"; rc=$?
+    [[ $rc != 99 && "$out" != *run_dir_guard* ]] || bad "I: the run-dir guard stopped pbo ($1): $out"
+}
+st="$ROOT/run/schedule/state/storagebox-reminder.day"; rm -f "$st"
+mkcfg "$ROOT/run/schedule/cfgI" "BACKUP_ORDER=101" "RESTIC_OFFSITE_REPO=sftp:uXXXXX@uXXXXX.your-storagebox.de:pbo"
+sbrun "$ROOT/run/schedule/cfgI"
+[[ "$out" == *"WARN"*"$SBW"* && "$(cat "$st" 2>/dev/null)" == "$(date +%F)" ]] && ok "I: a Storage Box target without confirmed snapshots: one WARN, the day stamped" || bad "I first: $out"
+sbrun "$ROOT/run/schedule/cfgI"
+[[ "$out" != *"$SBW"* ]] && ok "I: ... and not again the same day" || bad "I second: $out"
+printf '2026-01-15\n' > "$st"; sbrun "$ROOT/run/schedule/cfgI"
+[[ "$out" == *"$SBW"* ]] && ok "I: ... and again on another day" || bad "I next day: $out"
+rm -f "$st"
+# the box named only in the ssh command (a 0.5 repo whose host is a label)
+mkcfg "$ROOT/run/schedule/cfgI2" "BACKUP_ORDER=101" "RESTIC_OFFSITE_REPO=sftp:box:pbo" \
+    "RESTIC_SFTP_COMMAND=\"ssh uXXXXX@uXXXXX.your-storagebox.de -p 23 -i /nonexistent/id -s sftp\""
+sbrun "$ROOT/run/schedule/cfgI2"
+[[ "$out" == *"$SBW"* ]] && ok "I: a Storage Box named in RESTIC_SFTP_COMMAND is recognised" || bad "I label: $out"
+rm -f "$st"
+for c in "RESTIC_OFFSITE_REPO=sftp:pbo@backup.example:pbo" "RESTIC_OFFSITE_REPO=$ROOT/run/schedule/offsite-dir" "OFFSITE_ENABLED=false"; do
+    mkcfg "$ROOT/run/schedule/cfgI3" "BACKUP_ORDER=101" "$c"
+    sbrun "$ROOT/run/schedule/cfgI3"
+    [[ "$out" != *"Storage Box"* && ! -e "$st" ]] || { bad "I: a reminder for another target ($c): $out"; continue; }
+done
+mkcfg "$ROOT/run/schedule/cfgI4" "BACKUP_ORDER=101" "RESTIC_OFFSITE_REPO=sftp:uXXXXX@uXXXXX.your-storagebox.de:pbo" "STORAGE_BOX_SNAPSHOTS_CONFIRMED=true"
+sbrun "$ROOT/run/schedule/cfgI4"
+[[ "$out" != *"Storage Box"* ]] && ok "I: no Storage Box reminder for another SFTP server, a directory, no offsite, or confirmed snapshots" || bad "I confirmed: $out"
+
+# the harness: every pbo run above stayed in the run directory, and the guard works
+[[ ! -s "$ROOT/run/schedule/guard-hits" ]] && ok "harness: no pbo run resolved a path outside the run directory" \
+    || bad "harness: the run-dir guard stopped pbo for: $(tr '\n' ';' < "$ROOT/run/schedule/guard-hits")"
+out="$(PBO_CONFIG="$ROOT/run/schedule/cfg" PBO_PVE_LXC_DIR=/etc/pve/lxc "$GBIN" status 2>&1)"; rc=$?
+[[ $rc == 99 && "$out" == *"run_dir_guard: PBO_PVE_LXC_DIR=/etc/pve/lxc is outside"* ]] && ok "harness: a PVE path left at the host's default stops pbo (99)" \
+    || bad "harness guard: rc=$rc $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" == 0 ]]

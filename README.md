@@ -110,7 +110,7 @@ pbo setup     # everything, in one pass
     how to install it on the server, pins the server's host key and tests the
     connection before it writes anything. The ssh command (`RESTIC_SFTP_COMMAND`) is
     written only when the port, the key, the pinned host key, options of your own
-    (a `ProxyJump`, kept) or a host key ssh has not seen yet needs it. A Hetzner
+    (a `ProxyJump`, kept) or a host key ssh has not seen yet needs it. A
     Storage Box is recognised by its host name (port 23, the account as the user,
     and whether the box takes snapshots);
   - a **rest-server** (URL, user, a password file, append-only or not);
@@ -118,7 +118,10 @@ pbo setup     # everything, in one pass
   - **another restic backend** (`s3:`, `b2:`, `azure:`, `gs:`, `swift:`, `rclone:`):
     you give the repository string, it names the variables that backend reads and
     writes them to `RESTIC_ENV_FILE` (0600; read without echo, never shown).
-- the **DR key** (it never overwrites an existing one), the backup mode, retention,
+- the **DR key**: it never overwrites an existing one, and it checks the target
+  first. A repo that is already there (another node made it, or you restore after
+  a loss) gets no new key: the wizard asks for that repo's key (a file, the menu's
+  export, or typed without echo) and keeps it only once it opens the repo. Then the backup mode, retention,
   ntfy, the repo itself (`pbo init`), the guests to back up, the Proxmox integration,
   the **schedule** (`SCHEDULE_*`, with their timer drop-ins) and the four timers
   (nightly backup, weekly prune, weekly verify slice, weekly restore test);
@@ -128,7 +131,14 @@ Run it again whenever you want to change something: every question offers the cu
 setting and Enter keeps it, a configured offsite repo is shown and kept unless you
 choose to change it, and an answer that keeps a setting writes nothing. Numbers,
 choices and schedules are checked against the config schema and asked again until
-they are valid. All changes go through `pbo config set`.
+they are valid. All changes go through `pbo config set`. Answers piped to it that run
+short stop it at the first question left (exit 64): nothing after that question
+changes, no default is taken for it. It says "Setup complete" and exits 0 only when
+every step worked; otherwise it names what failed (the repo init, the Proxmox
+integration, a doctor that found problems) and exits with that status. Right after a
+first setup doctor counts every guest without a snapshot yet as a problem (69).
+`pbo --dry-run init` shows what `pbo init` would create, from a read-only check of
+each repo, and writes nothing.
 
 The one thing it can't do for you is get the public key onto an SFTP server — it prints
 the key and the exact command, you run that once, and the connection test confirms it
@@ -240,7 +250,7 @@ Retention counts per guest (its `vmid` tag), not per snapshot path: when a guest
 snapshots lie under more than one path (after a cache move, or a host backup whose
 path list changed), they are retained as one guest, and `pbo doctor` names such a
 guest. `RETENTION_GROUP_BY=paths` keeps the 0.5 grouping, under which a guest's old
-path keeps its last snapshots for ever; it goes in 0.7. `pbo --dry-run prune` and `pbo list --reasons`
+path keeps its last snapshots for ever; it is deprecated and goes in 0.8 (`pbo doctor` warns). `pbo --dry-run prune` and `pbo list --reasons`
 show the plan prune would carry out.
 
 ## Integrity checks

@@ -71,6 +71,13 @@ KEEP_OFFSITE_DAILY=3
 KEEP_OFFSITE_WEEKLY=0
 KEEP_OFFSITE_MONTHLY=0
 STORAGE_BOX_SNAPSHOTS_CONFIRMED=true
+PBO_PVE_LXC_DIR=$RUN/conf
+PBO_PVE_QEMU_DIR=$RUN/qemu
+PBO_PVE_STORAGE_CFG=$RUN/none-storage.cfg
+VZDUMP_CONF=$RUN/none-vzdump.conf
+VZDUMP_LOCK=$RUN/none-vzdump.lock
+PBO_CATALOG=$RUN/state/catalog/index.json
+PVE_CATALOG_MOUNT_DIR=$RUN/mnt/restic
 EOF
       printf '%s\n' "$@"; } > "$f"; chmod 600 "$f"
 }
@@ -366,6 +373,12 @@ grep -q 'OK.*1 guest(s) have snapshots under more than one path (CACHE_DIR moved
 res="$(P "$RUN/sdp.cfg" --json doctor 2>/dev/null)"
 jq -e '[.findings[] | select(.level == "warn" and (.message | test("RETENTION_GROUP_BY=paths.*never pruned: 101 \\(2 paths\\)")))] | length == 1' <<<"$res" >/dev/null \
     && ok "doctor with paths: a warning (the old paths are never pruned)" || bad "doctor paths: $(jq -c '.findings[]|select(.message|test("path"))' <<<"$res")"
+# paths still works and goes in 0.8: doctor and config check say so, with the way out
+res="$(P "$RUN/sdp.cfg" doctor 2>&1)"
+grep -q 'WARN.*RETENTION_GROUP_BY=paths .*deprecated and will be removed in pbo 0.8.*pbo --dry-run prune.*pbo config unset RETENTION_GROUP_BY' <<<"$res" \
+    && ok "doctor: RETENTION_GROUP_BY=paths is deprecated, removed in 0.8 (WARN with the commands to switch)" || bad "paths deprecation: $res"
+res="$(P "$RUN/sd.cfg" doctor 2>&1)"
+! grep -q 'removed in pbo 0.8' <<<"$res" && ok "doctor: no deprecation warning with the default grouping" || bad "paths warn with guest: $(grep 0.8 <<<"$res")"
 cpr "$RUN/H" "$RUN/Hd"; off_cfg "$RUN/hd.cfg" "$RUN/Hd"
 # (doctor exits non-zero here: guest 8001 of BACKUP_ORDER has no snapshot)
 res="$(P "$RUN/hd.cfg" doctor 2>&1)"

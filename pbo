@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# pbo: offsite backup of Proxmox guests (LXC + QEMU) to any SFTP target (e.g.
-# Hetzner Storage Box), using restic as the backup engine.
+# pbo: offsite backup of Proxmox guests (LXC + QEMU) to an SFTP server, a
+# rest-server, a directory or another restic backend, using restic as the
+# backup engine.
 # Copyright (C) 2026  TubalQ
 # License: AGPL-3.0-or-later (see LICENSE).
 #
@@ -77,7 +78,7 @@ source "${SELF_DIR}/lib/cachemove.sh"
 # shellcheck source=lib/report.sh
 source "${SELF_DIR}/lib/report.sh"
 
-readonly VERSION="0.6.0"
+readonly VERSION="0.6.1-dev"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
@@ -89,14 +90,16 @@ PBO_COMMAND=""
 
 usage() {
     cat <<'EOF'
-pbo: offsite backup of Proxmox guests (LXC + QEMU) via restic, to SFTP or an append-only rest-server.
+pbo: offsite backup of Proxmox guests (LXC + QEMU) via restic, to SFTP, a rest-server (optionally
+append-only), a directory or another restic backend.
 
 Usage:
   pbo [global flags] <command> [arguments]
 
 Global flags:
   --json              machine-readable output on stdout
-  --dry-run           show what would be done, change nothing
+  --dry-run           show what would be done, change nothing (not for setup and menu: they
+                      ask before each change)
   -h, --help          this help
   -V, --version       version number
 
@@ -105,7 +108,8 @@ Commands:
                               directory, other restic backend), DR key, retention, ntfy, schedule,
                               then init and doctor --fix; safe to re-run (Enter keeps each setting)
   menu                        interactive prompt-CLI, guests/backup/restore/status
-  init                        create/verify the repo(s)
+  init                        create/verify the repo(s); with --dry-run: probe each one (read only)
+                              and print what init would create, nothing written
   backup <vmid>               dump → restic backup → copy offsite (global lock)
   preflight <vmid>            run the preflight checks only (exists/space/cache/repo)
   run-schedule [--stream|--batch]  back up this node's guests → the SAME repo
@@ -116,8 +120,9 @@ Commands:
   notify-test                 send a test alert through ntfy and/or Proxmox notifications
   doctor [--fix [--fix-parents]] [--perms-only] | doctor --report
                               health check (repo, timer and its schedule, permissions, restic version,
-                              per-guest age); --fix applies the permission table (modes, owners, the
-                              CACHE_DIR ACL) and the timer drop-ins (audited, with --dry-run listed
+                              notification templates, per-guest age); --fix applies the permission
+                              table (modes, owners, the CACHE_DIR ACL), the timer drop-ins and the
+                              Proxmox notification templates (audited, with --dry-run listed
                               only), --fix-parents also lets
                               unprivileged CTs pass the directories above CACHE_DIR (u:<uid>:--x),
                               --perms-only checks (or fixes) permissions alone. --report: the
@@ -134,7 +139,7 @@ Commands:
                               (default or config: SCHEDULE_*), next and last run, last result
   timers apply                write the timers' schedule drop-ins from the config (<timer>.d/
                               schedule.conf; none for a default), daemon-reload, restart the
-                              enabled ones whose schedule changed (install.sh runs it)
+                              enabled ones whose schedule changed (install.sh and the .deb run it)
   config [show]               the effective configuration (secrets never shown)
   config list [--all]         the keys for this role: value, source, type (--all: test hooks and
                               the other role's keys too)
@@ -347,7 +352,14 @@ cmd_restore() {
     do_restore "$src" "$ts" "$newid" "$storage" "$yes"
 }
 
-cmd_init()         { restic_init; [[ "${JSON_OUTPUT:-0}" == 1 ]] && json_result "ok" "true" "engine" "restic" || log_info "restic: repo(s) initialized/ready"; }
+# init: create/verify the repos. --dry-run: what init would create, from a
+# read-only probe of each repo (_restic_init_plan); main() starts it without
+# writing anything (no directory, log line, audit record or lock).
+cmd_init() {
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then _restic_init_plan; return; fi
+    restic_init
+    if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then json_result "ok" "true" "engine" "restic"; else log_info "restic: repo(s) initialized/ready"; fi
+}
 cmd_menu()         { menu_main; }
 cmd_setup()        { run_setup_wizard; }
 cmd_doctor() {
@@ -552,7 +564,11 @@ main() {
     # and runs on a RESTIC_ENV_FILE pbo refuses: it only lazily unmounts a FUSE
     # mount at PVE_CATALOG_MOUNT_DIR and runs no restic, and a dead mount left
     # there would make the next start fail.
-    PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0
+    # PBO_READONLY_START: `pbo --dry-run init` writes nothing at all: no
+    # directory (ensure_dirs), log or audit line, JSON marker file or alert.
+    # Set here only, never from the environment, like PBO_CFG_LENIENT.
+    PBO_SUBCOMMAND='' PBO_CFG_LENIENT=0 PBO_READONLY_START=0
+    [[ "$PBO_COMMAND" == init && "${DRY_RUN:-0}" == 1 ]] && PBO_READONLY_START=1
     if [[ "$PBO_COMMAND" == config ]]; then
         PBO_SUBCOMMAND="${1:-show}"
         [[ "$PBO_SUBCOMMAND" == check ]] && PBO_CFG_LENIENT=1
@@ -564,7 +580,12 @@ main() {
         PBO_SUBCOMMAND="${1:-}"
     fi
     load_config
-    json_open
+    if (( PBO_READONLY_START )); then
+        LOG_FILE='' AUDIT_FILE='' AUDIT_JSON='' PBO_NO_NOTIFY=1
+        if [[ "${JSON_OUTPUT:-0}" == 1 ]]; then exec {PBO_JSON_FD}>&1; fi
+    else
+        json_open
+    fi
     audit_command_start
     trap '_pbo_on_exit $?' EXIT
     _role_check "$PBO_COMMAND"

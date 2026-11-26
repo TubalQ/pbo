@@ -65,6 +65,9 @@ our $SYNC_TIMEOUT = 20;
 our $SYNC_CONTEXT;
 # Where installed package versions are read from (no fork); for the drift warning.
 our $DPKG_STATUS = '/var/lib/dpkg/status';
+# The drift warnings already given, one "package version" per line (pbo's
+# STATE_DIR): each newer version is warned about once, not in every restore.
+our $DRIFT_STAMP = '/var/lib/pbo/plugin-version-drift';
 # The package versions this plugin was last verified against (load-only and full
 # smoke tests). activate_volume warns in the task log when one installed is newer.
 our %TESTED = (
@@ -243,15 +246,36 @@ sub _installed_versions {
 }
 
 # _warn_version_drift(): one warning (task log) per installed package newer than
-# the tested set. Only from activate_volume (a restore or Show Configuration):
-# pvestatd calls activate_storage every cycle and would flood the journal.
+# the tested set, once per (package, version): $DRIFT_STAMP keeps the pairs
+# warned about, so the next restore with the same versions is quiet and an
+# upgrade to another newer version warns again. `pbo doctor` names the drift
+# on every run. Only from activate_volume (a restore or Show Configuration):
+# pvestatd calls activate_storage every cycle and would flood the journal. A
+# stamp that cannot be written costs a warning per restore, as before.
 sub _warn_version_drift {
     my $inst = _installed_versions();
+    my %seen;
+    if (open(my $fh, '<', $DRIFT_STAMP)) {
+        while (my $l = <$fh>) { chomp($l); $seen{$l} = 1 if $l ne ''; }
+        close($fh);
+    }
+    my (@now, $new);
     for my $pkg (sort keys %TESTED) {
         my $v = $inst->{$pkg} // next;
+        next if _vercmp($v, $TESTED{$pkg}) <= 0;
+        push @now, "$pkg $v";
+        next if $seen{"$pkg $v"};
+        $new = 1;
         warn "pbo: $pkg $v is newer than the version this plugin was tested with"
-            . " ($TESTED{$pkg}); run tests/integration/pve-storage.sh after PVE upgrades\n"
-            if _vercmp($v, $TESTED{$pkg}) > 0;
+            . " ($TESTED{$pkg}); run tests/integration/pve-storage.sh after PVE upgrades\n";
+    }
+    # the pairs that drift now: a version no longer installed drops out
+    if ($new || scalar(@now) != scalar(keys %seen)) {
+        my $tmp = "$DRIFT_STAMP.tmp.$$";
+        if (open(my $out, '>', $tmp)) {
+            print $out map { "$_\n" } @now;
+            close($out) && rename($tmp, $DRIFT_STAMP) or unlink($tmp);
+        }
     }
     return;
 }

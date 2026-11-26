@@ -189,9 +189,95 @@ _ntfy_publish() {
 
 _pve_notify_available() {
     [[ "$(id -u)" == 0 ]] || return 1
-    "${PBO_PERL_BIN:-perl}" -MPVE::Notify -e 1 >/dev/null 2>&1
+    _pve_notify_module
 }
+# _pve_notify_module: Proxmox's notification module loads (a send needs root as well)
+_pve_notify_module() { "${PBO_PERL_BIN:-perl}" -MPVE::Notify -e 1 >/dev/null 2>&1; }
 _pve_templates_installed() { [[ -f "$PVE_TEMPLATE_DIR/pbo-subject.txt.hbs" && -f "$PVE_TEMPLATE_DIR/pbo-body.txt.hbs" ]]; }
+
+# _pve_templates_src → the directory with the templates this pbo ships: the
+# checkout's templates/, else <prefix>/share/pbo/templates next to
+# <prefix>/lib/pbo (install.sh: /usr/local/share/pbo/templates, the .deb:
+# /usr/share/pbo/templates). Empty when there is none.
+_pve_templates_src() {
+    local d
+    for d in "${SELF_DIR:-}/templates" "${SELF_DIR%/lib/pbo}/share/pbo/templates"; do
+        [[ "$d" != /templates && -f "$d/pbo-subject.txt.hbs" ]] && { printf '%s' "$d"; return 0; }
+    done
+    return 0
+}
+
+# _doctor_templates OK FAIL WARN → DTP_LINES, DTP_WARNS, DTP_STATE: the
+# Proxmox notification templates pbo ships, in PVE_TEMPLATE_DIR. Only on a
+# Proxmox node (pmxcfs, PBO_PVE_CFS_DIR, is there) whose alerts go through
+# Proxmox notifications (_notify_pve_planned: not with NOTIFY_PVE=false, nor
+# in auto mode with ntfy configured), never on a janitor (DTP_STATE=skip).
+# A missing one is a WARN, and --fix (not --perms-only) installs it, as
+# install.sh and the .deb do: a plain cp into pmxcfs, which fails without
+# quorum (then a WARN). One that is there but differs from the one this pbo
+# ships is only reported, never replaced: the directory is shared by the whole
+# cluster, and during a rolling upgrade it may hold a newer pbo's templates
+# that a --fix here would roll back (and that node's --fix put back again).
+# install.sh and the package install their own. pbo writes nowhere else
+# (never /usr/share/pve-manager/templates). DTP_STATE: ok, missing, stale or
+# skip.
+_doctor_templates() {
+    local ok="$1" warn="$3" src f n miss=() stale=() fixed=() would=() failed=() fixing=0
+    DTP_LINES=() DTP_WARNS=0 DTP_STATE=skip
+    { declare -F _is_janitor >/dev/null && _is_janitor; } && return 0
+    [[ -d "${PBO_PVE_CFS_DIR:-/etc/pve}" ]] && _notify_pve_planned || return 0
+    src="$(_pve_templates_src)"
+    if [[ -z "$src" ]]; then
+        DTP_LINES+=("$warn  the notification templates this pbo ships are not found next to it (${SELF_DIR:-?}): reinstall pbo"); DTP_WARNS=1; DTP_STATE=missing
+        return 0
+    fi
+    for f in "$src"/pbo-*.hbs; do
+        [[ -f "$f" ]] || continue
+        n="${f##*/}"
+        if [[ ! -f "$PVE_TEMPLATE_DIR/$n" ]]; then miss+=("$n")
+        elif ! cmp -s -- "$f" "$PVE_TEMPLATE_DIR/$n"; then stale+=("$n"); fi
+    done
+    if (( ${#miss[@]} )) && (( ${DOCTOR_FIX:-0} && ! ${DOCTOR_PERMS_ONLY:-0} )); then
+        fixing=1
+        for n in "${miss[@]}"; do
+            if [[ "${DRY_RUN:-0}" == 1 ]]; then would+=("$n"); continue; fi
+            if mkdir -p -- "$PVE_TEMPLATE_DIR" 2>/dev/null && cp -- "$src/$n" "$PVE_TEMPLATE_DIR/$n" 2>/dev/null; then
+                fixed+=("$n"); audit_log "doctor fix: notification template $PVE_TEMPLATE_DIR/$n installed from $src" >/dev/null 2>&1 || true
+            else failed+=("$n"); fi
+        done
+        (( ${#fixed[@]} )) && DTP_LINES+=("  ${C_G:-}FIXED${C_0:-} notification templates installed in $PVE_TEMPLATE_DIR: ${fixed[*]}")
+        (( ${#would[@]} )) && DTP_LINES+=("  ${C_Y:-}WOULD FIX${C_0:-} notification templates to install in $PVE_TEMPLATE_DIR: ${would[*]}")
+        if (( ${#failed[@]} )); then
+            DTP_LINES+=("$warn  notification templates could not be written to $PVE_TEMPLATE_DIR (no quorum?): ${failed[*]}; Proxmox notifications from pbo need them"); DTP_WARNS=1; DTP_STATE=missing
+        else
+            DTP_STATE=ok
+        fi
+        (( ${#would[@]} == 0 )) || DTP_STATE=missing
+    fi
+    if (( ! fixing )); then
+        if (( ${#miss[@]} )); then
+            DTP_LINES+=("$warn  Proxmox notification templates missing in $PVE_TEMPLATE_DIR: ${miss[*]} (pbo doctor --fix installs them)"); DTP_WARNS=1; DTP_STATE=missing
+        elif (( ! ${#stale[@]} )); then
+            DTP_LINES+=("$ok  Proxmox notification templates current in $PVE_TEMPLATE_DIR"); DTP_STATE=ok
+        else
+            DTP_STATE=stale
+        fi
+    fi
+    # no WARN and no fix: another node's pbo (older or newer) may have installed them
+    (( ${#stale[@]} == 0 )) || DTP_LINES+=("$ok  Proxmox notification templates in $PVE_TEMPLATE_DIR differ from the ones this pbo ships: ${stale[*]} (left as they are: the directory is cluster-wide, another node's pbo may have installed them; install.sh or the package installs this one's)")
+    return 0
+}
+
+# _notify_pve_planned: pbo's alerts go through Proxmox notifications, as
+# _notify_use_pve decides for the timers (which run as root), whoever runs
+# this: doctor's template check asks it.
+_notify_pve_planned() {
+    case "${NOTIFY_PVE:-auto}" in
+        false) return 1 ;;
+        true)  _pve_notify_module ;;
+        *)     ! _ntfy_configured && _pve_notify_module ;;
+    esac
+}
 
 # Which backends are on, given NOTIFY_PVE and what is configured/available.
 _notify_use_pve() {
@@ -204,7 +290,7 @@ _notify_use_pve() {
 
 # _pve_publish <severity: info|notice|warning|error> <title> <message>
 _pve_publish() {
-    _pve_templates_installed || { _log WARN "notify: pbo templates missing in $PVE_TEMPLATE_DIR (run install.sh), Proxmox notification not sent"; return 0; }
+    _pve_templates_installed || { _log WARN "notify: pbo templates missing in $PVE_TEMPLATE_DIR (pbo doctor --fix installs them), Proxmox notification not sent"; return 0; }
     local node; node="$(_local_node 2>/dev/null || hostname -s)"
     # Arguments go in via @ARGV, never interpolated into the perl source.
     "${PBO_PERL_BIN:-perl}" -MPVE::Notify -e '

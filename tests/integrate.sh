@@ -155,7 +155,8 @@ MOCK_DPKG_VERSIONS="pve-manager=9.2.20 libpve-storage-perl=9.1.17 qemu-server=9.
 MOCK_DPKG_VERSIONS="pve-container=6.1.24" P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q '(installed: not installed, not installed)' "$RUN/err" && ok "version refusal: packages missing" || bad "missing pkgs: rc=$rc $(tail -1 "$RUN/err")"
 PBO_PVE_PLUGIN_PATH="$RUN/plugin/nope.pm" P integrate enable both --yes
-[[ $rc == 69 ]] && grep -q 'nope.pm is not installed (./install.sh --integration both' "$RUN/err" && ok "plugin missing: refused" || bad "plugin missing: rc=$rc $(tail -1 "$RUN/err")"
+[[ $rc == 69 ]] && grep -qF "nope.pm is not installed ($RUN/tree/install.sh --integration both)" "$RUN/err" && ! grep -q 'apt install' "$RUN/err" \
+    && ok "plugin missing: refused, with the install step of this layout (a checkout: its install.sh)" || bad "plugin missing: rc=$rc $(tail -1 "$RUN/err")"
 PBO_PVE_PLUGIN_CHECK=false P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q 'does not load into PVE::Storage' "$RUN/err" && ok "plugin not loadable: refused" || bad "plugin load: rc=$rc $(tail -1 "$RUN/err")"
 PBO_VZDUMP_HOOK="$RUN/nohook" P integrate enable both --yes
@@ -334,7 +335,15 @@ same "disable: storage.cfg back to the original" "$RUN/storage.cfg.orig" "$RUN/s
 [[ ! -e "$RUN/sysd/pbo-catalog.timer.enabled" && ! -e "$RUN/sysd/pbo-catalog.timer.active" ]] && ok "disable: pbo-catalog.timer disabled and stopped" || bad "timer: $(ls "$RUN/sysd")"
 [[ -z "$(ls -A "$RUN/cache/staging")" ]] && ok "disable: staging emptied" || bad "staging: $(ls "$RUN/cache/staging")"
 grep -q 'job-on.*still name a pbo storage' "$RUN/err" && ok "disable: warns about the disabled job that names pbo" || bad "disabled job warning: $(tail -3 "$RUN/err")"
-grep -q 'apt remove pbo-pve-storage' <<<"$out" && ok "disable: plugin-removal hint" || bad "hint: $out"
+grep -qF "To remove it: $RUN/tree/install.sh --integration standalone" <<<"$out" && [[ "$out" != *"apt remove"* ]] \
+    && ok "disable: the plugin-removal hint of this layout" || bad "hint: $out"
+# the hints of the two installed layouts (pbo below /usr/lib/pbo or /usr/local/lib/pbo)
+hint() { SELF_DIR="$1" bash -c 'source lib/integrate.sh; printf "%s|%s|%s" "$(_integ_layout)" "$(_integ_install_hint both)" "$(_integ_remove_hint)"'; }
+[[ "$(hint /usr/lib/pbo)" == "deb|apt install pbo-pve-storage|apt remove pbo-pve-storage" \
+   && "$(hint /usr/local/lib/pbo)" == "install.sh|run install.sh --integration both from the pbo source tree|run install.sh --integration standalone from the pbo source tree" \
+   && "$(hint "$ROOT")" == "source|$ROOT/install.sh --integration both|$ROOT/install.sh --integration standalone" ]] \
+    && ok "layout: the .deb layout names apt, the install.sh layout install.sh, a checkout its own install.sh" \
+    || bad "layout hints: $(hint /usr/lib/pbo) / $(hint /usr/local/lib/pbo) / $(hint "$ROOT")"
 : > "$MOCK_LOG"
 PJ integrate disable --yes
 has "second disable: unchanged" '.ok and .status == "unchanged" and .steps == []'
@@ -378,6 +387,22 @@ printf '\npbo: pbo\n\tcontent backup\n\tnodes pve2\n\tpath /srv/pve2/spool\n' >>
 [[ "$(sid)" == "pbo-$NODE" ]] && ok "storage id: another node's pbo entry is not this node's (pbo-<node>)" || bad "other node's entry: $(sid)"
 mkcfg "PVE_STORAGE_ID=pbo-custom"
 [[ "$(sid)" == pbo-custom ]] && ok "storage id: an explicit PVE_STORAGE_ID wins" || bad "explicit id: $(sid)"
+# PVE's parse_id (PVE::JSONSchema): 2+ characters, a letter first, a letter or
+# digit last, '.' allowed; checked before the lock file, any directory or the
+# catalogue
+idv() { bash -c 'source lib/integrate.sh; for i in "$@"; do _integ_id_valid "$i" && printf "%s=ok " "$i" || printf "%s=no " "$i"; done' _ "$@"; }
+[[ "$(idv ab pbo.node1 PBO-1 pbo_x a pbo. pbo- 1pbo 'pb o' '')" == "ab=ok pbo.node1=ok PBO-1=ok pbo_x=ok a=no pbo.=no pbo-=no 1pbo=no pb o=no =no " ]] \
+    && ok "storage id: PVE's parse_id: ab and pbo.node1 taken; a, pbo., pbo-, 1pbo refused" || bad "id rule: $(idv ab pbo.node1 PBO-1 pbo_x a pbo. pbo- 1pbo 'pb o' '')"
+idok=1
+for bid in a pbo. pbo-; do
+    mkcfg "PVE_STORAGE_ID=$bid" "PVE_SPOOL_DIR=$RUN/idcheck/spool" "PVE_STAGING_DIR=$RUN/idcheck/staging" "PBO_CATALOG=$RUN/idcheck/catalog.json"
+    snap; rm -rf "$RUN/idcheck" "$RUN/lock/pbo.integrate"; : > "$MOCK_LOG"
+    P integrate enable both --yes
+    [[ $rc == 78 ]] && grep -qF "PVE_STORAGE_ID '$bid' is not a valid PVE storage id" "$RUN/err" && [[ ! -e "$RUN/idcheck" && ! -e "$RUN/lock/pbo.integrate" ]] \
+        && ! grep -qE '^(pvesm|systemctl enable)' "$MOCK_LOG" && cmp -s "$RUN/config" "$RUN/c.before" \
+        || { idok=0; bad "storage id '$bid': rc=$rc $(tail -1 "$RUN/err") $(ls -R "$RUN/idcheck" 2>&1 | head -3) $(cat "$MOCK_LOG")"; }
+done
+(( idok )) && ok "storage id: an id PVE refuses (a, pbo., pbo-) stops enable (78) before the lock, the spool, the catalogue or any PVE call"
 mkcfg "PVE_STORAGE_ID=pbo"; snap
 P integrate enable both --yes
 [[ $rc == 69 ]] && grep -q "storage 'pbo' belongs to node(s) pve2 (storage.cfg: nodes pve2), not to $NODE" "$RUN/err" && grep -q "pbo config unset PVE_STORAGE_ID" "$RUN/err" \

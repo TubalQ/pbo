@@ -35,8 +35,8 @@ jobs:
           sh -n lib/vzdump-hook
 
       - name: Generated config example is current
-        # etc/config.example is generated from lib/config_schema.sh (and installed as
-        # the first /etc/pbo/config): a schema change must regenerate it
+        # etc/config.example is generated from lib/config_schema.sh (the annotated
+        # example install.sh and the .deb ship): a schema change must regenerate it
         run: |
           mkdir -p run/ci-template
           printf 'CACHE_DIR=%s/c\nLOG_DIR=%s/l\nSTATE_DIR=%s/s\nLOCK_DIR=%s/k\n' "$PWD/run/ci-template" "$PWD/run/ci-template" "$PWD/run/ci-template" "$PWD/run/ci-template" > run/ci-template/config

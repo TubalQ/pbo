@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # install.sh: installs pbo on a Proxmox host. Idempotent.
 # NEVER enables the timer automatically (it prints how to do that yourself).
+# A host install writes no /etc/pbo/config: pbo runs on the schema defaults
+# until `pbo setup` writes one (the example config stays in SHAREDIR, see
+# inst_program). A janitor gets its config from the janitor example, whose
+# repo path is commented out, so nothing points at a repo until it is set.
 #
 # Run as root on the host:  ./install.sh [--integration standalone|both|integrated] [--force]
 #                           ./install.sh --janitor [--user <name>] [--force]
@@ -23,7 +27,7 @@
 # tests/install.sh can source it. PBO_INSTALL_TEST=1 (tests only) lets these be
 # overridden: PBO_INSTALL_CFGDIR, PBO_INSTALL_PLUGIN_DIR, PBO_INSTALL_STORAGE_CFG, PBO_INSTALL_SYSTEMCTL,
 # PBO_INSTALL_DPKG_QUERY, PBO_INSTALL_PLUGIN_CHECK, PBO_INSTALL_TTY (0|1),
-# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_BIN (the pbo symlink;
+# PBO_INSTALL_LIBDIR, PBO_INSTALL_UNITDIR, PBO_INSTALL_SHAREDIR, PBO_INSTALL_BIN (the pbo symlink;
 # the compat alias goes next to it), PBO_INSTALL_SHARED_CFG (the cluster-shared
 # config; none in test mode unless set), PBO_INSTALL_PBO (the pbo inst_perms
 # runs), PBO_INSTALL_CFS_DIR (pmxcfs, for the member list) and
@@ -49,6 +53,7 @@
 
 SRC="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LIBDIR=/usr/local/lib/pbo
+SHAREDIR=/usr/local/share/pbo
 BIN=/usr/local/sbin/pbo
 CFGDIR=/etc/pbo
 UNITDIR=/etc/systemd/system
@@ -71,6 +76,7 @@ if [[ "${PBO_INSTALL_TEST:-0}" == 1 ]]; then
     DPKG_QUERY="${PBO_INSTALL_DPKG_QUERY:-$DPKG_QUERY}"
     LIBDIR="${PBO_INSTALL_LIBDIR:-$LIBDIR}"
     UNITDIR="${PBO_INSTALL_UNITDIR:-$UNITDIR}"
+    SHAREDIR="${PBO_INSTALL_SHAREDIR:-$CFGDIR/no-share}"
     BIN="${PBO_INSTALL_BIN:-$BIN}"
 fi
 PLUGIN_FILE="$PLUGIN_DIR/PboPlugin.pm"
@@ -502,18 +508,31 @@ inst_program() {
         chown "root:$JUSER" "$CFGDIR"; chmod 0750 "$CFGDIR"
     fi
 
+    inst_config
+}
+
+# inst_config: the examples into SHAREDIR (never read by pbo), and on a
+# janitor a first $CFGDIR/config from its example. A host gets no config:
+# copied from the example it would pin every key the example sets (the
+# CACHE_DIR line among them, which the wizard then keeps as "configured")
+# and look like a finished setup; pbo runs on the schema defaults without
+# one, and `pbo setup` writes the keys the operator chooses. An example an
+# older install.sh left in $CFGDIR is refreshed, so it never goes stale.
+inst_config() {
     echo "==> Config"
-    local example="$SRC/etc/config.example"; [[ "$ROLE" == janitor ]] && example="$SRC/etc/config.janitor.example"
-    install -m 0644 "$example" "$CFGDIR/config.example"
+    local example="$SRC/etc/config.example" name=config.example
+    [[ "$ROLE" == janitor ]] && { example="$SRC/etc/config.janitor.example"; name=config.janitor.example; }
+    install -d -m 0755 "$SHAREDIR"
+    install -m 0644 "$SRC/etc/config.example" "$SRC/etc/config.janitor.example" "$SHAREDIR/"
+    [[ ! -f "$CFGDIR/config.example" ]] || install -m 0644 "$example" "$CFGDIR/config.example"
     if [[ -f "$CFGDIR/config" ]]; then
         echo "    $CFGDIR/config already exists, left untouched."
     elif [[ "$ROLE" == janitor ]]; then
         sed "s/^JANITOR_USER=.*/JANITOR_USER=$JUSER/" "$example" > "$CFGDIR/config"
         chown "root:$JUSER" "$CFGDIR/config"; chmod 0640 "$CFGDIR/config"
-        echo "    created $CFGDIR/config (0640 root:$JUSER), EDIT it: repo path, password file."
+        echo "    created $CFGDIR/config (0640 root:$JUSER) from $SHAREDIR/$name: set RESTIC_OFFSITE_REPO (commented out) and the password file."
     else
-        install -m 0600 "$SRC/etc/config.example" "$CFGDIR/config"
-        echo "    created $CFGDIR/config (0600), run '$BIN setup' or EDIT it."
+        echo "    no $CFGDIR/config yet: '$BIN setup' writes it (an annotated example: $SHAREDIR/$name)."
     fi
 }
 
@@ -562,7 +581,8 @@ inst_janitor_units() {
 
 Installed: pbo janitor (runs as $JUSER).
 
-  1. Edit $CFGDIR/config: RESTIC_OFFSITE_REPO = the repo directory on this disk.
+  1. Edit $CFGDIR/config: uncomment RESTIC_OFFSITE_REPO and set it to the repo
+     directory on this disk.
   2. Put the repo password in $CFGDIR/restic-pass, chown $JUSER, chmod 0400.
   3. Check it:   $BIN doctor        (drops to $JUSER by itself)
   4. Enable it:  systemctl enable --now pbo-janitor.timer   (daily, SCHEDULE_JANITOR)
@@ -800,19 +820,30 @@ main() {
     inst_perms
     inst_schedules
     inst_final_message
+    inst_offer_setup
+}
 
-    # --- interactive first-run setup (only on a real terminal) ---
-    if [[ -t 0 && -t 1 ]]; then
+# inst_offer_setup: the interactive first-run setup, offered on a terminal
+# only. Its exit status is about the configuration, not the install, which is
+# complete by now: it is reported, never returned (under set -e a plain call
+# would end install.sh with it; right after a first setup that is doctor's
+# 69, since no guest has a snapshot before the first backup).
+inst_offer_setup() {
+    local _ans setup_rc=0
+    if inst_is_tty; then
         printf '\n'
         read -r -p "Run the interactive setup wizard now? [Y/n] " _ans
         if [[ -z "$_ans" || "$_ans" == [Yy]* ]]; then
-            PBO_SETUP_INTEGRATION="$MODE" "$BIN" setup
+            PBO_SETUP_INTEGRATION="$MODE" "$BIN" setup || setup_rc=$?
+            (( setup_rc == 0 )) || echo "    '$BIN setup' ended with exit $setup_rc (its closing text above says what); the install itself is complete. Fix what it named, then run '$BIN setup' again, or '$BIN doctor' after the first backup."
         else
             echo "OK, run '$BIN setup' whenever you're ready."
         fi
     else
-        echo "Non-interactive install, run '$BIN setup' to configure."
+        if [[ -f "$CFGDIR/config" ]]; then echo "Non-interactive install: '$BIN setup' changes the configuration, '$BIN doctor' checks it."
+        else echo "Non-interactive install, not configured yet: run '$BIN setup'."; fi
     fi
+    return 0
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

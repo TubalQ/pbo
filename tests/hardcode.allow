@@ -26,6 +26,8 @@
 :/etc/pbo$                                                pbo's config directory (PBO_CONFIG names another config file)
 :/etc/pbo/config$                                         pbo's config file (PBO_CONFIG names another one)
 ^pve-plugin/PboPlugin.pm:/var/lib/pbo/catalog/index.json$ the catalogue the storage plugin reads: PVE loads the plugin without pbo's config (PBO_CATALOG moves it in tests only)
+^pve-plugin/PboPlugin.pm:/var/lib/pbo/plugin-version-drift$ the drift warnings the plugin gave, in pbo's default STATE_DIR: PVE loads the plugin without pbo's config ($DRIFT_STAMP moves it in tests only)
+^lib/notify.sh:/lib/pbo$                                  the lib/pbo of either install layout, stripped from SELF_DIR to find <prefix>/share/pbo/templates
 ^install.sh:/run/pbo-web-tls$                             removed when upgrading over 0.4 (the old web UI's runtime directory)
 
 # --- lists of system directories pbo refuses to touch ---------------------------------

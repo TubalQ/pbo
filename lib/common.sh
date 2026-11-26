@@ -245,7 +245,8 @@ load_config() {
     _cfg_apply
     set_defaults
     [[ -z "${PBO_TEST_CONFIG_LOG:-}" ]] || _cfg_test_log_files
-    ensure_dirs
+    # a start that must write nothing (main(): `pbo --dry-run init`) makes no directory
+    [[ "${PBO_READONLY_START:-0}" == 1 ]] || ensure_dirs
     # RESTIC_ENV_FILE (lib/restic.sh): checked once here, its values are read
     # only in the subshell of each restic call
     if declare -F _restic_env_check >/dev/null; then _restic_env_check; fi
@@ -328,6 +329,13 @@ _config_check() {
         esac
         CC_LINES+=("$msg"); CC_WARNS=1
     done
+    # RETENTION_GROUP_BY=paths still works (the 0.5 grouping) and goes in 0.8:
+    # said now, with the fix, so that the release that drops it changes no
+    # host's retention unannounced
+    if [[ "${RETENTION_GROUP_BY:-}" == paths ]]; then
+        CC_LINES+=("RETENTION_GROUP_BY=paths (the 0.5 grouping per snapshot path) is deprecated and will be removed in pbo 0.8, which retains per guest only: check what changes with 'pbo --dry-run prune', then 'pbo config unset RETENTION_GROUP_BY' (or set it to guest)")
+        CC_WARNS=1
+    fi
     # Deprecated keys that still change something: name the replacement.
     local new
     for k in "${CS_ORDER[@]}"; do

@@ -459,7 +459,7 @@ gets in the paths pass. The host is not in either key (cluster nodes share a
 repo; a migrated guest keeps one history). One runner (`_forget_policy_runs`)
 serves the cache tier (keep-last), offsite (GFS, keep= tags,
 `KEEP_OVERRIDE_MIN_LAST`), the janitor's bound forget and `list --reasons`.
-`RETENTION_GROUP_BY=paths` skips the guest pass (0.5; removed in 0.7), and so
+`RETENTION_GROUP_BY=paths` skips the guest pass (0.5; removed in 0.8, moved from 0.7 in 0.6.1), and so
 does any value other than `guest`: the key exists to opt out of the guest pass's
 deletions, so an unknown value fails closed.
 
@@ -1272,7 +1272,8 @@ and converged its path to its own spool, which broke the first node's.
 - **Retention changes for split guests only.** Their next prune forgets snapshots
   0.5 kept (the old path's last ones); doctor names them and `pbo --dry-run prune`
   shows the plan. `RETENTION_GROUP_BY=paths` keeps the 0.5 grouping for 0.6 and is
-  removed in 0.7.
+  removed in 0.8 (0.6.1 moved it from 0.7: doctor warns first, so no host's
+  retention changes unannounced).
 - **Moving the cache is an operation, not an edit.** It needs a quiet moment (it
   takes every lock), `--yes`, and on another filesystem the space of the cache twice
   until the old copy goes. It refuses network filesystems unless `--force`, a pbo

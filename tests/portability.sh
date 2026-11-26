@@ -354,6 +354,40 @@ if (( deb_ok )); then
     out="$("$LD/usr/sbin/pbo" -V 2>&1)"; [[ "$out" == "pbo "* ]] && ok "deb: /usr/sbin/pbo runs from its symlink" || bad "deb sbin: $out"
 fi
 
+# the .deb's postinst runs the permission pass, as install.sh does: taken
+# from the built package (dpkg-deb -e), else from build-deb.sh's text, with
+# its absolute paths moved below the run directory and pbo a stub that
+# records how it was called (STUB_RC: its exit status)
+PI="$RUN/postinst"; mkdir -p "$PI/bin"
+if command -v dpkg-deb >/dev/null 2>&1 && compgen -G "$RUN/dist/pbo_*_all.deb" >/dev/null; then
+    dpkg-deb -e "$(compgen -G "$RUN/dist/pbo_*_all.deb" | head -1)" "$PI/ctl" && cp "$PI/ctl/postinst" "$PI/postinst.orig"
+else
+    sed -n "/^cat > \"\$ROOT\/DEBIAN\/postinst\" <<'PI'\$/,/^PI\$/p" packaging/build-deb.sh | sed '1d;$d' > "$PI/postinst.orig"
+fi
+sed -e "s#/usr/sbin/pbo#$PI/bin/pbo#g; s#/etc/pbo#$PI/etc#g; s#/var/log/pbo#$PI/log#g; s#/var/lib/pbo#$PI/state#g" \
+    -e "s#/etc/pve#$PI/pve#g; s#/usr/share/pbo#$PI/share#g" "$PI/postinst.orig" > "$PI/postinst"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> \"$PI/pbo.calls\"" 'exit "${STUB_RC:-0}"' > "$PI/bin/pbo"
+chmod 755 "$PI/bin/pbo"
+# systemctl is the mock, first on PATH: the postinst's daemon-reload never reaches the host
+install -m 0755 tests/mocks/systemctl "$PI/bin/systemctl"
+left="$(grep -v '^[[:space:]]*#' "$PI/postinst" | sed "s#$PI#<run>#g" | grep -v '/usr/share/doc' | grep -nE '(^|[^>[:alnum:]])/(usr|etc|var)/' || true)"
+if [[ -n "$left" || "$(PATH="$PI/bin:$PATH" command -v systemctl)" != "$PI/bin/systemctl" ]]; then
+    bad "postinst: a host path is left after the rewrite, or systemctl is not the mock: $(head -3 <<<"$left")"
+else
+    : > "$PI/pbo.calls"
+    out="$(PATH="$PI/bin:$RUN/bin:$PATH" MOCK_LOG="$PI/systemctl.calls" sh "$PI/postinst" configure 2>&1)"; rc=$?
+    [[ $rc == 0 ]] && ! grep -q 'perms-only' "$PI/pbo.calls" && [[ -d "$PI/etc" && ! -e "$PI/etc/config" ]] \
+        && ok "deb postinst without a config: no permission pass (nothing of the operator's to fix), no config written" || bad "postinst no config: rc=$rc $(cat "$PI/pbo.calls") $out"
+    printf 'KEEP_LOCAL=2\n' > "$PI/etc/config"; : > "$PI/pbo.calls"
+    out="$(PATH="$PI/bin:$RUN/bin:$PATH" MOCK_LOG="$PI/systemctl.calls" sh "$PI/postinst" configure 2>&1)"; rc=$?
+    [[ $rc == 0 ]] && grep -qx 'doctor --fix --perms-only' "$PI/pbo.calls" \
+        && ok "deb postinst with a config: runs pbo doctor --fix --perms-only, as install.sh does" || bad "postinst perms: rc=$rc $(cat "$PI/pbo.calls") $out"
+    : > "$PI/pbo.calls"
+    out="$(STUB_RC=69 PATH="$PI/bin:$RUN/bin:$PATH" MOCK_LOG="$PI/systemctl.calls" sh "$PI/postinst" configure 2>&1)"; rc=$?
+    [[ $rc == 0 && "$out" == *"the permission check reported problems (exit 69)"* ]] \
+        && ok "deb postinst: a permission pass that fails is reported and never fails the install" || bad "postinst perms fail: rc=$rc $out"
+fi
+
 # ============================================================================
 # RESTIC_MIN: doctor and install.sh
 # ============================================================================

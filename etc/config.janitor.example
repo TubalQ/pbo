@@ -15,8 +15,10 @@ PBO_ROLE=janitor
 JANITOR_USER=restic
 LOCAL_REPO=false
 OFFSITE_ENABLED=true
-# With rest-server --private-repos the repo for user <u> lives under <path>/<u>/.
-RESTIC_OFFSITE_REPO=/srv/restic/pve1/pbo
+# The repo directory on this disk (the one rest-server serves); with
+# rest-server --private-repos the repo for user <u> lives under <path>/<u>/.
+# Left out on purpose: set it to the real path, the janitor prunes there.
+#RESTIC_OFFSITE_REPO=/srv/restic/<host>/pbo
 # Same repo password as the hosts that write to it (the DR key). Readable by
 # the janitor user only: chown restic:restic, chmod 0400.
 RESTIC_PASSWORD_FILE=/etc/pbo/restic-pass
@@ -37,7 +39,7 @@ KEEP_OFFSITE_YEARLY=0
 # backdates or postdates snapshots to game retention).
 #FUTURE_SKEW=3600
 # A guest whose snapshots lie under several paths (its host moved CACHE_DIR) is
-# retained as one guest; paths = 0.5 behaviour, kept for one release, removed in 0.7.
+# retained as one guest; paths = 0.5 behaviour, deprecated, removed in 0.8.
 #RETENTION_GROUP_BY=guest
 
 # When pbo-janitor.timer runs (systemd OnCalendar=; midday by default, clear of

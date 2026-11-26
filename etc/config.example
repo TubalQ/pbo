@@ -1,5 +1,5 @@
 # /etc/pbo/config, KEY=VALUE. chmod 600, root:root.
-# This is the example/template, copied by install.sh. It contains no secrets
+# An example: no install copies it into place (pbo setup writes the config). No secrets
 # (the restic repo password lives in RESTIC_PASSWORD_FILE, 0600).
 # Generated from lib/config_schema.sh by `pbo config template`; `pbo config list`
 # shows the effective values. A line starting with # shows the default (or an
@@ -66,7 +66,7 @@ KEEP_OFFSITE_MONTHLY=6                       # offsite: monthly snapshots kept p
 KEEP_OFFSITE_YEARLY=0                        # 0 = no yearly bucket
 #KEEP_OVERRIDE_MIN_LAST=3                    # a per-guest keep tag never keeps fewer than this many snapshots
 #FUTURE_SKEW=3600                            # janitor: snapshots dated further ahead than this (s) block prune
-#RETENTION_GROUP_BY=guest                    # guest | paths (paths = 0.5 behaviour, kept for one release, removed in 0.7)
+#RETENTION_GROUP_BY=guest                    # guest | paths (paths = 0.5 behaviour, deprecated: removed in 0.8)
 
 # --- notifications ---
 # NOTIFY_PVE is Proxmox's own notification system (Datacenter → Notifications): auto =

@@ -360,6 +360,53 @@ NTFY_CREDS_FILE='' TEST_GUARD_DEFAULTS="$ndef" G backup 8001
     && ok "no credentials file: no ntfy finding (doctor, config check, a failing run's log), nothing sent" \
     || bad "no file: rc=$rc rc2=$rc2 $h1 / $h2 / $(cat "$RUN/log/pbo.log")"
 
+# the notification templates on a Proxmox node (pmxcfs, PBO_PVE_CFS_DIR, is
+# there) whose alerts go through Proxmox notifications: doctor checks each one
+# pbo ships (present, the same bytes), --fix installs the missing ones and
+# leaves one that differs (the directory is cluster-wide: another node's pbo
+# may have put it there); nothing with NOTIFY_PVE=false or with ntfy in auto
+# mode. As any user (a WARN line, not the root-only send path above).
+TD="$RUN/pve/notification-templates/default"; rm -rf "$RUN/pve"; mkdir -p "$RUN/pve"
+tpls="$(cd templates && printf '%s ' pbo-*.hbs)"; tpls="${tpls% }"
+# the guarded copy of pbo finds the shipped templates next to it, as a checkout does
+ln -sfn "$ROOT/templates" "$RUN/tree/templates"
+TG() { PBO_PVE_TEMPLATE_DIR="$TD" NTFY_CREDS_FILE="$RUN/none/ntfy.env" G "$@"; }
+ccfg "NOTIFY_PVE=auto"
+TG doctor
+[[ "$out" == *"WARN  Proxmox notification templates missing in $TD: $tpls (pbo doctor --fix installs them)"* && ! -e "$TD" ]] && [[ "$out" != *run_dir_guard* ]] \
+    && ok "doctor: the notification templates missing on a Proxmox node: a WARN naming each one and the fix" || bad "doctor templates missing: $out"
+TG --dry-run doctor --fix
+[[ "$out" == *"WOULD FIX notification templates to install in $TD: $tpls"* && ! -e "$TD" ]] \
+    && ok "doctor --fix --dry-run: lists the templates it would install, writes none" || bad "doctor templates dry fix: $out"
+TG doctor --fix
+tok=1; for f in templates/pbo-*.hbs; do cmp -s "$f" "$TD/${f##*/}" || tok=0; done
+[[ "$out" == *"FIXED notification templates installed in $TD: $tpls"* && $tok == 1 ]] && grep -q "doctor fix: notification template $TD/pbo-subject.txt.hbs installed" "$RUN/log/pbo.log" \
+    && ok "doctor --fix: installs the templates pbo ships (audit-logged)" || bad "doctor templates fix: $out"
+TG doctor
+[[ "$out" == *"OK  Proxmox notification templates current in $TD"* ]] && ok "doctor: the templates current: OK" || bad "doctor templates ok: $out"
+printf 'another pbo template\n' > "$TD/pbo-body.txt.hbs"; cp "$TD/pbo-body.txt.hbs" "$RUN/body.other"
+TG doctor
+[[ "$out" == *"OK  Proxmox notification templates in $TD differ from the ones this pbo ships: pbo-body.txt.hbs (left as they are"* \
+   && "$out" != *"WARN  Proxmox notification templates"* ]] \
+    && ok "doctor: a template that differs from the shipped one (another node's pbo, older or newer): reported, no WARN" || bad "doctor templates differ: $out"
+TG doctor --fix
+cmp -s "$RUN/body.other" "$TD/pbo-body.txt.hbs" && [[ "$out" != *"FIXED notification templates"* && "$out" == *"differ from the ones this pbo ships: pbo-body.txt.hbs"* ]] \
+    && ok "doctor --fix: never replaces a template that is there (no node rolls another one's back)" || bad "doctor templates differ fix: $out"
+rm -f "$TD/pbo-subject.txt.hbs"
+TG doctor --fix
+cmp -s templates/pbo-subject.txt.hbs "$TD/pbo-subject.txt.hbs" && cmp -s "$RUN/body.other" "$TD/pbo-body.txt.hbs" \
+   && [[ "$out" == *"FIXED notification templates installed in $TD: pbo-subject.txt.hbs"* ]] \
+    && ok "doctor --fix: ... it installs only the missing one" || bad "doctor templates fix missing only: $out"
+# ntfy configured in auto mode: Proxmox notifications are never sent, so the
+# templates are not checked and never written
+rm -rf "$TD"; ccfg "NOTIFY_PVE=auto" "NTFY_URL=https://ntfy.invalid" "NTFY_TOPIC=t"
+TG doctor --fix
+[[ "$out" != *"notification templates"* && ! -e "$TD" ]] && [[ "$out" != *run_dir_guard* ]] \
+    && ok "doctor: auto mode with ntfy configured: no template check, none installed" || bad "doctor templates ntfy: $out"
+rm -rf "$TD"; ccfg
+TG doctor --fix
+[[ "$out" != *"notification templates"* && ! -e "$TD" ]] && ok "doctor: NOTIFY_PVE=false: no template check, none installed" || bad "doctor templates off: $out"
+
 rm -rf "$RUN"
 printf '%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 ))

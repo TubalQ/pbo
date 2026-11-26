@@ -175,7 +175,8 @@ allow=' AUDIT_FILE AUDIT_RO_OVERRIDE AUDIT_RW_OVERRIDE AUDIT_T0 BASH C_0 C_G C_R
     TR_ALLOW_LINKDOWN_NET TR_RESPOND_HOW TR_RESTRICTED TR_TRIGGER VERSION VMID_LOCK_HELD
     CFGW_CREATED CFGW_TMP CFG_LOCK_FD CFG_LOCK_HELD PBO_MOUNT_UNIT
     BASHPID CACHE_LOCK_FD CACHE_LOCK_MODE CATALOG_LOCK_FD INTEG_LOCK_FD CFGW_ERR PBO_START_US PBO_START_ID
-    CM_ERR CM_FIX_PARENTS CM_INIT_MSG CM_METHOD_WHY CM_ST_NODES CM_USAGE TZDIR '
+    CM_ERR CM_FIX_PARENTS CM_INIT_MSG CM_METHOD_WHY CM_ST_NODES CM_USAGE TZDIR
+    DOCTOR_FIX DOCTOR_PERMS_ONLY EX_UNAVAILABLE EX_USAGE PBO_READONLY_START SETUP_INTEG_FAIL SETUP_STEP SRANDOM '
 out="$(S '
     allow="$1"
     for k in $(grep -ohE "\\\$\\{[A-Z][A-Z0-9_]*:[-=]" pbo lib/*.sh lib/vzdump-hook | sed -E "s/^\\\$\\{//; s/:.\$//" | sort -u); do
@@ -201,6 +202,8 @@ out="$(S '
         case "$k" in IU|J|NODE|UNITS|TEST_ALLOW|PBO_TOOLS_MISSING) continue ;; esac
         # tests/menu.sh: the wizard harness'"'"'s shell variables and the run directory guard'"'"'s hooks
         case "$k" in CFGW_CACHE|KH0|WQM|WSFTP_RC|WSHARED|W_ENV|TEST_GUARD_SHARED|TEST_GUARD_CACHE_DEFAULT) continue ;; esac
+        # tests/menu.sh, tests/init.sh, tests/install.sh, tests/notify.sh, tests/portability.sh, tests/schedule.sh (0.6.1): their shell variables and the fake restic hooks
+        case "$k" in C|FAKE_RESTIC_DIR|FAKE_RESTIC_INIT_RC|FIRST|GBIN|KREPO|N|PI|RREPO|SBW|STUB_HTTP|STUB_VERSION|TD|WDENY|WDOWN) continue ;; esac
         [[ "$k" == MOCK_* || "$k" == PBO_INSTALL_* || "$k" == PBO_AUDIT_* ]] && continue
         case "$k" in PBO_CONFIG|PBO_CONFIG_LOADED|PBO_CONFIG_SHARED_LOADED) continue ;; esac   # set by load_config, not keys
         _cs_env_switch "$k" && continue

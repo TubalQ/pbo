@@ -134,22 +134,42 @@ done
 
 # --- the wizard's Proxmox integration step (a fake pbo records what it is asked) ---
 W="$PWD/run/menu"; rm -rf "$W"; mkdir -p "$W"
-printf '#!/usr/bin/env bash\necho "$*" >> "%s/calls"\n' "$W" > "$W/fakepbo"; chmod +x "$W/fakepbo"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/calls"\ncase " $* " in *" --dry-run "*) exit 0 ;; esac\nexit "${FAKE_FAIL:-0}"\n' "$W" > "$W/fakepbo"; chmod +x "$W/fakepbo"
 # I <mode> <plugin path> <answers>: run the step with lib/integrate.sh + ownership.sh loaded
-I() { : > "$W/calls"; printf '%b' "$3" | PBO_SELF_BIN="$W/fakepbo" PBO_INTEGRATION="$1" PBO_PVE_PLUGIN_PATH="$2" bash -c '
-        source lib/ownership.sh; source lib/integrate.sh; source lib/menu.sh; _setup_integration_step; echo "mode=$PBO_INTEGRATION"' 2>&1; }
+# (ISELF: the SELF_DIR pbo runs from, for the layout of its hints; IFAIL: the
+# fake pbo's exit status for a real enable/disable)
+I() { : > "$W/calls"; printf '%b' "$3" | SELF_DIR="${ISELF:-$PWD}" FAKE_FAIL="${IFAIL:-0}" PBO_SELF_BIN="$W/fakepbo" PBO_INTEGRATION="$1" PBO_PVE_PLUGIN_PATH="$2" bash -c '
+        source lib/ownership.sh; source lib/integrate.sh; source lib/menu.sh; _setup_integration_step; echo "rc=$? mode=$PBO_INTEGRATION"' 2>&1; }
 out="$(I standalone "$W/none.pm" '2\n')"
-[[ "$out" == *"plugin is not installed"* && "$out" == *"./install.sh --integration both"* && "$out" == *"apt install pbo-pve-storage"* \
-   && "$out" == *"mode=standalone" && ! -s "$W/calls" ]] && ok "wizard integration: no plugin → install hint, stays standalone" || bad "wizard no plugin: $out"
+[[ "$out" == *"plugin is not installed"* && "$out" == *"$PWD/install.sh --integration both"* && "$out" != *"apt install"* \
+   && "$out" == *"rc=69 mode=standalone" && ! -s "$W/calls" ]] && ok "wizard integration: no plugin (a checkout) → this tree's install.sh, stays standalone, the step fails (69)" || bad "wizard no plugin: $out"
+out="$(ISELF=/opt/x/usr/lib/pbo I standalone "$W/none.pm" '3\n')"
+[[ "$out" == *"apt install pbo-pve-storage"* && "$out" != *"install.sh --integration"* && "$out" == *"rc=69 mode=standalone" ]] \
+    && ok "wizard integration: no plugin on the .deb layout (/usr/lib/pbo) → apt install pbo-pve-storage only" || bad "wizard no plugin deb: $out"
+out="$(ISELF=/opt/x/usr/local/lib/pbo I standalone "$W/none.pm" '2\n')"
+[[ "$out" == *"install.sh --integration both from the pbo source tree"* && "$out" != *"apt install"* ]] \
+    && ok "wizard integration: no plugin on the install.sh layout (/usr/local/lib/pbo) → install.sh --integration only" || bad "wizard no plugin install.sh: $out"
 : > "$W/plugin.pm"
 out="$(I standalone "$W/plugin.pm" '2\ny\n')"
-[[ "$(cat "$W/calls")" == $'--dry-run integrate enable both\nintegrate enable both --yes' && "$out" == *"mode=both" ]] \
+[[ "$(cat "$W/calls")" == $'--dry-run integrate enable both\nintegrate enable both --yes' && "$out" == *"rc=0 mode=both" ]] \
     && ok "wizard integration: both → dry run shown, then enable --yes" || bad "wizard both: $(cat "$W/calls") $out"
+out="$(IFAIL=69 I standalone "$W/plugin.pm" '2\ny\n')"
+[[ "$out" == *"'pbo integrate enable both' did not finish, still standalone"* && "$out" == *"rc=69 mode=standalone" ]] \
+    && ok "wizard integration: an enable that fails fails the step (its exit status)" || bad "wizard enable fails: $out"
+out="$(IFAIL=75 I both "$W/plugin.pm" '1\ny\n')"
+[[ "$out" == *"'pbo integrate disable' did not finish, still both"* && "$out" == *"rc=75 mode=both" ]] \
+    && ok "wizard integration: a disable that fails fails the step" || bad "wizard disable fails: $out"
+out="$(I standalone "$W/plugin.pm" '')"; rc=$?
+[[ "$out" == *'The input ended at the question "Mode"'* && "$out" != *"rc="* && ! -s "$W/calls" ]] \
+    && ok "wizard integration: the end of the input at the mode question stops the wizard (no default taken, nothing run)" || bad "wizard integration eof mode: $out"
+out="$(I standalone "$W/plugin.pm" '2\n')"
+[[ "$out" == *'The input ended at the question "Apply this'* && "$out" != *"rc="* && "$(cat "$W/calls")" == '--dry-run integrate enable both' ]] \
+    && ok "wizard integration: ... and at the question after the dry run: no enable" || bad "wizard integration eof apply: $(cat "$W/calls") $out"
 out="$(I standalone "$W/plugin.pm" '3\nn\n')"
-[[ "$(cat "$W/calls")" == '--dry-run integrate enable integrated' && "$out" == *"mode=standalone" ]] \
+[[ "$(cat "$W/calls")" == '--dry-run integrate enable integrated' && "$out" == *"rc=0 mode=standalone" ]] \
     && ok "wizard integration: a no after the dry run changes nothing" || bad "wizard no: $(cat "$W/calls") $out"
 out="$(I standalone "$W/plugin.pm" '\n')"
-[[ ! -s "$W/calls" && "$out" == *"mode=standalone" ]] && ok "wizard integration: Enter keeps standalone (the default)" || bad "wizard default: $(cat "$W/calls")"
+[[ ! -s "$W/calls" && "$out" == *"rc=0 mode=standalone" ]] && ok "wizard integration: Enter keeps standalone (the default)" || bad "wizard default: $(cat "$W/calls")"
 out="$(I both "$W/plugin.pm" '1\ny\n')"
 [[ "$(cat "$W/calls")" == $'--dry-run integrate disable\nintegrate disable --yes' && "$out" == *"mode=standalone" ]] \
     && ok "wizard integration: both → standalone runs integrate disable" || bad "wizard disable: $(cat "$W/calls") $out"
@@ -280,10 +300,22 @@ out="$(printf '%s\n' abc 0 -3 4 | { _setup_ask_key KEEP_LOCAL "keep" 2; echo "rc
     && ok "wizard: an invalid number is asked again (three refusals, then 4)" || bad "ask_key int: $out"
 out="$(printf '%s\n' fast batch | { _setup_ask_key BACKUP_MODE "mode" stream; echo "rc=$? v=$_SV"; })"
 [[ "$out" == *"BACKUP_MODE='fast' is not stream|batch"* && "$out" == *"rc=0 v=batch"* ]] && ok "wizard: an enum value outside the schema is asked again" || bad "ask_key enum: $out"
-out="$(printf '' | { _setup_ask_key KEEP_LOCAL "keep" 5; echo "rc=$? v=$_SV"; })"
-[[ "$out" == *"rc=0 v=5"* ]] && ok "wizard: Enter (or the end of the input) keeps the default" || bad "ask_key default: $out"
-out="$(printf 'abc\n' | { _setup_ask_key KEEP_LOCAL "keep" xyz; echo "rc=$?"; })"
-[[ "$out" == *"the input ended"* && "$out" == *"rc=1"* ]] && ok "wizard: the end of the input on an invalid answer stops the question (no endless loop)" || bad "ask_key eof: $out"
+out="$(printf '\n' | { _setup_ask_key KEEP_LOCAL "keep" 5; echo "rc=$? v=$_SV"; })"
+[[ "$out" == *"rc=0 v=5"* ]] && ok "wizard: Enter keeps the default" || bad "ask_key default: $out"
+out="$(printf '' | { _setup_ask_key KEEP_LOCAL "keep" 5; echo "rc=$? v=$_SV"; })"; rc=$?
+[[ $rc == 64 && "$out" == *'The input ended at the question "keep"'* && "$out" != *"v=5"* ]] \
+    && ok "wizard: the end of the input is no Enter: the default is not taken, the wizard stops (64)" || bad "ask_key eof default: rc=$rc $out"
+out="$(printf 'abc\n' | { _setup_ask_key KEEP_LOCAL "keep" xyz; echo "rc=$?"; })"; rc=$?
+[[ $rc == 64 && "$out" == *"try again"* && "$out" == *"The input ended"* && "$out" != *"rc="* ]] \
+    && ok "wizard: the end of the input on an invalid answer stops the wizard (no endless loop)" || bad "ask_key eof: rc=$rc $out"
+out="$(printf '7' | { _setup_ask_key KEEP_LOCAL "keep" 5; echo "rc=$? v=$_SV"; _setup_yn "next" y; echo "WENT-ON"; })"; rc=$?
+[[ "$out" == *"rc=0 v=7"* && "$out" == *'The input ended at the question "next (y/n)"'* && "$out" != *WENT-ON* ]] \
+    && ok "wizard: a last answer without a newline is taken; the question after it stops" || bad "ask partial line: rc=$rc $out"
+for q in '_setup_yn "q" y' '_setup_pick "q" 1 a b' '_setup_askpw "q"' '_setup_ask_keep "q" cur _setup_chk_set'; do
+    out="$(printf '' | { eval "$q"; echo "went on"; })"; rc=$?
+    [[ $rc == 64 && "$out" == *"The input ended"* && "$out" != *"went on"* ]] || { bad "wizard eof: $q went on (rc=$rc): $out"; continue; }
+done
+ok "wizard: every kind of question (yes/no, a choice, a secret, a kept secret) stops at the end of the input"
 
 # --- the cache step's calls (a fake pbo records what it is asked) -------------------------
 printf '%s\n' '#!/usr/bin/env bash' "echo \"\$*\" >> \"$fx/calls\"" \
@@ -332,8 +364,33 @@ printf '%s\n' '#!/usr/bin/env bash' '# mock ssh-keyscan: one host key for the ho
 printf '%s\n' '#!/usr/bin/env bash' '# mock sftp: the login works (MOCK_SFTP_RC)' '[ -n "${MOCK_LOG:-}" ] && echo "sftp $*" >> "$MOCK_LOG"' \
     'cat >/dev/null; exit "${MOCK_SFTP_RC:-0}"' > "$wr/bin/sftp"
 printf '%s\n' '#!/usr/bin/env bash' '# mock curl: no network' '[ -n "${MOCK_LOG:-}" ] && echo "curl $*" >> "$MOCK_LOG"' 'exit 7' > "$wr/bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'for a; do case "$a" in version) echo "restic 0.18.0 compiled with go1.24 on linux/amd64"; exit 0 ;; esac; done' \
-    'case " $* " in *" snapshots "*) echo "[]" ;; esac' 'exit 0' > "$wr/bin/restic-fake"
+# the fake restic: a repo is a directory below FAKE_RESTIC_DIR named after
+# the repo string, made by init with the key it was given; `cat config` exits
+# 10 without one, 12 with another key (restic >= 0.17), and 1 with restic's
+# message for a repo string that contains FAKE_RESTIC_DOWN (unreachable), or
+# restic 0.14-0.16's 'permission denied' for one that contains
+# FAKE_RESTIC_DENY (an NFS export with root_squash). FAKE_RESTIC_INIT_RC: init
+# fails with that status; FAKE_RESTIC_SNAPS: the file `snapshots` prints
+# (else none)
+cat > "$wr/bin/restic-fake" <<'EOF'
+#!/usr/bin/env bash
+for a; do case "$a" in version) echo "restic 0.18.0 compiled with go1.24 on linux/amd64"; exit 0 ;; esac; done
+repo=''; for ((i = 1; i < $#; i++)); do [[ "${!i}" == -r ]] && { j=$((i + 1)); repo="${!j}"; }; done
+[[ -n "${FAKE_RESTIC_DOWN:-}" && "$repo" == *"$FAKE_RESTIC_DOWN"* ]] && { echo "Fatal: unable to open repository at $repo: connection refused" >&2; exit 1; }
+[[ -n "${FAKE_RESTIC_DENY:-}" && "$repo" == *"$FAKE_RESTIC_DENY"* ]] && { printf 'Fatal: unable to open config file: Stat: stat %s/config: permission denied\nIs there a repository at the following location?\n%s\n' "$repo" "$repo" >&2; exit 1; }
+d="${FAKE_RESTIC_DIR:?}/$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
+key="$(cat -- "${RESTIC_PASSWORD_FILE:-/dev/null}" 2>/dev/null)"
+case " $* " in
+    *" init "*) [[ ! -e "$d/config" ]] || { echo "Fatal: config file already exists" >&2; exit 1; }
+               [[ -z "${FAKE_RESTIC_INIT_RC:-}" ]] || { echo "Fatal: create repository at $repo failed: permission denied" >&2; exit "$FAKE_RESTIC_INIT_RC"; }
+               mkdir -p "$d" && printf '%s' "$key" > "$d/key" && : > "$d/config"; exit ;;
+    *" cat config "*) [[ -e "$d/config" ]] || { echo "Fatal: repository does not exist: unable to open config file" >&2; exit 10; }
+               [[ "$key" == "$(cat "$d/key")" ]] || { echo "Fatal: wrong password or no key found" >&2; exit 12; }
+               echo '{"version":2}' ;;
+    *" snapshots "*) if [[ -n "${FAKE_RESTIC_SNAPS:-}" ]]; then cat -- "$FAKE_RESTIC_SNAPS"; else echo "[]"; fi ;;
+esac
+exit 0
+EOF
 chmod 755 "$wr/bin/ssh-keyscan" "$wr/bin/sftp" "$wr/bin/curl" "$wr/bin/restic-fake"
 printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOkMPvH2qbRSg0iTs8SnP+zxek/d782eT11yYblwtzqQ pbo@test\n' > "$wr/keys/id_ed25519.pub"
 printf 'not a real key\n' > "$wr/keys/id_ed25519"; chmod 600 "$wr/keys/id_ed25519"
@@ -361,7 +418,8 @@ cfgw() {   # cfgw [--no-kh] <extra lines...>: the wizard's config, every path in
 }
 # the environment of every run of the copy of pbo: every path in $wr; WQM: the
 # VMs `qm` knows (their configs in $wr/qemu), WSFTP_RC: the sftp login's exit
-# status, WSHARED: a cluster-shared config file. CACHE_DIR's schema default is
+# status, WSHARED: a cluster-shared config file, WDOWN/WDENY/WINITRC/WSNAPS:
+# the fake restic's FAKE_RESTIC_* (above). CACHE_DIR's schema default is
 # $wr/dcache, so that a config without a CACHE_DIR line stays in the run
 # directory too.
 wenv() {
@@ -370,13 +428,17 @@ wenv() {
         MOCK_SYSTEMCTL_ENABLED="" MOCK_PVESH_JSON="$wr/resources.json" MOCK_FINDMNT="$wr/mounts" MOCK_CONF_DIR="$wr/lxc"
         MOCK_QM_VMIDS="${WQM-}" MOCK_QM_CONF_DIR="$wr/qemu" MOCK_SFTP_RC="${WSFTP_RC:-0}"
         TEST_GUARD_SHARED="${WSHARED-}" TEST_GUARD_CACHE_DEFAULT="$wr/dcache"
-        PBO_PVE_PLUGIN_PATH="$wr/none/PboPlugin.pm" PBO_PVE_TEMPLATE_DIR="$wr/none/templates")
+        PBO_PVE_PLUGIN_PATH="$wr/none/PboPlugin.pm" PBO_PVE_TEMPLATE_DIR="$wr/none/templates"
+        FAKE_RESTIC_DIR="$wr/frepos" FAKE_RESTIC_DOWN="${WDOWN-}" FAKE_RESTIC_DENY="${WDENY-}"
+        FAKE_RESTIC_INIT_RC="${WINITRC-}" FAKE_RESTIC_SNAPS="${WSNAPS-}")
 }
 # WIZ <answer>...: pbo setup with the answers on stdin, one per line ("" is
-# Enter; after the last one the input ends: every question left takes its
-# default); output in $out, exit status in $rc
-WIZ() { wenv; out="$(printf '%s\n' "$@" | env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" setup 2>&1)"; rc=$?; }
-WIZ0() { wenv; out="$(env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" "$@" setup </dev/null 2>&1)"; rc=$?; }   # WIZ0 [global flags]: no answers at all
+# Enter), then Enter for every question left (the wizard stops at the end of
+# the input: 64); output in $out, exit status in $rc
+WIZ() { wenv; out="$({ printf '%s\n' "$@"; yes '' | head -n 200; } | env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" setup 2>&1)"; rc=$?; }
+# WIZE <answer>...: the answers and nothing after them: the input ends after the last one
+WIZE() { wenv; out="$(printf '%s\n' "$@" | env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" setup 2>&1)"; rc=$?; }
+WIZ0() { wenv; out="$(yes '' | head -n 200 | env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" "$@" setup 2>&1)"; rc=$?; }   # WIZ0 [global flags]: Enter at every question
 effw() { wenv; env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" config get "$1" </dev/null 2>&1; }   # KEY's effective value, as pbo reads every file
 rdw() { env -i bash -c 'source "$1" >/dev/null 2>&1; printf %s "${!2-}"' _ "${2:-$wr/config}" "$1"; }   # KEY as bash reads the config
 noguard() { [[ "$out" != *run_dir_guard* ]]; }
@@ -432,10 +494,19 @@ grep -qx 'systemctl enable --now pbo.timer' "$wr/calls" && ! grep -q 'enable --n
 grep -q 'audit: config set file=.*RESTIC_OFFSITE_REPO=' "$wr/log/pbo.log" && grep -q 'RESTIC_SFTP_COMMAND=<secret>' "$wr/log/pbo.log" \
     && ok "wizard: its config changes are audit-logged (the secret masked)" || bad "wizard audit: $(grep -c audit "$wr/log/pbo.log" 2>&1)"
 # what only doctor --fix does: the config 0644 -> 0600, its FIXED line, the audit record
-[[ $rc == 0 && "$out" == *"Health check (pbo doctor --fix)"* && "$out" == *"Setup complete"* ]] \
+[[ "$out" == *"Health check (pbo doctor --fix)"* ]] \
     && [[ "$(stat -c %a "$wr/config")" == 600 && "$out" == *"FIXED"*"$wr/config"* ]] && grep -q "perms fix $wr/config mode 0644->0600" "$wr/log/pbo.log" \
     && ok "wizard: the last step runs pbo doctor --fix (the config made 0600) and shows its report" \
     || bad "wizard end: rc=$rc mode=$(stat -c %a "$wr/config") $(grep 'perms fix' "$wr/log/pbo.log") $out"
+# a first setup: no guest has a snapshot yet, so doctor finds problems: the
+# wizard exits with doctor's status and says so instead of "Setup complete"
+[[ $rc == 69 && "$out" != *"Setup complete"* && "$out" == *"not everything worked"* && "$out" == *"the health check: pbo doctor found problems (exit 69"* \
+   && "$out" == *"a guest with no snapshot yet"* ]] && grep -qE 'FAIL  guest [0-9]+ has NO snapshot' <<<"$out" \
+   && [[ "$(sed -n '/not everything worked/,/Fix that/p' <<<"$out" | grep -c '^    - ')" == 1 && "$out" != *"the Proxmox integration:"* ]] \
+    && ok "wizard: a doctor that finds problems fails the wizard (69): the closing text names it, no 'Setup complete'" || bad "wizard doctor fail: rc=$rc $out"
+[[ -s "$wr/frepos/$(printf '%s' "$wr/fs/big/pbo-cache/repo" | tr -c 'A-Za-z0-9._-' '_')/config" ]] || [[ -e "$wr/frepos/$(printf '%s' "$wr/fs/big/pbo-cache/repo" | tr -c 'A-Za-z0-9._-' '_')/config" ]] \
+    && [[ "$out" == *"cache repo $wr/fs/big/pbo-cache/repo: no repo yet"* && "$out" == *"offsite repo sftp:***@backup.example:pbo: no repo yet"* ]] \
+    && ok "wizard DR key: a first setup probes both targets (no repo yet), generates the key, init makes the repos" || bad "wizard probe first: $out"
 
 # a re-run that keeps every answer changes nothing: not the config, not
 # known_hosts, and no timer the first run left off is enabled
@@ -503,7 +574,7 @@ cp "$wr/kh.first" "$wr/known_hosts"
 WIZ "" "$wr/cache-r1" "" 2 "" "" "" "" "" "" n
 [[ "$(rdw CACHE_DIR)" == "$wr/cache-r1" && "$(rdw RESTIC_OFFSITE_REPO)" == "sftp:pbo@backup.example:pbo" && -z "$(rdw RESTIC_SFTP_COMMAND)" ]] \
     && [[ "$out" == *"Configured: SFTP backup.example, user pbo, port 22"* && "$out" != *"user ***"* && "$out" != *"is not a user name"* ]] \
-    && [[ "$out" != *"The offsite repo changes"* && $rc == 0 ]] && noguard \
+    && [[ "$out" != *"The offsite repo changes"* && "$out" != *"The input ended"* ]] && noguard \
     && ok "wizard: after a cache move the sftp repo keeps its user (not the masked form), change + Enter keeps the repo" \
     || bad "wizard refresh masked: rc=$rc $(grep -E 'CACHE|OFFSITE|SFTP' "$wr/config") $out"
 
@@ -631,7 +702,7 @@ WIZ "" "" 2 "" "" 22 "" "$wr/home/.ssh/id_ed25519" "" n
 # setup): trust on first use needs accept-new, or the first timer run fails
 : > "$wr/home/.ssh/known_hosts"
 cfgw "RESTIC_OFFSITE_REPO=sftp:old@h.example:pbo"
-WSFTP_RC=1 WIZ "" "" 2 "" "" "" "" "" "" n
+WSFTP_RC=1 WIZ "" "" 2 "" "" "" "" "" "" n n
 [[ "$(rdw RESTIC_SFTP_COMMAND)" == "ssh old@h.example -p 22 -i $wr/home/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -s sftp" ]] \
     && [[ "$out" == *"Going on without a verified connection"* && "$out" == *"trusted on first use (accept-new)"* ]] && noguard \
     && ok "wizard sftp: not pinned, a host key ssh never recorded: RESTIC_SFTP_COMMAND with StrictHostKeyChecking=accept-new" || bad "wizard sftp accept-new: $(grep SFTP "$wr/config") $out"
@@ -666,6 +737,149 @@ WSHARED="$wr/shared.cfg" WIZ "" "" 2 1 backup.example 2222 pbo "$wr/keys/id_ed25
     && grep -qx 'OFFSITE_APPEND_ONLY=false' "$wr/config" && ! grep -qE '^RESTIC_REST_(USERNAME|PASSWORD_FILE)=' "$wr/config" && noguard \
     && ok "wizard offsite: rest-server -> sftp turns a shared OFFSITE_APPEND_ONLY=true off on this node" \
     || bad "wizard append-only shared: $(grep -E 'APPEND|REST|OFFSITE' "$wr/config"); $(WSHARED="$wr/shared.cfg" effw OFFSITE_APPEND_ONLY) $out"
+
+# --- the end of the input stops the wizard, in every step (0.6.1) -----------------------------
+# The first setup's answers, cut short at the start of a step: pbo setup exits
+# 64, says where, never "Setup complete", and nothing the steps after it
+# would set is written. Each run starts fresh (no DR key, no repo, no pinned
+# host key, an empty cache directory).
+FIRST=("" "$wr/fs/big/pbo-cache" "" 1 backup.example 2222 pbo "$wr/keys/id_ed25519" "" "" "" ""
+       y abc 0 3 "" "" x 12 "" "" "" "" y nightly "*-*-* 03:30:00" "" "" "" y n n n)
+fresh() {
+    CFGW_CACHE="$wr/cache-eof" cfgw; rm -rf "$wr/cache-eof" "$wr/fs/big/pbo-cache" "$wr/frepos" "$wr/units"
+    mkdir -p "$wr/cache-eof" "$wr/units"; rm -f "$wr/pass" "$wr/known_hosts"; : > "$wr/calls"; rm -f "$wr/sysd"/*.enabled
+}
+# eofat N STEP: the first N answers only; the wizard stops in STEP
+eofat() {
+    fresh; WIZE "${FIRST[@]:0:$1}"
+    [[ $rc == 64 && "$out" == *"setup stops in the $2 step (exit 64)"* && "$out" != *"Setup complete"* && "$out" != *"not everything worked"* ]] && noguard
+}
+errs=''
+eofat 0 cache && [[ "$(rdw CACHE_DIR)" == "$wr/cache-eof" ]] || errs+="0: rc=$rc $(tail -3 <<<"$out"); "
+eofat 2 cache && [[ "$(rdw CACHE_DIR)" == "$wr/cache-eof" && ! -e "$wr/fs/big/pbo-cache" ]] || errs+="2: rc=$rc $(tail -3 <<<"$out"); "
+eofat 8 offsite && [[ -z "$(rdw RESTIC_OFFSITE_REPO)" ]] || errs+="8: rc=$rc $(rdw RESTIC_OFFSITE_REPO) $(tail -3 <<<"$out"); "
+eofat 10 drkey && [[ "$(rdw RESTIC_OFFSITE_REPO)" == "sftp:pbo@backup.example:pbo" && ! -e "$wr/pass" ]] || errs+="10: rc=$rc $(tail -3 <<<"$out"); "
+eofat 11 mode && [[ -s "$wr/pass" && ! -e "$wr/frepos" && -z "$(rdw BACKUP_MODE)" ]] || errs+="11: rc=$rc $(tail -3 <<<"$out"); "
+eofat 21 ntfy && [[ "$(rdw KEEP_OFFSITE_MONTHLY)" == 12 && ! -e "$wr/frepos" ]] || errs+="21: rc=$rc $(tail -3 <<<"$out"); "
+eofat 23 integration && [[ -d "$wr/frepos" ]] && ! grep -q 'systemctl enable' "$wr/calls" || errs+="23: rc=$rc $(tail -3 <<<"$out"); "
+eofat 24 schedule && [[ -z "$(rdw SCHEDULE_BACKUP)" ]] && ! grep -q 'systemctl enable' "$wr/calls" || errs+="24: rc=$rc $(tail -3 <<<"$out"); "
+eofat 29 schedule && [[ -z "$(rdw SCHEDULE_BACKUP)" ]] || errs+="29: rc=$rc $(tail -3 <<<"$out"); "
+eofat 30 schedule && [[ "$(rdw SCHEDULE_BACKUP)" == "*-*-* 03:30:00" ]] && ! grep -q 'systemctl enable' "$wr/calls" || errs+="30: rc=$rc $(tail -3 <<<"$out"); "
+eofat 31 schedule && grep -qx 'systemctl enable --now pbo.timer' "$wr/calls" && ! grep -q 'enable --now pbo-verify.timer' "$wr/calls" \
+    && [[ "$out" != *"Health check"* ]] || errs+="31: rc=$rc $(tail -3 <<<"$out"); "
+[[ -z "$errs" ]] && ok "wizard: short input in each step (cache, offsite, DR key, mode, ntfy, integration, schedule, timers) exits 64, names the step, writes nothing after it, never 'Setup complete'" \
+    || bad "wizard short input: $errs"
+fresh; WIZE "${FIRST[@]}"
+[[ $rc == 69 && "$out" == *"not everything worked"* && "$out" != *"The input ended"* ]] && noguard \
+    && ok "wizard: the whole first setup on exactly its answers runs to the end (doctor's 69: no snapshot yet)" || bad "wizard exact answers: rc=$rc $(tail -5 <<<"$out")"
+
+# the success path: the same first setup where every guest has a fresh
+# snapshot already (FAKE_RESTIC_SNAPS): doctor passes, setup exits 0 and says
+# "Setup complete"
+now="$(date +%s)"
+jq -c --arg t "$(date -u -d "@$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)" --arg p "$wr/fs/big/pbo-cache" \
+    '[.[] | {time: $t, tags: ["vmid=\(.vmid)"], paths: ["\($p)/\(.vmid)"], hostname: "pve1", id: "0\(.vmid)", short_id: "0\(.vmid)"}]' \
+    <(jq -c --argjson q "${WQM:-0}" '. + (if $q > 0 then [{vmid: $q}] else [] end)' "$wr/resources.json") > "$wr/snaps.json"
+fresh; WSNAPS="$wr/snaps.json" WIZE "${FIRST[@]}"
+[[ $rc == 0 && "$out" == *"Setup complete"* && "$out" != *"not everything worked"* && "$out" != *"The input ended"* ]] && noguard \
+   && grep -qE 'OK  guest [0-9]+ newest snapshot 1h old' <<<"$out" \
+    && ok "wizard: a first setup whose guests have a snapshot already ends in 'Setup complete' (exit 0)" || bad "wizard success: rc=$rc $(tail -25 <<<"$out")"
+
+# init fails in the wizard: setup stops there with init's own status, and
+# nothing after it runs (no guest set, no schedule, no timer)
+fresh; WINITRC=1 WIZ "${FIRST[@]:0:21}"
+o1="$out"; r1=$rc
+rc0="$(WINITRC=1; wenv; env -u PBO_SELF_BIN "${W_ENV[@]}" "$wbin" init </dev/null >/dev/null 2>&1; echo $?)"
+out="$o1"
+[[ $r1 != 0 && $r1 == "$rc0" && "$o1" == *"init failed (exit $r1)"* && "$o1" == *"repo init failed"* && "$o1" == *"Setup stopped in the init step"* \
+   && "$o1" != *"Setup complete"* && "$o1" != *"not everything worked"* && "$o1" != *"Proxmox integration —"* ]] \
+   && ! grep -q 'systemctl enable' "$wr/calls" && [[ -z "$(rdw SCHEDULE_BACKUP)" ]] && noguard \
+    && ok "wizard: a failed repo init stops setup in the init step with init's status ($rc0), nothing after it runs" \
+    || bad "wizard init fails: rc=$r1 init=$rc0 $(tail -8 <<<"$o1")"
+rm -rf "$wr/frepos"
+
+# a fresh install.sh host has no CACHE_DIR line (install.sh writes no config):
+# on a first setup the suggestion is the default, Enter takes it
+fresh; CFGW_CACHE=none cfgw; rm -rf "$wr/dcache"
+WIZE "" "" ""
+[[ "$(rdw CACHE_DIR)" == "$wr/fs/big/pbo-cache" && -d "$wr/fs/big/pbo-cache" && "$out" == *"CACHE_DIR is $wr/fs/big/pbo-cache"* ]] && noguard \
+    && ok "wizard cache: no CACHE_DIR in the config on a first setup: the suggestion is the default (Enter, then yes, moves nothing and sets it)" \
+    || bad "wizard cache suggestion fresh: $(rdw CACHE_DIR) $out"
+
+# --- the DR key step probes the target first (0.6.1) -------------------------------------------
+# A repo that exists already on a rest-server (the fake restic's repo for it
+# holds the key "right-key"): the wizard never offers a new key, asks for the
+# existing one and writes it only once it opens the repo.
+san() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+KREPO=rest:https://rest.example:8000/pve1/off-k
+krepo() {   # krepo: a config with that offsite repo only (no cache repo), the repo there, no DR key
+    rm -rf "$wr/frepos"; mkdir -p "$wr/frepos/$(san "$KREPO")"
+    printf 'right-key' > "$wr/frepos/$(san "$KREPO")/key"; : > "$wr/frepos/$(san "$KREPO")/config"
+    CFGW_CACHE="$wr/cache-eof" cfgw "RESTIC_OFFSITE_REPO=$KREPO" "LOCAL_REPO=false"; rm -f "$wr/pass"
+}
+printf 'wrong-key\n' > "$wr/k-wrong"; printf '# exported\nRESTIC_OFFSITE_REPO=%s\nRESTIC_PASSWORD=right-key\n' "$KREPO" > "$wr/k-export"
+# an edited export whose last line, the key, has no newline: the key alone
+printf '# exported\nRESTIC_OFFSITE_REPO=%s\nRESTIC_PASSWORD=right-key' "$KREPO" > "$wr/k-export-nonl"
+printf 'plain-key\n' > "$wr/k-plain"
+kf="$(bash -c 'source lib/menu.sh; _setup_key_from_file "$1"; printf "|"; _setup_key_from_file "$2"; printf "|"; _setup_key_from_file "$3"' _ \
+      "$wr/k-export-nonl" "$wr/k-export" "$wr/k-plain" 2>&1)"
+[[ "$kf" == 'right-key|right-key|plain-key' ]] && ok "wizard DR key file: the RESTIC_PASSWORD= line of an export (with or without a final newline), else the whole file" \
+    || bad "key from file: $kf"
+chmod 600 "$wr/k-wrong" "$wr/k-export"
+krepo
+WIZE "" "" "" "$wr/k-wrong" y
+[[ $rc == 64 && "$out" == *"offsite repo $KREPO: a repo is there"* && "$out" == *"A repo exists there already"* \
+   && "$out" == *"That key does not open the offsite repo $KREPO: not written"* && "$out" == *"'y' is not an absolute path"* ]] \
+    && [[ ! -e "$wr/pass" ]] && noguard \
+    && ok "wizard DR key: a repo exists: no new key is offered (a 'y' is read as the key's file), a key that does not open it is refused and nothing is written" \
+    || bad "wizard drkey wrong: rc=$rc $(ls "$wr/pass" 2>&1) $out"
+krepo
+WIZ "" "" "" "$wr/k-export"
+[[ "$(cat "$wr/pass" 2>&1)" == right-key && "$(stat -c %a "$wr/pass")" == 600 && "$out" == *"offsite repo $KREPO: a repo is there, the key opens it"* \
+   && "$out" != *"Generated:"* && "$out" != *"The input ended"* ]] && noguard \
+    && ok "wizard DR key: the key from an export file that opens the repo is written (0600), never a generated one" || bad "wizard drkey export: $(cat "$wr/pass" 2>&1) $out"
+krepo
+WIZ "" "" "" "" "right-key"
+[[ "$(cat "$wr/pass" 2>&1)" == right-key && "$out" != *right-key* ]] && noguard \
+    && ok "wizard DR key: ... or typed without echo (never shown)" || bad "wizard drkey typed: $(cat "$wr/pass" 2>&1) $out"
+# the target cannot be reached: asked, "a repo is there" by default
+krepo
+WDOWN=off-k WIZE "" "" "" "" "$wr/k-export" 1
+[[ ! -e "$wr/pass" && "$out" == *"Whether a repo exists there cannot be told now"*"connection refused"* && "$out" == *"Give the DR key that repo was made with"* \
+   && $rc == 64 ]] && noguard \
+    && ok "wizard DR key: a target that cannot be checked: asked (yes by default), a key that cannot be checked is not written unless picked" \
+    || bad "wizard drkey unknown other key: rc=$rc $(cat "$wr/pass" 2>&1) $out"
+krepo
+WDOWN=off-k WIZE "" "" "" "" "$wr/k-export" 2
+[[ "$(cat "$wr/pass" 2>&1)" == right-key ]] && noguard \
+    && ok "wizard DR key: ... and taken unchecked when that is picked" || bad "wizard drkey unknown: $(cat "$wr/pass" 2>&1) $out"
+# ... and the way back: "there is no repo there" after a key was given
+krepo
+WDOWN=off-k WIZE "" "" "" "" "" "typed-key-1" 3 y
+[[ -s "$wr/pass" && "$(cat "$wr/pass")" != typed-key-1 && "$(stat -c %a "$wr/pass")" == 600 && "$out" == *"Generated:"* && "$out" != *typed-key-1* ]] && noguard \
+    && ok "wizard DR key: a target that cannot be checked, yes to 'holds a repo' by mistake: 'no repo there' goes back to generating a key (written, 0600)" \
+    || bad "wizard drkey way back: $(cat "$wr/pass" 2>&1) $out"
+# a directory repo restic cannot read (permission denied: NFS with
+# root_squash) is no new target: asked, "a repo is there" by default
+rm -rf "$wr/frepos" "$wr/nfs-repo"; mkdir -p "$wr/nfs-repo"
+CFGW_CACHE="$wr/cache-eof" cfgw "RESTIC_OFFSITE_REPO=$wr/nfs-repo" "LOCAL_REPO=false"; rm -f "$wr/pass"
+WDENY=nfs-repo WIZE "" "" "" ""
+[[ $rc == 64 && "$out" == *"offsite repo $wr/nfs-repo: cannot tell"*"permission denied"* && "$out" == *"Whether a repo exists there cannot be told now"* \
+   && "$out" == *"Give the DR key that repo was made with"* && "$out" != *"Generated:"* && ! -e "$wr/pass" ]] && noguard \
+    && ok "wizard DR key: a directory repo restic may not read (permission denied) is not taken for a new one: asked, a repo there by default" \
+    || bad "wizard drkey denied dir: rc=$rc $out"
+rm -rf "$wr/nfs-repo"
+krepo
+WDOWN=off-k WIZE "" "" "" n y
+[[ -s "$wr/pass" && "$(cat "$wr/pass")" != right-key && "$out" == *"Generated:"* ]] && noguard \
+    && ok "wizard DR key: ... and a no there is a new target: generating stays the default" || bad "wizard drkey unknown no: $(cat "$wr/pass" 2>&1) $out"
+# a DR key file that does not open the repo the target holds: setup stops, the key file stays
+krepo; printf 'another-key\n' > "$wr/pass"; chmod 600 "$wr/pass"
+WIZ "" "" ""
+[[ $rc == 1 && "$(cat "$wr/pass")" == another-key && "$out" == *"The DR key in $wr/pass does not open the offsite repo $KREPO"* \
+   && "$out" == *"Setup stopped in the drkey step"* && "$out" != *"Setup complete"* ]] && noguard \
+    && ok "wizard DR key: a key file that does not open the existing repo stops setup in the DR key step (the file kept)" || bad "wizard drkey kept wrong: rc=$rc $out"
+rm -f "$wr/pass"; rm -rf "$wr/frepos"
 
 rm -f "$PICK_ERR"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

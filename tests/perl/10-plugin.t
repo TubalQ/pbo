@@ -203,6 +203,7 @@ spew($dpkg, join("\n",
     "Package: pve-container\nStatus: install ok installed\nVersion: 6.1.28\n",
     "Package: unrelated\nStatus: install ok installed\nVersion: 99\n"));
 $PVE::Storage::Custom::PboPlugin::DPKG_STATUS = $dpkg;
+$PVE::Storage::Custom::PboPlugin::DRIFT_STAMP = "$tmp/plugin-version-drift";
 
 my $stage = sub {   # a pbo that stages the archive and prints its JSON result
     my ($cmd, $p) = @_;
@@ -225,6 +226,23 @@ spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.2.42
 $P->activate_volume('pbo', $cat, "backup/$A3");
 is(scalar(@warnings), 1, 'one drift warning for a newer pve-manager (removed packages ignored)');
 like($warnings[0] // '', qr/pve-manager 9\.2\.42 is newer .*9\.2\.41/, 'drift warning names package and versions');
+@warnings = ();
+$P->activate_volume('pbo', $cat, "backup/$A3");
+is(scalar(@warnings), 0, 'the same newer version again: no second drift warning (the stamp)') or diag(join('', @warnings));
+spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.2.43\n");
+@warnings = ();
+$P->activate_volume('pbo', $cat, "backup/$A3");
+is(scalar(@warnings), 1, 'another newer version: warned once more');
+like($warnings[0] // '', qr/pve-manager 9\.2\.43 is newer/, '... naming the new version');
+@warnings = ();
+$P->activate_volume('pbo', $cat, "backup/$A3");
+is(scalar(@warnings), 0, '... and only once');
+{
+    local $PVE::Storage::Custom::PboPlugin::DRIFT_STAMP = "$tmp/no-such-dir/stamp";
+    @warnings = ();
+    $P->activate_volume('pbo', $cat, "backup/$A3");
+    is(scalar(@warnings), 1, 'a stamp that cannot be written: the warning is still given');
+}
 
 @PVE::Tools::CALLS = ();
 ok($P->activate_volume('pbo', $spl, "backup/$S1"), 'activate_volume of a spool archive');

@@ -3,6 +3,123 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
+## 0.6.1 (unreleased)
+
+Fixes to 0.6.0 that change no contract: every JSON field, exit code and flag of
+0.6.0 stays as it was.
+
+### Fixed
+
+- **`pbo --dry-run init` writes nothing.** It used to ignore `--dry-run` and
+  create the repos. It now probes each repo read only (`restic cat config`
+  with `--no-lock` and `--no-cache`) and prints what init would do: keep it,
+  create it (with the `restic init` it would run), or fail on a key that does
+  not open it. No directory, lock, log or audit line is written. The JSON
+  object keeps `status`, `ok` and `engine`, with `status` `dry_run` and a
+  `repos` list (tier, repo, state, action); the exit status is the one init
+  would end with where the probe can tell (78 without a DR key or with one
+  that does not open a repo, 75 during a cache move, 69 when a repo cannot be
+  checked).
+- **The setup wizard stops at the end of its input.** A question that got no
+  answer used to take its default, so answers piped to `pbo setup` that ran
+  short set up the rest of the host with defaults nobody chose (the
+  integration step did so too). Every question now stops the wizard there
+  with exit 64, names the step, and changes nothing after that question.
+- **The setup wizard's exit status and closing text.** It returned 0 and said
+  "Setup complete" when the repo init, the Proxmox integration step or the
+  final `pbo doctor --fix` failed. A failed init stops it with init's exit
+  status; a failed integration step (the plugin missing, `pbo integrate
+  enable` or `disable` failing) or a doctor that finds problems lets the
+  remaining steps run, and the wizard then lists what failed and exits with
+  the first failure's status. "Setup complete" means every step worked. Right
+  after a first setup doctor still reports each guest without a snapshot as a
+  FAIL, so the wizard ends with 69 until the first backup ran; it says so.
+  `install.sh` reports the wizard's status on a line of its own and keeps its
+  own exit status: the install itself is complete, so a first install that
+  ran the wizard still exits 0.
+- **The DR key step no longer offers a new key for a repo that exists.** It
+  probes the target first. When a repo is already there (a second node of a
+  cluster, a host that restores after a loss) it asks for that repo's key (a
+  password file, the menu's export, or typed without echo), checks that the
+  key opens the repo, and writes it only then; a key that does not open it is
+  refused. A new target keeps generating as the default. When the probe cannot
+  tell (the target is unreachable), the wizard asks whether a repo exists
+  there, yes by default; a key given there that cannot be checked either can
+  be dropped for a generated one ("there is no repo there"). An existing key
+  file that does not open the repo at the target stops the wizard instead of
+  failing later in init. A key file is read up to its last line, also without
+  a final newline. The probe reads restic's exit codes 10 and 12 (restic 0.17
+  and later) and, for 0.14 to 0.16, restic's messages, each backend's
+  not-exist error included. Where neither decides, a rest-server is asked for
+  `<url>/config` itself (404: no repo; with restic before 0.17 it is asked
+  first, since that restic retries the 404 until the probe's timeout), and a
+  directory repo is judged by its config file only when that file is really
+  missing (not when restic or the stat report permission denied, a stale NFS
+  handle or another access error: an NFS export with root_squash reads like
+  an empty directory). Anything else is "cannot tell".
+- **Storage ids follow Proxmox VE's rule.** `pbo integrate enable` checks
+  `PVE_STORAGE_ID` the way PVE's `parse_id` does: at least two characters, a
+  letter first, letters, digits, `-`, `_` and `.` after it, and a letter or
+  digit last (`pbo.node1` is valid, `pbo-` and `pbo.` are not). It refuses an
+  invalid id before it takes its lock or creates anything.
+- **The plugin's "newer than tested" warning.** It was written to the task log
+  of every GUI restore. It is now given once per installed (package, version)
+  and remembered in `/var/lib/pbo/plugin-version-drift`; a later upgrade to
+  another version warns again. `pbo doctor` still names the drift on every run.
+- **The Storage Box reminder.** `run-schedule` warned about Storage Box
+  snapshots on every run and for every kind of target, a local directory
+  included. It now warns only when the offsite target is a Storage Box whose
+  snapshots are not confirmed, at most once a day (a stamp in `STATE_DIR`).
+  Doctor's ransomware-backstop line says the same for every target, in words
+  that name no provider.
+- **Messages name the steps of the layout pbo was installed with.** The hints
+  to install or remove the Proxmox integration say `apt install
+  pbo-pve-storage` / `apt remove pbo-pve-storage` on the `.deb` layout
+  (`/usr/lib/pbo`), `install.sh --integration ...` on the install.sh layout
+  (`/usr/local/lib/pbo`), and the checkout's own `install.sh` when pbo runs
+  from a source tree, instead of always both. A missing notification template
+  points at `pbo doctor --fix` instead of install.sh.
+- **Help texts.** `pbo help` names every kind of target (not only SFTP and an
+  append-only rest-server), says what `init --dry-run` does and that setup
+  and menu take no `--dry-run`, and lists the notification templates under
+  doctor. The menu's help shows the configured DR key file instead of a fixed
+  path, and its setup entry lists the steps the wizard really runs.
+  `RETENTION_GROUP_BY=paths` was said to go in 0.7 (the schema, the examples,
+  README, the 0.6.0 entry below): it goes in 0.8.
+
+### Changed
+
+- **`install.sh` writes no live config on a host.** It used to copy
+  `etc/config.example` to `/etc/pbo/config`, which pinned every key the
+  example sets (a `CACHE_DIR` line among them) and made a fresh host look
+  configured. A fresh install now has no config until `pbo setup` writes one
+  (pbo runs on the schema defaults until then), and the wizard's cache step
+  offers its suggestion by default. The examples go to `/usr/local/share/pbo/`
+  (the `.deb`: `/usr/share/doc/pbo/examples/`). A janitor still gets its
+  first config from the janitor example, whose `RESTIC_OFFSITE_REPO`
+  placeholder is now commented out, so the janitor points at no repo until
+  one is set.
+- **The `.deb`'s postinst runs the permission pass** (`pbo doctor --fix
+  --perms-only`) as `install.sh` does, when a config exists. It reports what
+  it finds and never fails the install.
+- **`pbo doctor` checks the Proxmox notification templates** pbo installs into
+  `/etc/pve/notification-templates/default` on a Proxmox node whose alerts go
+  through Proxmox notifications (not with `NOTIFY_PVE=false`, nor in `auto`
+  mode with ntfy configured): each one present, and whether it is the one
+  this pbo ships. A missing one is a WARN, and `pbo doctor --fix` installs it
+  (a plain copy into pmxcfs, which needs quorum; it warns otherwise). One
+  that differs is reported without a WARN and never replaced: the directory
+  is cluster-wide, and during a rolling upgrade another node's pbo may have
+  installed its own (install.sh and the package install this one's). pbo
+  never writes to `/usr/share/pve-manager/templates`.
+- **`RETENTION_GROUP_BY=paths`** keeps working, and `pbo doctor` now warns
+  that it is removed in 0.8, with the commands to check and switch.
+- **CI checks the minimum Proxmox VE versions**: the `pbo-pve-storage`
+  Depends, `install.sh`, `lib/integrate.sh` and README must name the same ones.
+- `tests/init.sh` (new): `pbo --dry-run init` under the run-directory guard in
+  a mode where every writer of pbo stops it, and the repo probe against real
+  local restic repos and a stub of restic's old and new answers.
+
 ## 0.6.0 (2026-11-25)
 
 The config becomes data with a schema (ADR 0009): pbo reads `/etc/pbo/config`
@@ -95,7 +212,7 @@ so read the 0.5.0 entry below first.
   one guest, so the next prune forgets snapshots 0.5 kept for it. A repo where no
   guest is split gets exactly the 0.5 restic calls, on the cache tier and
   offsite alike. Doctor names the split guests. `RETENTION_GROUP_BY=paths` keeps
-  the 0.5 grouping for this release; it is removed in 0.7.
+  the 0.5 grouping; it is deprecated and removed in 0.8 (was: 0.7; see 0.6.1).
 - **The `.deb`'s dependencies.** `restic (>= 0.14.0)` (was `>= 0.16`), so a
   distribution that ships 0.14 can install it, and the new `acl` (`setfacl`,
   `getfacl`) next to `util-linux`. `install.sh` installs `acl` and `util-linux`
@@ -234,7 +351,7 @@ Added
   verify) and finds that its config changed meanwhile (a cache move, `config
   set`) starts itself again with the new config, at most three times in a row.
 - **Retention per guest** and `RETENTION_GROUP_BY` (advanced; `guest`, or
-  `paths` for the 0.5 grouping, removed in 0.7; any other value is treated as
+  `paths` for the 0.5 grouping, removed in 0.8 (was: 0.7); any other value is treated as
   `paths` and flagged, so a typo never turns on deletions). Doctor names the
   guests whose snapshots lie under more than one path (a warning with `paths`,
   whose old paths are never pruned) and a guest that shares a path with another

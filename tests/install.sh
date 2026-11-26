@@ -410,6 +410,46 @@ grep -q 'systemctl disable --now pbo-web.service pbo-web-helper.service' "$MOCK_
 out="$(PBO_INSTALL_LIBDIR="$W/lib" PBO_INSTALL_UNITDIR="$W/units" PBO_INSTALL_CFGDIR="$W/etc" S 'inst_web_remove; echo "removed=$WEB_REMOVED"' 2>&1)"
 [[ "$out" == "removed=0" ]] && ok "inst_web_remove: nothing to remove → silent, WEB_REMOVED=0" || bad "web remove twice: $out"
 
+# --- the config: none for a host, the janitor's from its example (0.6.1) ---------------------------------
+C="$RUN/cfg"; rm -rf "$C"; mkdir -p "$C/etc"
+CI() { PBO_INSTALL_CFGDIR="$C/etc" PBO_INSTALL_SHAREDIR="$C/share" S "$1" 2>&1; }
+out="$(CI 'inst_config')"
+[[ ! -e "$C/etc/config" && ! -e "$C/etc/config.example" ]] && cmp -s "$C/share/config.example" etc/config.example \
+    && cmp -s "$C/share/config.janitor.example" etc/config.janitor.example && [[ "$out" == *"no $C/etc/config yet: '"*" setup' writes it"* ]] \
+    && ok "inst_config on an empty config directory: no live config (setup writes it), the examples in the share directory" || bad "inst_config fresh: $out; $(ls -R "$C")"
+printf 'old example\n' > "$C/etc/config.example"
+out="$(CI 'inst_config')"
+cmp -s "$C/etc/config.example" etc/config.example && [[ ! -e "$C/etc/config" ]] \
+    && ok "inst_config: an example an older install.sh left in the config directory is refreshed, still no config" || bad "inst_config stale example: $out"
+printf 'KEEP_LOCAL=2\n' > "$C/etc/config"; cp "$C/etc/config" "$C/config.before"
+out="$(CI 'inst_config')"
+cmp -s "$C/etc/config" "$C/config.before" && [[ "$out" == *"already exists, left untouched"* ]] && ok "inst_config: an existing config is left as it is" || bad "inst_config existing: $out"
+rm -rf "${C:?}/etc"; mkdir -p "$C/etc"
+out="$(CI 'ROLE=janitor; JUSER=backupuser; inst_config')"
+[[ -f "$C/etc/config" ]] && grep -qx 'JANITOR_USER=backupuser' "$C/etc/config" && grep -q '^#RESTIC_OFFSITE_REPO=' "$C/etc/config" \
+    && ! grep -q '^RESTIC_OFFSITE_REPO=' "$C/etc/config" && [[ "$out" == *"set RESTIC_OFFSITE_REPO (commented out)"* ]] \
+    && ok "inst_config --janitor: its config from the janitor example, the repo placeholder commented out (no repo until it is set)" || bad "inst_config janitor: $out; $(grep -E 'JANITOR_USER|OFFSITE_REPO' "$C/etc/config" 2>&1)"
+# the janitor example itself: no live repo path
+! grep -qE '^RESTIC_OFFSITE_REPO=' etc/config.janitor.example && ok "etc/config.janitor.example sets no repo path (the placeholder is a comment)" || bad "janitor example: $(grep -n OFFSITE_REPO etc/config.janitor.example)"
+
+# --- the setup wizard at the end of an install -------------------------------------------------------
+# a first setup ends with doctor's 69 (no guest has a snapshot before the first
+# backup): install.sh reports it and still exits 0, as main runs it (set -e)
+printf '%s\n' '#!/usr/bin/env bash' 'echo "pbo $* integration=${PBO_SETUP_INTEGRATION:-}"' '[ "$1" = setup ] && exit "${FAKE_SETUP_RC:-0}"' 'exit 0' > "$RUN/bin/pbo-setup"
+chmod 755 "$RUN/bin/pbo-setup"
+OS() { PBO_INSTALL_BIN="$RUN/bin/pbo-setup" PBO_INSTALL_TTY="$1" FAKE_SETUP_RC="$2" bash -c 'source ./install.sh; set -Eeuo pipefail; MODE=both; inst_offer_setup; echo "end rc=$?"' 2>&1; }
+out="$(printf 'y\n' | OS 1 69)"; rc=$?
+[[ $rc == 0 && "$out" == *"pbo setup integration=both"* && "$out" == *"'$RUN/bin/pbo-setup setup' ended with exit 69"*"the install itself is complete"* && "$out" == *"end rc=0" ]] \
+    && ok "install: setup ending with 69 after a first install is reported, install.sh still exits 0 (under set -e)" || bad "install setup 69: rc=$rc $out"
+out="$(printf '\n' | OS 1 0)"; rc=$?
+[[ $rc == 0 && "$out" == *"pbo setup integration=both"* && "$out" != *"ended with exit"* && "$out" == *"end rc=0" ]] \
+    && ok "install: Enter runs the wizard; a setup that worked adds no line" || bad "install setup 0: rc=$rc $out"
+out="$(printf 'n\n' | OS 1 69)"; rc=$?
+[[ $rc == 0 && "$out" != *"pbo setup"* && "$out" == *"OK, run '$RUN/bin/pbo-setup setup' whenever you're ready."* ]] \
+    && ok "install: a no to the wizard runs nothing" || bad "install setup no: rc=$rc $out"
+out="$(OS 0 69 </dev/null)"; rc=$?
+[[ $rc == 0 && "$out" != *"pbo setup"* && "$out" == *"Non-interactive install"* ]] && ok "install: no terminal, no wizard" || bad "install setup no tty: rc=$rc $out"
+
 # --- nothing outside run/ -------------------------------------------------------------------------------
 [[ "$(stat -c '%i %Y' "$REAL_PLUGIN" 2>/dev/null || echo none)" == "$real_before" && "$(stat -c '%i %Y' /usr/local/lib/pbo 2>/dev/null || echo none)" == "$libdir_before" ]] \
     && ok "the real plugin path and /usr/local/lib/pbo are untouched" || bad "something outside run/ changed"
