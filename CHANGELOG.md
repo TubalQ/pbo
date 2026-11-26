@@ -119,6 +119,9 @@ Fixes to 0.6.0 that change no contract: every JSON field, exit code and flag of
 - `tests/init.sh` (new): `pbo --dry-run init` under the run-directory guard in
   a mode where every writer of pbo stops it, and the repo probe against real
   local restic repos and a stub of restic's old and new answers.
+- The storage plugin is tested against pve-manager 9.3.1 and libpve-storage-perl
+  9.1.26 (qemu-server 9.2.24, pve-container 6.1.28).
+
 
 ## 0.6.0 (2026-11-25)
 

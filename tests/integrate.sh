@@ -251,7 +251,7 @@ export MOCK_PVEUM_ACL_JSON="$RUN/acl.json" MOCK_PVEUM_ROLE_JSON="$RUN/roles.json
 touch -d '2 days ago' "$RUN/cache/spool/dump/vzdump-lxc-101-2026_01_01-01_00_00.tar"
 mkdir -p "$RUN/state/ingest-copy"; : > "$RUN/state/ingest-copy/101_2026_01_01-01_00_00"; touch -d '2 days ago' "$RUN/state/ingest-copy/101_2026_01_01-01_00_00"
 jq -c '.generated = 1000 | .entries += [{volname:"backup/vzdump-lxc-103-2026_01_01-01_00_00.tar",vmid:103,type:"lxc",ts:"2026_01_01-01_00_00",size:4000000000000000000,snapshots:{cache:"aaaaaaaa",offsite:null},offsite_only:false}]' "$RUN/catalog/index.json" > "$RUN/i.tmp" && mv "$RUN/i.tmp" "$RUN/catalog/index.json"
-MOCK_DPKG_VERSIONS="pve-manager=9.3.1 libpve-storage-perl=9.1.18 qemu-server=9.2.20 pve-container=6.1.24" PJ doctor
+MOCK_DPKG_VERSIONS="pve-manager=9.4.0 libpve-storage-perl=9.1.18 qemu-server=9.2.20 pve-container=6.1.24" PJ doctor
 doctor_has "doctor FAIL: job script replaces the hook" fail "PVE job job-a: its own hook script \\(script: /x/hook\\)"
 doctor_has "doctor FAIL: job compression" fail "PVE job job-a: compression zstd"
 doctor_has "doctor FAIL: job prune-backups (the API's object form)" fail "PVE job job-a: prune-backups keep-last=3"
@@ -267,7 +267,7 @@ doctor_has "doctor WARN: job within PVE_JOB_WINDOW_MIN of pbo.timer" warn "PVE j
 doctor_has "doctor WARN: ACL for a non-root user" warn "user alice@pve has role PVEDatastoreUser on /storage/pbo"
 doctor_lacks "doctor: no ACL warning for NoAccess or root@pam" "bob@pve|root@pam has role"
 doctor_has "doctor WARN: old catalogue" warn "catalogue is [0-9]+ min old"
-doctor_has "doctor WARN: PVE newer than tested" warn "newer than the set the plugin was tested with: pve-manager 9.3.1"
+doctor_has "doctor WARN: PVE newer than tested" warn "newer than the set the plugin was tested with: pve-manager 9.4.0"
 rm -f "$RUN/cache/spool/dump/"vzdump-*; unset MOCK_PVESH_BACKUP_JSON MOCK_PVEUM_ACL_JSON
 P catalog refresh
 printf 'script: /usr/local/bin/other\n' > "$RUN/vzdump.conf"

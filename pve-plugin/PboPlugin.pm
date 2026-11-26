@@ -71,8 +71,8 @@ our $DRIFT_STAMP = '/var/lib/pbo/plugin-version-drift';
 # The package versions this plugin was last verified against (load-only and full
 # smoke tests). activate_volume warns in the task log when one installed is newer.
 our %TESTED = (
-    'pve-manager' => '9.2.41',
-    'libpve-storage-perl' => '9.1.25',
+    'pve-manager' => '9.3.1',
+    'libpve-storage-perl' => '9.1.26',
     'qemu-server' => '9.2.24',
     'pve-container' => '6.1.28',
 );

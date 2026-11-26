@@ -47,7 +47,7 @@ readonly INTEG_MIN_PVE_MANAGER=9.2.29
 readonly INTEG_MIN_LIBPVE_STORAGE=9.1.18
 # The set the plugin was tested with: keep in sync with %TESTED in
 # pve-plugin/PboPlugin.pm (tests/integrate.sh compares them).
-readonly INTEG_TESTED="pve-manager=9.2.41 libpve-storage-perl=9.1.25 qemu-server=9.2.24 pve-container=6.1.28"
+readonly INTEG_TESTED="pve-manager=9.3.1 libpve-storage-perl=9.1.26 qemu-server=9.2.24 pve-container=6.1.28"
 readonly INTEG_PACKAGES="pve-manager libpve-storage-perl qemu-server pve-container"
 readonly INTEG_HOOK_MARKER="# pbo: added by 'pbo integrate enable' (remove with 'pbo integrate disable')"
 readonly PBO_CATALOG_TIMER=pbo-catalog.timer

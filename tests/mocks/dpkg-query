@@ -5,7 +5,7 @@
 # format are expanded, as are \n and \t. A package not listed: "no packages
 # found" on stderr and exit 1 (as dpkg-query does). Logs to $MOCK_LOG.
 [ -n "${MOCK_LOG:-}" ] && echo "dpkg-query $*" >> "$MOCK_LOG"
-vers="${MOCK_DPKG_VERSIONS-pve-manager=9.2.41 libpve-storage-perl=9.1.25 qemu-server=9.2.24 pve-container=6.1.28}"
+vers="${MOCK_DPKG_VERSIONS-pve-manager=9.3.1 libpve-storage-perl=9.1.26 qemu-server=9.2.24 pve-container=6.1.28}"
 fmt='${Package}\t${Version}\n'; pkgs=()
 while [[ $# -gt 0 ]]; do
     case "$1" in

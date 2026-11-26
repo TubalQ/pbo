@@ -197,8 +197,8 @@ my $fakebin = "$tmp/pbo"; spew($fakebin, "#!/bin/sh\nexit 99\n"); chmod(0755, $f
 @PVE::Storage::Custom::PboPlugin::PBO_BIN = ("$tmp/nonexistent", $fakebin);
 my $dpkg = "$tmp/dpkg-status";
 spew($dpkg, join("\n",
-    "Package: pve-manager\nStatus: install ok installed\nVersion: 9.2.41\n",
-    "Package: libpve-storage-perl\nStatus: install ok installed\nVersion: 9.1.25\n",
+    "Package: pve-manager\nStatus: install ok installed\nVersion: 9.3.1\n",
+    "Package: libpve-storage-perl\nStatus: install ok installed\nVersion: 9.1.26\n",
     "Package: qemu-server\nStatus: install ok installed\nVersion: 9.2.24\n",
     "Package: pve-container\nStatus: install ok installed\nVersion: 6.1.28\n",
     "Package: unrelated\nStatus: install ok installed\nVersion: 99\n"));
@@ -221,19 +221,19 @@ ok($PVE::Tools::CALLS[0][1]->{timeout} > 0, 'with a timeout');
 ok(-f $P->path($cat, "backup/$A1", 'pbo'), 'path() is a regular file afterwards');
 is(scalar(@warnings), 0, 'tested versions: no drift warning') or diag(join('', @warnings));
 
-spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.2.42\n\nPackage: qemu-server\nStatus: deinstall ok config-files\nVersion: 9.9.9\n");
+spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.3.2\n\nPackage: qemu-server\nStatus: deinstall ok config-files\nVersion: 9.9.9\n");
 @warnings = ();
 $P->activate_volume('pbo', $cat, "backup/$A3");
 is(scalar(@warnings), 1, 'one drift warning for a newer pve-manager (removed packages ignored)');
-like($warnings[0] // '', qr/pve-manager 9\.2\.42 is newer .*9\.2\.41/, 'drift warning names package and versions');
+like($warnings[0] // '', qr/pve-manager 9\.3\.2 is newer .*9\.3\.1/, 'drift warning names package and versions');
 @warnings = ();
 $P->activate_volume('pbo', $cat, "backup/$A3");
 is(scalar(@warnings), 0, 'the same newer version again: no second drift warning (the stamp)') or diag(join('', @warnings));
-spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.2.43\n");
+spew($dpkg, "Package: pve-manager\nStatus: install ok installed\nVersion: 9.3.3\n");
 @warnings = ();
 $P->activate_volume('pbo', $cat, "backup/$A3");
 is(scalar(@warnings), 1, 'another newer version: warned once more');
-like($warnings[0] // '', qr/pve-manager 9\.2\.43 is newer/, '... naming the new version');
+like($warnings[0] // '', qr/pve-manager 9\.3\.3 is newer/, '... naming the new version');
 @warnings = ();
 $P->activate_volume('pbo', $cat, "backup/$A3");
 is(scalar(@warnings), 0, '... and only once');
