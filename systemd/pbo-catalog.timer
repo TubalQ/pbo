@@ -1,6 +1,6 @@
 [Unit]
 Description=Refresh the pbo catalogue and release expired staged archives every 15 minutes (Proxmox integration)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The defaults of SCHEDULE_CATALOG (OnCalendar=) and SCHEDULE_CATALOG_DELAY

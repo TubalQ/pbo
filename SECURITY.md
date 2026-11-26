@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Don't open a public issue. Use GitHub's private reporting on
-[TubalQ/PBO](https://github.com/TubalQ/PBO/security/advisories/new) (Security →
+[TubalQ/pbo](https://github.com/TubalQ/pbo/security/advisories/new) (Security →
 Report a vulnerability). Say what you found, how to reproduce it, and which version
 (`pbo --version`, or the commit). Expect an answer within a week.
 

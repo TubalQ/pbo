@@ -1,6 +1,6 @@
 [Unit]
 Description=Weekly pbo retention (prune)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The defaults of SCHEDULE_PRUNE (OnCalendar=) and SCHEDULE_PRUNE_DELAY

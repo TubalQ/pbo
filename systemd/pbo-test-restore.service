@@ -1,6 +1,6 @@
 [Unit]
 Description=pbo: scheduled restore test (restore, boot, destroy a throwaway copy)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 After=network-online.target
 Wants=network-online.target
 

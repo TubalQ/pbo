@@ -1,6 +1,6 @@
 [Unit]
 Description=pbo: offsite backup of this node's guests (run-schedule)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 After=network-online.target pve-cluster.service pveproxy.service
 Wants=network-online.target
 

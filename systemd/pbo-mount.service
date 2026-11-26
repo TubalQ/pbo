@@ -1,6 +1,6 @@
 [Unit]
 Description=pbo: read-only restic mount of the cache repo (Proxmox restore and Show Configuration)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 After=local-fs.target
 # Started on demand by `pbo catalog materialize` (unless PVE_CATALOG_MOUNT=false),
 # stopped by `pbo catalog release` (pbo-catalog.service) when idle and by

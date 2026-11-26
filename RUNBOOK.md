@@ -12,7 +12,7 @@ throwaway copy to prove an actual restore works.
 ## Installing, including on a fresh host during recovery
 
 ```bash
-git clone https://github.com/TubalQ/PBO && cd PBO
+git clone https://github.com/TubalQ/pbo && cd pbo
 ./install.sh          # installs the tool and units, does not enable the timer
 pbo setup             # cache, offsite target, DR key (an existing one is kept), mode, retention, ntfy, init, guests, timers
 ```
@@ -75,7 +75,7 @@ from 0.5". The order:
    `/etc/pve/pbo/config`, and does not change it):
 
    ```bash
-   git clone https://github.com/TubalQ/PBO pbo-0.6 && cd pbo-0.6
+   git clone https://github.com/TubalQ/pbo pbo-0.6 && cd pbo-0.6
    ./pbo config check                  # every line 0.6 refuses or warns about, by file and line
    ./pbo config check --compare-bash   # also sources the file as 0.5 did (it RUNS it): keys read differently
    ```
@@ -552,4 +552,4 @@ cache is moved only while it is empty.
 | Locks | `/run/pbo/` (root only; `pbo.config` while the config is written, `pbo.cache` while the cache moves) |
 | systemd | `pbo.timer`, `pbo-prune.timer`, `pbo-verify.timer`, `pbo-test-restore.timer` (+ `.service`); with the integration `pbo-catalog.timer`, `pbo-mount.service`; on a janitor `pbo-janitor.timer`. A schedule other than the default: `/etc/systemd/system/<timer>.d/schedule.conf` |
 | Proxmox integration | plugin `/usr/share/perl5/PVE/Storage/Custom/PboPlugin.pm`, hook `.../pbo/vzdump-hook`, catalogue `/var/lib/pbo/catalog/index.json`, spool `PVE_SPOOL_DIR`, staging `PVE_STAGING_DIR`, offsite copies pending `/var/lib/pbo/ingest-copy/` |
-| Source | `github.com/TubalQ/PBO` |
+| Source | `github.com/TubalQ/pbo` |

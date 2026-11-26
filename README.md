@@ -61,6 +61,7 @@ host name, URL, path or secret), for a bug report.
 | Install layouts | Both: install.sh (`/usr/local/lib/pbo`) and the .deb (`/usr/lib/pbo`); every systemd unit is checked in each layout. | Other prefixes. |
 | CACHE_DIR filesystem | ext4-like filesystems with POSIX ACLs, a filesystem without ACL support (mocked), the ACL mask, an unprivileged CT's mapped root passing the parents (as root). | ZFS with `acltype=posixacl`, btrfs and xfs on real hardware; NFS and CIFS (a cache move refuses them unless `--force`; a cache that is already there, or an empty one set with `config set`, is not checked, and ACLs and renames there are untested). |
 | Backends | Local directory repositories (real restic). `tests/integration/pve.sh` runs backup, restore and prune on a PVE host and, with a janitor, the append-only path against a real rest-server. `RESTIC_ENV_FILE` is checked to reach restic and nothing else. | SFTP servers (the wizard's ssh command, its parsing back and the host key pinning are tested against mocks, a transfer is not), S3, B2, Azure, GCS, rclone and the other restic backends against real services. |
+| Guests | Containers, privileged and unprivileged, with and without fuse: backup, restore to a new vmid, the restore test that boots an isolated copy, and through the storage plugin the Proxmox GUI restore and Show Configuration (`tests/integration/pve.sh`, `pve-storage.sh --full`). VMs (QEMU): `tests/integration/pve.sh` backs up a throwaway VM (`.vma`), restores it to a new vmid and checks a marker on its disk. | A restored VM booted in the restore test: it proves the VM answers only when the QEMU guest agent is set up in it, otherwise only that it started. GUI restore and Show Configuration of a `.vma` through the plugin (checked against the Proxmox VE source, not run). A VM on another cluster node. |
 | Clusters | Which node backs up which guest, from mocked cluster views; the cluster-shared config (`/etc/pve/pbo/config`); per-node storage ids, `pbo integrate` and job ownership with a mocked member list of one and three nodes. | A real multi-node cluster. |
 | Time zones | Archive names, the catalogue's times and the timers' next run under UTC, +05:30 and -03:00; retention, which restic plans by the local day each snapshot recorded, with snapshots taken in each of those zones. | Daylight-saving transitions. |
 | Users | The suites run as a plain user in CI; run as root they also cover owners, `setpriv` and `chown`. | |
@@ -68,15 +69,15 @@ host name, URL, path or secret), for a bug report.
 ## Install
 
 ```bash
-git clone https://github.com/TubalQ/PBO
-cd PBO
+git clone https://github.com/TubalQ/pbo
+cd pbo
 sudo ./install.sh
 ```
 
 Goes into `/usr/local` and offers to run setup. It leaves the timer off, so it won't
 start a nightly job you didn't ask for.
 
-Or use the package from a [release](https://github.com/TubalQ/PBO/releases) (built by
+Or use the package from a [release](https://github.com/TubalQ/pbo/releases) (built by
 CI, `packaging/build-deb.sh` builds the same locally):
 
 ```bash

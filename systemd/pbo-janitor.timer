@@ -1,6 +1,6 @@
 [Unit]
 Description=Daily pbo janitor run (retention + verify + freshness)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The defaults of SCHEDULE_JANITOR (OnCalendar=) and SCHEDULE_JANITOR_DELAY

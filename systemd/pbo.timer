@@ -1,6 +1,6 @@
 [Unit]
 Description=Daily pbo offsite backup
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The default of SCHEDULE_BACKUP (OnCalendar=) in lib/config_schema.sh; tests

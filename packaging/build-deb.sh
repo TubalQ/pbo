@@ -47,7 +47,7 @@ Suggests: proxmox-ve
 Breaks: pbo-web
 Section: admin
 Priority: optional
-Homepage: https://github.com/TubalQ/PBO
+Homepage: https://github.com/TubalQ/pbo
 Description: offsite backup of Proxmox guests with restic
  pbo runs vzdump, stores the archive in a restic repository and copies it
  offsite over SFTP or to an append-only rest-server. Restore always goes to a
@@ -139,7 +139,7 @@ Maintainer: TubalQ <71977914+TubalQ@users.noreply.github.com>
 Depends: pbo (= $DEBVER), libpve-storage-perl (>= 9.1.18), pve-manager (>= 9.2.29)
 Section: admin
 Priority: optional
-Homepage: https://github.com/TubalQ/PBO
+Homepage: https://github.com/TubalQ/pbo
 Description: Proxmox VE storage plugin for pbo
  Adds the storage type 'pbo' to Proxmox VE: pbo's restic snapshots show up as
  ordinary vzdump archives that the GUI lists, shows and restores, and PVE

@@ -1,6 +1,6 @@
 [Unit]
 Description=Weekly pbo integrity check (rotating deep read)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The defaults of SCHEDULE_VERIFY (OnCalendar=) and SCHEDULE_VERIFY_DELAY

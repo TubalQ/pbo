@@ -1,6 +1,6 @@
 [Unit]
 Description=Weekly pbo restore test (rotates through the guests)
-Documentation=https://github.com/TubalQ/PBO
+Documentation=https://github.com/TubalQ/pbo
 
 [Timer]
 # The defaults of SCHEDULE_TEST_RESTORE (OnCalendar=) and SCHEDULE_TEST_RESTORE_DELAY
