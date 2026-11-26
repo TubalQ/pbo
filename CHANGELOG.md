@@ -3,7 +3,7 @@
 Versions follow [semver](https://semver.org/). Until 1.0, a minor bump can change
 behaviour; the entry says so when it does.
 
-## 0.6.2 (unreleased)
+## 0.6.2 (2026-11-26)
 
 Additions only: every JSON field, exit code, flag and config key of 0.6.1
 stays as it was, and so does retention.

@@ -78,7 +78,7 @@ source "${SELF_DIR}/lib/cachemove.sh"
 # shellcheck source=lib/report.sh
 source "${SELF_DIR}/lib/report.sh"
 
-readonly VERSION="0.6.2-dev"
+readonly VERSION="0.6.2"
 
 # ---------------------------------------------------------------------------
 # Global flags (before the subcommand). --json and --dry-run are global and
